@@ -9,6 +9,12 @@ upload-host
 download-host
 restore-host
 backup-host
+dashboard-host
+ps5/ui.h
+tools/pscloud-backup.zip
+tools/pscloud-dashboard.zip
+tools/backup-*/
+tools/dashboard-*/
 pscloud-backup.conf
 tools/pscloud-recovery.zip
 tools/recovery-*/

@@ -1,4 +1,4 @@
-# PS5 Cloud Save — development milestone 0.4.0
+# PS5 Cloud Save — development milestone 0.5.0
 
 This is the first tested component of a proposed standalone PS5 cloud-save app.
 It is NOT an installable PS5 application or a complete save-sync implementation.
@@ -26,6 +26,25 @@ Existing flat backups are preserved. They have not been automatically classified
 or moved. Folder routing and duplicate skipping require the new identity format.
 These commits are an initial protocol, not signed or provider-enforced immutable
 manifests. The v0.4.0 changes require CI and console validation.
+
+## Version 0.5.0
+
+- Responsive embedded dashboard on PS5 port 8082, with pairing-code protection.
+- Nextcloud app-password connection check and private on-console settings.
+- Game cards, separate user/save-slot selection, committed cloud version listing,
+  verified download, backup/upload from one button, and recent activity.
+- Experimental console-managed same-console restore: mount a staged image, apply
+  the verified payload, check unmount, preserve an encrypted rollback, and replace
+  only the selected original image if it has not changed. Hardware validation is
+  required before relying on this new restore path.
+- Identity metadata is under each slot's hidden `.pscloud` directory. The main
+  folder contains the ZIP versions; timestamps come from the console clock.
+
+See [ps5/DASHBOARD.md](ps5/DASHBOARD.md). Backup/restore is initially supported only
+for the tested Crash Bandicoot 4 (`PPSA02433`) profile and slot 0 saves. Other games
+are displayed read-only until validated. The dashboard's local HTTP interface is
+for a trusted private LAN; cloud connections use verified HTTPS. Pairing does not
+encrypt local HTTP traffic. No automatic startup or game-close detection yet.
 
 ## Added in 0.3
 
@@ -66,7 +85,7 @@ No PC relay is part of the intended PS5 deployment architecture.
 ## Not implemented yet
 
 Automatic game-exit detection; signed cloud manifests; Google Drive OAuth and API;
-cross-console import; conflict selection; dashboard (in progress); rest-mode
+cross-console import; conflict selection; rest-mode
 operation; automatic startup. Host transport tests use a local mock server;
 direct console-to-Nextcloud upload and download hash checks have also passed.
 Google Drive does not expose this WebDAV API and cannot be used by

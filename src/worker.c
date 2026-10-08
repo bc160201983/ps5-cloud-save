@@ -40,7 +40,7 @@ static int collection(const char *url,const char *user,const char *pass,const ch
     curl_easy_cleanup(c);return rc!=CURLE_OK || (status!=201 && status!=405);
 }
 static int put_identity(const char *url,const char *user,const char *pass,const char *ca,const struct pscloud_snapshot *s) {
-    char text[512];snprintf(text,sizeof text,"USER_ID=%s\nTITLE=%s\nSAVE_NAME=%s\nSHA256=%s\n",s->user,s->title,s->slot,s->sha256);
+    char text[512];snprintf(text,sizeof text,"USER_ID=%s\nTITLE=%s\nSAVE_NAME=%s\nSHA256=%s\nCREATED_UNIX=%lld\n",s->user,s->title,s->slot,s->sha256,s->created);
     CURL *c=curl_easy_init();if(!c)return 1;
     curl_easy_setopt(c,CURLOPT_URL,url);curl_easy_setopt(c,CURLOPT_PROTOCOLS_STR,"https");
     curl_easy_setopt(c,CURLOPT_USERNAME,user);curl_easy_setopt(c,CURLOPT_PASSWORD,pass);
@@ -112,7 +112,9 @@ static int upload(const char *base,const char *user,const char *pass,const char 
     }
     if(structured) {
         char manifest[4096];
-        if(snprintf(manifest,sizeof manifest,"%s/%s.identity",destination,object)>=(int)sizeof manifest ||
+        char manifest_folder[4096];
+        if(snprintf(manifest_folder,sizeof manifest_folder,"%s/.pscloud",destination)>=(int)sizeof manifest_folder || collection(manifest_folder,user,pass,ca) ||
+           snprintf(manifest,sizeof manifest,"%s/.pscloud/%s.identity",destination,object)>=(int)sizeof manifest ||
            put_identity(manifest,user,pass,ca,&snapshot)) {
             fprintf(stderr,"Cloud identity commit failed; upload retained: %s\n",object);return 1;
         }

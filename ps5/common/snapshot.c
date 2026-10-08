@@ -8,6 +8,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <errno.h>
+#include <stdlib.h>
 static int component(const char *s,unsigned max) {
     size_t n=strlen(s);if(!n || n>max)return 0;
     for(;*s;s++)if(!strchr("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-",*s))return 0;
@@ -25,20 +26,22 @@ int pscloud_snapshot_read(int dir,const char *name,struct pscloud_snapshot *s) {
     if(fd<0)return -1;
     if(fstat(fd,&st) || !S_ISREG(st.st_mode) || st.st_size>1024) {close(fd);return -1;}
     FILE *f=fdopen(fd,"r");if(!f) {close(fd);return -1;}
-    const char *keys[]={"USER_ID","TITLE","SAVE_NAME","SHA256"};
-    char *values[]={s->user,s->title,s->slot,s->sha256};
-    size_t sizes[]={sizeof s->user,sizeof s->title,sizeof s->slot,sizeof s->sha256};
+    const char *keys[]={"USER_ID","TITLE","SAVE_NAME","SHA256","CREATED_UNIX"};
+    char created[32]={0};char *values[]={s->user,s->title,s->slot,s->sha256,created};
+    size_t sizes[]={sizeof s->user,sizeof s->title,sizeof s->slot,sizeof s->sha256,sizeof created};
     char line[256];unsigned seen=0;int bad=0;
     while(fgets(line,sizeof line,f)) {
         size_t n=strlen(line);if(n==sizeof line-1 && line[n-1]!='\n') {bad=1;break;}
         while(n && (line[n-1]=='\r' || line[n-1]=='\n'))line[--n]=0;
         char *eq=strchr(line,'=');if(!eq) {bad=1;break;}*eq++=0;
-        unsigned i;for(i=0;i<4;i++)if(!strcmp(line,keys[i]))break;
-        if(i==4 || (seen&(1U<<i)) || !*eq || strlen(eq)>=sizes[i]) {bad=1;break;}
+        unsigned i;for(i=0;i<5;i++)if(!strcmp(line,keys[i]))break;
+        if(i==5 || (seen&(1U<<i)) || !*eq || strlen(eq)>=sizes[i]) {bad=1;break;}
         strcpy(values[i],eq);seen|=1U<<i;
     }
     if(ferror(f))bad=1;
-    fclose(f);return bad || seen!=15 || !pscloud_snapshot_valid(s)?-1:0;
+    fclose(f);
+    if(seen&16U) {char *end=NULL;s->created=strtoll(created,&end,10);if(*end || s->created<0)bad=1;}
+    return bad || (seen!=15 && seen!=31) || !pscloud_snapshot_valid(s)?-1:0;
 }
 int pscloud_file_hash(int fd,char hex[65]) {
     struct stat before,after;

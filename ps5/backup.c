@@ -8,6 +8,7 @@
 #include "common/zip.h"
 #include "common/log.h"
 #include "common/snapshot.h"
+#include "common/managed.h"
 #include <sys/stat.h>
 #include <sys/file.h>
 #include <fcntl.h>
@@ -17,6 +18,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <errno.h>
+#include <time.h>
 #ifndef PSCLOUD_HOST_TEST
 #include <ps5/kernel.h>
 #endif
@@ -47,7 +49,7 @@ static int select_save(const char *path,struct selection *s) {
     for(const char *p=s->user;*p;p++)if(!strchr("0123456789abcdef",*p))return -1;
     return 0;
 }
-static int random_id(char id[33]) {
+int pscloud_random_id(char id[33]) {
     unsigned char b[16];int fd=open("/dev/urandom",O_RDONLY);if(fd<0)return -1;
     size_t have=0;
     while(have<sizeof b) {
@@ -57,7 +59,7 @@ static int random_id(char id[33]) {
     }
     close(fd);for(unsigned i=0;i<16;i++)snprintf(id+i*2,3,"%02x",b[i]);return 0;
 }
-static int copy_image(int source,int destination) {
+int pscloud_copy_image(int source,int destination) {
     struct stat before,after;
     if(fstat(source,&before) || !S_ISREG(before.st_mode) || before.st_size<0x860 ||
        before.st_size>2LL*1024*1024*1024)return -1;
@@ -82,7 +84,7 @@ static int copy_image(int source,int destination) {
        after.st_ctim.tv_sec!=before.st_ctim.tv_sec || after.st_ctim.tv_nsec!=before.st_ctim.tv_nsec)return -1;
     return fsync(destination);
 }
-static int no_foreign_mount(void) {
+int pscloud_no_foreign_mount(void) {
 #ifdef PSCLOUD_HOST_TEST
     return getenv("PSCLOUD_TEST_FOREIGN_MOUNT")?-1:0;
 #else
@@ -92,7 +94,7 @@ static int no_foreign_mount(void) {
     closedir(d);return busy?-1:0;
 #endif
 }
-static int active_marker(int parent) {
+int pscloud_active_marker(int parent) {
     int scan=openat(parent,".",O_RDONLY | O_DIRECTORY | O_NOFOLLOW);
     if(scan<0)return -1;
     DIR *d=fdopendir(scan);if(!d) {close(scan);return -1;}
@@ -124,7 +126,7 @@ int main(int argc,char **argv) {
 #endif
     if(select_save(config,&s))goto config_error;
     phase="foreign mount check";
-    if(no_foreign_mount()) {pscloud_notify("Backup stopped: unmount other saves first");goto finish;}
+    if(pscloud_no_foreign_mount()) {pscloud_notify("Backup stopped: unmount other saves first");goto finish;}
     phase="source directory";
     char sourcepath[1400];snprintf(sourcepath,sizeof sourcepath,"%s/%s/savedata_prospero/%s",home,s.user,s.title);
     int sourceparent=pscloud_open_directory(sourcepath);
@@ -142,7 +144,7 @@ int main(int argc,char **argv) {
         if(lock>=0)close(lock);
         close(parent);close(original);goto finish;
     }
-    if(active_marker(parent)!=0) {
+    if(pscloud_active_marker(parent)!=0) {
         pscloud_notify("Backup stopped: prior staged mount requires inspection");
         close(lock);close(parent);close(original);goto finish;
     }
@@ -158,7 +160,7 @@ int main(int argc,char **argv) {
     char id[33],stage[1500],image[1600],mount[1600],name[128],part[1800],ready[1800];
     int created=0;struct pscloud_mount_state state={0};int part_created=0;
     int marker_created=0,mount_attempted=0,unmounted=0;
-    if(stages<0 || spool<0 || random_id(id))goto cleanup;
+    if(stages<0 || spool<0 || pscloud_random_id(id))goto cleanup;
     phase="unique staging directory";
     if(mkdirat(stages,id,0700))goto cleanup;
     created=1;
@@ -171,7 +173,7 @@ int main(int argc,char **argv) {
     if(stagefd<0)goto cleanup;
     int destination=openat(stagefd,"image",O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW,0600);
     phase="stable source image copy";
-    int copied=destination>=0 && copy_image(original,destination)==0;
+    int copied=destination>=0 && pscloud_copy_image(original,destination)==0;
     if(destination>=0 && close(destination))copied=0;
     if(!copied || mkdirat(stagefd,"mount",0700) || fsync(stagefd)) {close(stagefd);goto cleanup;}
     close(stagefd);close(original);original=-1;
@@ -203,6 +205,7 @@ int main(int argc,char **argv) {
     if(!exported)goto cleanup;
     struct pscloud_snapshot snapshot={0};
     strcpy(snapshot.user,s.user);strcpy(snapshot.title,s.title);strcpy(snapshot.slot,s.slot);
+    snapshot.created=(long long)time(NULL);if(snapshot.created<0)snapshot.created=0;
     char part_name[144];snprintf(part_name,sizeof part_name,"%s.part",name);
     int archive_fd=openat(spool,part_name,O_RDONLY | O_NOFOLLOW | O_NONBLOCK);
     int hashed=archive_fd>=0 && pscloud_file_hash(archive_fd,snapshot.sha256)==0;
@@ -224,7 +227,7 @@ int main(int argc,char **argv) {
     int meta=openat(spool,identity,O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW,0600);
     if(meta<0)goto cleanup;
     FILE *out=fdopen(meta,"w");if(!out) {close(meta);goto cleanup;}
-    int bad=fprintf(out,"USER_ID=%s\nTITLE=%s\nSAVE_NAME=%s\nSHA256=%s\n",s.user,s.title,s.slot,snapshot.sha256)<0;
+    int bad=fprintf(out,"USER_ID=%s\nTITLE=%s\nSAVE_NAME=%s\nSHA256=%s\nCREATED_UNIX=%lld\n",s.user,s.title,s.slot,snapshot.sha256,snapshot.created)<0;
     if(fflush(out) || fsync(meta))bad=1;
     if(fclose(out))bad=1;
     if(bad || rename(part,ready) || fsync(spool))goto cleanup;

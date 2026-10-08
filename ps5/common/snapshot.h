@@ -2,6 +2,7 @@
 #define PSCLOUD_SNAPSHOT_H
 struct pscloud_snapshot {
     char user[17],title[10],slot[64],sha256[65];
+    long long created;
 };
 int pscloud_snapshot_valid(const struct pscloud_snapshot *snapshot);
 int pscloud_snapshot_read(int directory,const char *name,struct pscloud_snapshot *snapshot);

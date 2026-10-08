@@ -36,6 +36,15 @@ class WorkerTest(unittest.TestCase):
                 else:
                     parent.collections.add(self.path);self.send_response(201)
                 self.end_headers()
+            def do_PROPFIND(self):
+                if self.headers.get('Authorization') != 'Basic dXNlcjpwYXNz':
+                    self.send_response(401);self.end_headers();return
+                prefix=self.path.rstrip('/')+'/'
+                matches=[p for p in parent.objects if p.startswith(prefix)]
+                if not matches and self.path.rstrip('/')!='/backups' and self.path.rstrip('/') not in parent.collections:
+                    self.send_response(404);self.end_headers();return
+                xml='<d:multistatus xmlns:d="DAV:">'+''.join('<d:response><d:href>'+p+'</d:href></d:response>' for p in matches)+'</d:multistatus>'
+                data=xml.encode();self.send_response(207);self.send_header('Content-Length',str(len(data)));self.end_headers();self.wfile.write(data)
             def do_GET(self):
                 if self.headers.get('Authorization') != 'Basic dXNlcjpwYXNz':
                     self.send_response(401); self.end_headers(); return
@@ -123,7 +132,7 @@ class WorkerTest(unittest.TestCase):
         p=self.structured_job();self.assertEqual(self.run_worker().returncode,0)
         prefix='/backups/Crash%20Bandicoot%204%20-%20PPSA02433/User-1eb70483/PlayerSaveSlot0Save/'
         self.assertIn(prefix+p.name[:-6],self.objects)
-        self.assertIn(prefix+p.name[:-6]+'.identity',self.objects)
+        self.assertIn(prefix+'.pscloud/'+p.name[:-6]+'.identity',self.objects)
 
     def test_failed_manifest_commit_retains_ready_job(self):
         p=self.structured_job();self.manifest_status=503

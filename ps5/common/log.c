@@ -11,6 +11,7 @@
 
 static FILE *log_file;
 int pscloud_log_open(const char *path) {
+    if(log_file)pscloud_log_close();
     signal(SIGPIPE, SIG_IGN); /* The sending PC can disconnect; keep local logging. */
     int fd = open(path, O_WRONLY | O_CREAT | O_APPEND | O_NOFOLLOW, 0600);
     if(fd < 0) return -1;
