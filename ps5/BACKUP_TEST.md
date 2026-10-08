@@ -32,6 +32,9 @@ Privilege changes are restricted to the payload process and restored on exit.
 Unmount failure prevents queue publication and leaves the staged image intact;
 do not remove it or start another mounting tool until that mount is resolved.
 Failed staging directories are retained for diagnosis, not automatically pruned.
+An active-mount marker prevents another backup after a crash or failed mount/
+unmount. It is cleared only after checked unmount or before a mount was attempted.
+Do not clear `/data/pscloud/.mount-active` without inspecting the recorded mount.
 
 The adapter was independently written using SDK interfaces and inspecting
 Garlic SaveMgr's API usage. No Garlic implementation or UI was copied.

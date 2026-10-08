@@ -45,6 +45,7 @@ class BackupTests(unittest.TestCase):
             self.assertIsNone(z.testzip());self.assertEqual(z.namelist(),['ue4savegame.dpx.sav'])
         self.assertLess(r.stdout.index('Host simulated unmount'),r.stdout.index('Console backup ready'))
         self.assertFalse(list((self.spoolroot/'staging').iterdir()))
+        self.assertFalse((self.spoolroot/'.mount-active').exists())
         meta=next((self.spoolroot/'spool').glob('*.identity')).read_text()
         self.assertIn('USER_ID=1eb70483',meta);self.assertIn('SAVE_NAME=PlayerSaveSlot0Save',meta)
 
@@ -62,6 +63,7 @@ class BackupTests(unittest.TestCase):
         r=self.run_backup(PSCLOUD_TEST_UNMOUNT_FAIL='1');self.assertEqual(r.returncode,1)
         self.assertFalse(list((self.spoolroot/'spool').glob('*.ready')))
         self.assertTrue(list((self.spoolroot/'staging').glob('*/image')))
+        self.assertTrue((self.spoolroot/'.mount-active').exists())
         self.assertEqual(self.image.read_bytes(),self.original)
 
     def test_export_failure_still_unmounts(self):
@@ -73,6 +75,12 @@ class BackupTests(unittest.TestCase):
     def test_foreign_mount_refused(self):
         self.assertEqual(self.run_backup(PSCLOUD_TEST_FOREIGN_MOUNT='1').returncode,1)
         self.assertFalse(list(self.spoolroot.iterdir()))
+
+    def test_prior_active_marker_blocks_another_mount(self):
+        (self.spoolroot/'.mount-active').write_text('/data/previous/mount')
+        r=self.run_backup();self.assertEqual(r.returncode,1)
+        self.assertNotIn('Host simulated mount',r.stdout)
+        self.assertFalse((self.spoolroot/'staging').exists())
 
     def test_source_symlink_refused(self):
         other=self.root/'image';self.image.rename(other);self.image.symlink_to(other)

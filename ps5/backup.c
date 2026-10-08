@@ -119,6 +119,11 @@ int main(int argc,char **argv) {
         if(lock>=0)close(lock);
         close(parent);close(original);goto finish;
     }
+    struct stat active;
+    if(!fstatat(parent,".mount-active",&active,AT_SYMLINK_NOFOLLOW) || errno!=ENOENT) {
+        pscloud_notify("Backup stopped: prior staged mount requires inspection");
+        close(lock);close(parent);close(original);goto finish;
+    }
     int initialized=(mkdirat(parent,"staging",0700)==0 || errno==EEXIST) &&
         (mkdirat(parent,"spool",0700)==0 || errno==EEXIST);
     char stagebase[1400],spoolpath[1400];
@@ -127,6 +132,7 @@ int main(int argc,char **argv) {
     int spool=initialized?pscloud_open_directory(spoolpath):-1;
     char id[33],stage[1500],image[1600],mount[1600],name[128],part[1800],ready[1800];
     int created=0;struct pscloud_mount_state state={0};int part_created=0;
+    int marker_created=0,mount_attempted=0,unmounted=0;
     if(stages<0 || spool<0 || random_id(id))goto cleanup;
     if(mkdirat(stages,id,0700))goto cleanup;
     created=1;
@@ -142,7 +148,16 @@ int main(int argc,char **argv) {
     if(!copied || mkdirat(stagefd,"mount",0700) || fsync(stagefd)) {close(stagefd);goto cleanup;}
     close(stagefd);close(original);original=-1;
     pscloud_log("INFO","Selection: user=%s title=%s save=%s; staged copy=%s",s.user,s.title,s.slot,image);
-    if(pscloud_mount_begin(&state) || pscloud_mount_copy(&state,image,mount))goto cleanup;
+    if(pscloud_mount_begin(&state))goto cleanup;
+    int marker=openat(parent,".mount-active",O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW,0600);
+    if(marker<0)goto cleanup;
+    marker_created=1;
+    size_t mountlen=strlen(mount);
+    int marker_bad=write(marker,mount,mountlen)!=(ssize_t)mountlen || fsync(marker);
+    if(close(marker))marker_bad=1;
+    if(marker_bad || fsync(parent))goto cleanup;
+    mount_attempted=1;
+    if(pscloud_mount_copy(&state,image,mount))goto cleanup;
     const char *payload=mount;
 #ifdef PSCLOUD_HOST_TEST
     payload=getenv("PSCLOUD_TEST_PAYLOAD");if(!payload)goto cleanup;
@@ -154,6 +169,7 @@ int main(int argc,char **argv) {
     int exported=pscloud_zip_export(mounted,part,&files,&bytes)==0;close(mounted);
     if(!exported)goto cleanup;
     if(pscloud_mount_end(&state,mount))goto cleanup;
+    unmounted=1;
     if(pscloud_mount_leave(&state))goto cleanup;
     /* Bind the queue snapshot to its exact user/title/slot in a local sidecar. */
     char identity[160];snprintf(identity,sizeof identity,"%s.identity",name);
@@ -166,10 +182,15 @@ int main(int argc,char **argv) {
     if(bad || rename(part,ready) || fsync(spool))goto cleanup;
     part_created=0;result=0;pscloud_notify("Console backup ready: %u files - original untouched",files);
 cleanup:
-    if(state.mounted && pscloud_mount_end(&state,mount)) {
-        result=1;pscloud_log("ERROR","Unmount failed; staged image retained for inspection");
+    if(state.mounted) {
+        if(pscloud_mount_end(&state,mount)) {
+            result=1;pscloud_log("ERROR","Unmount failed; staged image retained for inspection");
+        } else unmounted=1;
     }
     if(pscloud_mount_leave(&state))result=1;
+    if(marker_created && (!mount_attempted || unmounted)) {
+        if(unlinkat(parent,".mount-active",0) || fsync(parent))result=1;
+    }
     if(part_created)unlink(part);
     /* Keep failed images/mounts for diagnosis; never delete a mounted image. */
     if(created && !state.mounted && result==0) {

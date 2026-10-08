@@ -92,6 +92,7 @@ int pscloud_mount_leave(struct pscloud_mount_state *s) {
     if(kernel_set_ucred_uid(pid,s->uid)<0)failed=1;
     if(kernel_set_ucred_caps(pid,s->caps)<0)failed=1;
     if(kernel_set_ucred_authid(pid,s->authid)<0)failed=1;
-    s->credentials_saved=0;return failed?-1:0;
+    if(!failed)s->credentials_saved=0;
+    return failed?-1:0;
 #endif
 }
