@@ -91,6 +91,18 @@ static int no_foreign_mount(void) {
     closedir(d);return busy?-1:0;
 #endif
 }
+static int active_marker(int parent) {
+    int scan=openat(parent,".",O_RDONLY | O_DIRECTORY | O_NOFOLLOW);
+    if(scan<0)return -1;
+    DIR *d=fdopendir(scan);if(!d) {close(scan);return -1;}
+    struct dirent *entry;int found=0;
+    while(1) {
+        errno=0;entry=readdir(d);
+        if(!entry) {if(errno)found=-1;break;}
+        if(!strcmp(entry->d_name,".mount-active")) {found=1;break;}
+    }
+    closedir(d);return found;
+}
 int main(int argc,char **argv) {
 #ifdef PSCLOUD_HOST_TEST
     if(argc!=5)return 2;
@@ -120,8 +132,7 @@ int main(int argc,char **argv) {
         if(lock>=0)close(lock);
         close(parent);close(original);goto finish;
     }
-    struct stat active;
-    if(!fstatat(parent,".mount-active",&active,AT_SYMLINK_NOFOLLOW) || errno!=ENOENT) {
+    if(active_marker(parent)!=0) {
         pscloud_notify("Backup stopped: prior staged mount requires inspection");
         close(lock);close(parent);close(original);goto finish;
     }

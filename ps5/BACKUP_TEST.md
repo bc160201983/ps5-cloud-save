@@ -2,12 +2,12 @@
 
 This adapter selects a specific user, title and save name. It opens the original
 encrypted image read-only, copies it to a unique staging directory under
-The source filename is `sdimg_<SAVE_NAME>` under the selected title directory.
 `/data/pscloud/staging`, checks that source size and timestamps stayed stable,
 mounts that copy, exports game payload (excluding root sce_sys), and checks
 unmount success before publishing `.zip.ready`. It never copies the image back
 to `/user/home` and never edits or deletes the original. Source stability checks
 are not proof that a running game has finished writing: close the game first.
+The source filename is `sdimg_<SAVE_NAME>` under the selected title directory.
 
 The initial selection is limited to the tested PPSA02433 slot/profile names.
 Each queue archive gets a local `.identity` sidecar recording the exact user,
