@@ -9,9 +9,11 @@ No PC relay is used by the payload. A PC is only used to configure and send it.
 Install the PS5 payload SDK and its matching PS5 curl/OpenSSL libraries from
 https://github.com/ps5-payload-dev/pacbrew-repo . The base SDK alone is insufficient.
 The libraries must provide `bin/prospero-curl-config` under PS5_PAYLOAD_SDK.
-Build on Linux with `make -C ps5 upload`. This optional target is not included
-in the base-SDK GitHub artifact build yet. Run `make test` for host verification.
-The console build and runtime still need validation with those libraries.
+Build on Linux with `make -C ps5 upload`. GitHub Actions also builds this target
+using the pinned v0.40.2 library release and checks its SHA-256 before extraction.
+Download the `pscloud-upload` artifact from a successful Actions run; it includes
+the ELF, configuration example, trusted CA bundle and these instructions.
+Run `make test` for host verification. Console runtime still needs validation.
 
 ## Console test
 
