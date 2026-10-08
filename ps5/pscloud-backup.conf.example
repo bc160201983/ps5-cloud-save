@@ -1,0 +1,6 @@
+# Initial console-owned backup test, without Windows Save Mounter.
+USER_ID=1eb70483
+TITLE=PPSA02433
+SAVE_NAME=PlayerSaveSlot0Save
+# Set yes only after closing the game and unmounting all other saves.
+CONFIRM_GAME_CLOSED=no
