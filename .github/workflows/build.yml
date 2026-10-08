@@ -26,7 +26,7 @@ jobs:
       - name: Package uploader and trusted CA bundle
         run: |
           mkdir -p upload-package
-          cp ps5/pscloud-upload.elf ps5/pscloud-upload.conf.example ps5/UPLOAD_TEST.md upload-package/
+          cp ps5/pscloud-upload.elf ps5/pscloud-upload.conf.example ps5/UPLOAD_TEST.md ps5/WEBDAV_SETUP.md upload-package/
           CA=$(find "$PS5_PAYLOAD_SDK" -name ca-bundle.crt -print -quit)
           test -n "$CA"
           cp "$CA" upload-package/pscloud-ca.pem
@@ -66,4 +66,3 @@ jobs:
           name: pscloud-export
           path: ps5/pscloud-export.elf
           if-no-files-found: error
-
