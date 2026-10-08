@@ -23,8 +23,8 @@ make -C ps5
 
 Alternatively place this project's contents at the root of your GitHub repository
 and run the included “Build PSCloud diagnostic” workflow. Its artifact should be
-pscloud-probe.elf. The workflow is supplied but has not been run in this session.
-No repository was created or modified remotely.
+pscloud-probe.elf. The initial GitHub Actions build succeeded and produced the diagnostic artifact.
+A successful build still requires hardware testing on each console.
 
 ## Run on each console
 
@@ -56,3 +56,21 @@ mount/write saves; the diagnostic intentionally does not call those commands.
 Disconnecting its client can trigger auto-unmount, so future integration needs
 exclusive ownership and careful session lifetime rather than ad-hoc polling.
 After export/import is proven, connect consistent archives to the cloud queue.
+
+## Sender troubleshooting
+
+Update the sender with `git pull --ff-only`. When your downloaded ELF is in tools:
+
+```cmd
+py tools\send_payload.py YOUR_PS5_IP tools\pscloud-probe.elf --port 9021 --connect-timeout 30 --timeout 60 --reply-timeout 10
+```
+
+The sender now validates the ELF section table (required by elfldr_read), labels
+CONNECT versus UPLOAD failures, reports transmitted bytes, and reads loader/payload
+output after shutting down only the write side. A connection timeout means no
+payload bytes were sent; a transfer failure reports the last successful byte count.
+Loader error replies cause failure. An empty or timed-out reply is inconclusive;
+verify /data/pscloud-probe.txt. The receiver has no mandatory success acknowledgement.
+A failed transfer may already have launched a payload; check the report before retry.
+The documented elfldr socket server is 9021. A different jailbreak's initial loader
+may use another port, so use the active loader's displayed port when applicable.
