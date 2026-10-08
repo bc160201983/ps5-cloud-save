@@ -22,7 +22,7 @@ jobs:
           test -f "$SDK/toolchain/prospero.mk"
           echo "PS5_PAYLOAD_SDK=$SDK" >> "$GITHUB_ENV"
       - name: Build direct uploader
-        run: make -C ps5 upload
+        run: make -C ps5 upload recovery
       - name: Package uploader and trusted CA bundle
         run: |
           mkdir -p upload-package
@@ -30,16 +30,23 @@ jobs:
           CA=$(find "$PS5_PAYLOAD_SDK" -name ca-bundle.crt -print -quit)
           test -n "$CA"
           cp "$CA" upload-package/pscloud-ca.pem
+          mkdir -p recovery-package
+          cp ps5/pscloud-download.elf ps5/pscloud-restore.elf ps5/pscloud-download.conf.example ps5/pscloud-restore.conf.example ps5/RESTORE_TEST.md recovery-package/
       - uses: actions/upload-artifact@v4
         with:
           name: pscloud-upload
           path: upload-package/
           if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pscloud-recovery
+          path: recovery-package/
+          if-no-files-found: error
   host-tests:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
-      - run: sudo apt-get update && sudo apt-get install -y build-essential libcurl4-openssl-dev python3 openssl
+      - run: sudo apt-get update && sudo apt-get install -y build-essential libcurl4-openssl-dev libssl-dev python3 openssl
       - run: make test
   probe:
     runs-on: ubuntu-24.04

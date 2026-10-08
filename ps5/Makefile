@@ -3,7 +3,7 @@ $(error Set PS5_PAYLOAD_SDK to the installed ps5-payload SDK directory)
 endif
 include $(PS5_PAYLOAD_SDK)/toolchain/prospero.mk
 
-.PHONY: all clean deploy upload
+.PHONY: all clean deploy upload recovery
 all: pscloud-probe.elf pscloud-export.elf
 pscloud-probe.elf: probe.c common/log.c common/log.h
 	$(CC) -O2 -Wall -Wextra -Werror -o $@ probe.c common/log.c
@@ -13,10 +13,15 @@ pscloud-export.elf: export.c common/log.c common/zip.c common/log.h common/zip.h
 # diagnostic builds usable with the base SDK alone.
 upload: pscloud-upload.elf
 CURL_CONFIG ?= $(PS5_PAYLOAD_SDK)/bin/prospero-curl-config
-pscloud-upload.elf: upload.c ../src/worker.c common/log.c common/log.h
+pscloud-upload.elf: upload.c ../src/worker.c common/log.c common/log.h common/cloud.c common/cloud.h
 	@test -x "$(CURL_CONFIG)" || { echo "Install PS5 curl/OpenSSL libraries first"; exit 1; }
-	$(CC) -O2 -Wall -Wextra -Werror -DPSCLOUD_EMBEDDED $$($(CURL_CONFIG) --cflags) -o $@ upload.c ../src/worker.c common/log.c $$($(CURL_CONFIG) --static-libs)
+	$(CC) -O2 -Wall -Wextra -Werror -DPSCLOUD_EMBEDDED $$($(CURL_CONFIG) --cflags) -o $@ upload.c ../src/worker.c common/log.c common/cloud.c $$($(CURL_CONFIG) --static-libs)
+recovery: pscloud-download.elf pscloud-restore.elf
+pscloud-download.elf: download.c common/cloud.c common/restore.c common/log.c common/restore.h common/cloud.h
+	$(CC) -O2 -Wall -Wextra -Werror $$($(CURL_CONFIG) --cflags) -o $@ download.c common/cloud.c common/restore.c common/log.c $$($(CURL_CONFIG) --static-libs)
+pscloud-restore.elf: restore.c common/restore.c common/zip.c common/log.c common/restore.h
+	$(CC) -O2 -Wall -Wextra -Werror $$($(CURL_CONFIG) --cflags) -o $@ restore.c common/restore.c common/zip.c common/log.c $$($(CURL_CONFIG) --static-libs)
 deploy: pscloud-probe.elf
 	$(PS5_DEPLOY) -h $(PS5_HOST) -p 9021 $<
 clean:
-	rm -f pscloud-probe.elf pscloud-export.elf pscloud-upload.elf
+	rm -f pscloud-probe.elf pscloud-export.elf pscloud-upload.elf pscloud-download.elf pscloud-restore.elf

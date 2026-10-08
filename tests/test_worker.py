@@ -25,6 +25,17 @@ class WorkerTest(unittest.TestCase):
         self.status = 201
         parent = self
         class Handler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                if self.headers.get('Authorization') != 'Basic dXNlcjpwYXNz':
+                    self.send_response(401); self.end_headers(); return
+                if parent.status != 201:
+                    self.send_response(parent.status); self.end_headers(); return
+                body=parent.objects.get(self.path)
+                if body is None:
+                    self.send_response(404); self.end_headers(); return
+                self.send_response(200)
+                self.send_header('Content-Length',str(len(body)))
+                self.end_headers(); self.wfile.write(body)
             def do_PUT(self):
                 body = self.rfile.read(int(self.headers['Content-Length']))
                 if self.headers.get('Authorization') != 'Basic dXNlcjpwYXNz':

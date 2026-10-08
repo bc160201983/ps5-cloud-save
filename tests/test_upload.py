@@ -11,7 +11,7 @@ class UploadTests(unittest.TestCase):
         subprocess.run(['cc','-O2','-std=c11','-Wall','-Wextra','-Werror',
                         '-DPSCLOUD_HOST_TEST','-DPSCLOUD_EMBEDDED',
                         str(ROOT/'ps5/upload.c'),str(ROOT/'src/worker.c'),
-                        str(ROOT/'ps5/common/log.c'),'-o',str(ROOT/'upload-host'),
+                        str(ROOT/'ps5/common/log.c'),str(ROOT/'ps5/common/cloud.c'),'-o',str(ROOT/'upload-host'),
                         '-lcurl'],check=True)
 
     def setUp(self):
