@@ -26,7 +26,7 @@ int pscloud_managed_restore(const char *home,const char *root,const struct psclo
     if(dir>=0)close(dir);
     if(invalid) {free(archive);return 1;}
     int parent=pscloud_open_directory(root),lock=-1,sourceparent=-1,original=-1,stagefd=-1,rollback=-1;
-    int marker=0,attempted=0,unmounted=0,created=0,committed=0,result=1;
+    int marker=0,attempted=0,unmounted=0,created=0,committed=0,result=1,target_part_created=0;
     struct pscloud_mount_state state={0};
     char stage[1600]={0},image[1700]={0},mount[1700]={0},id[33]={0},temporary[128]={0};
     struct stat before;char baseline[65];
@@ -95,6 +95,7 @@ int pscloud_managed_restore(const char *home,const char *root,const struct psclo
        fstatat(sourceparent,image_name,&present,AT_SYMLINK_NOFOLLOW) || present.st_ino!=before.st_ino || present.st_dev!=before.st_dev)goto cleanup;
     snprintf(temporary,sizeof temporary,".pscloud-restore-%s.part",id);
     out=openat(sourceparent,temporary,O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW,before.st_mode&0777);
+    target_part_created=out>=0;
     int encrypted=openat(stagefd,"image",O_RDONLY | O_NOFOLLOW | O_NONBLOCK);
     copied=out>=0 && encrypted>=0 && pscloud_copy_image(encrypted,out)==0;
     if(encrypted>=0)close(encrypted);
@@ -110,7 +111,7 @@ cleanup:
     if(state.mounted) {if(pscloud_mount_end(&state,mount))result=1;else unmounted=1;}
     if(pscloud_mount_leave(&state))result=1;
     if(marker && (!attempted || unmounted)) {if(unlinkat(parent,".mount-active",0) || fsync(parent))result=1;}
-    if(!committed && *temporary && sourceparent>=0)unlinkat(sourceparent,temporary,0);
+    if(!committed && target_part_created && *temporary && sourceparent>=0)unlinkat(sourceparent,temporary,0);
     if(created && !state.mounted && result==0) {unlink(image);rmdir(mount);rmdir(stage);}
     if(rollback>=0)close(rollback);
     if(stagefd>=0)close(stagefd);

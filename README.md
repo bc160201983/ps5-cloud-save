@@ -1,4 +1,4 @@
-# PS5 Cloud Save — development milestone 0.5.0
+# PS5 Cloud Save — development milestone 0.5.1
 
 This is the first tested component of a proposed standalone PS5 cloud-save app.
 It is NOT an installable PS5 application or a complete save-sync implementation.
@@ -25,7 +25,8 @@ PS5Backups/
 Existing flat backups are preserved. They have not been automatically classified
 or moved. Folder routing and duplicate skipping require the new identity format.
 These commits are an initial protocol, not signed or provider-enforced immutable
-manifests. The v0.4.0 changes require CI and console validation.
+manifests. The folder/deduplication host tests and PS5 builds have passed;
+their live console checks remain pending.
 
 ## Version 0.5.0
 
@@ -45,6 +46,21 @@ for the tested Crash Bandicoot 4 (`PPSA02433`) profile and slot 0 saves. Other g
 are displayed read-only until validated. The dashboard's local HTTP interface is
 for a trusted private LAN; cloud connections use verified HTTPS. Pairing does not
 encrypt local HTTP traffic. No automatic startup or game-close detection yet.
+
+## Version 0.5.1
+
+- Added a local design preview for use while the console is offline:
+  `python tools/preview_dashboard.py 8085`, then open
+  `http://127.0.0.1:8085/#token=preview`.
+- Preview uses sample versions, discards submitted settings, and performs no
+  console/cloud operations. It is not evidence of live hardware success.
+- Fixed Windows UTF-8 reading in the preview and limited failed restore cleanup
+  to temporary files created by the current operation.
+- Version 0.5.0 passed all 62 host tests and all PS5 cross-builds. Visual browser
+  inspection confirmed the library, save-slot controls and version actions.
+- The dashboard and new encrypted-image restore require console/game-load tests;
+  these were deferred because the console is off. Core staged export and direct
+  WebDAV transport were previously tested successfully on firmware 11.40.
 
 ## Added in 0.3
 
