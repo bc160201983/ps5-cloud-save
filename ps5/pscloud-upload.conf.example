@@ -1,0 +1,8 @@
+# Deploy locally to /data/pscloud-upload.conf. Never commit real credentials.
+# This transport supports an existing HTTPS WebDAV folder, not Google Drive URLs.
+URL=https://YOUR-HOST/remote.php/dav/files/YOUR-USER/PS5Backups
+USER=YOUR-USER
+PASSWORD=YOUR-DEDICATED-APP-PASSWORD
+CA_BUNDLE=/data/pscloud-ca.pem
+# Start with once. watch polls the queue until interrupted; lifetime needs console testing.
+MODE=once
