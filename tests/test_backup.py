@@ -19,7 +19,7 @@ class BackupTests(unittest.TestCase):
         self.tmp=tempfile.TemporaryDirectory();self.root=Path(self.tmp.name)
         self.home=self.root/'home'
         source=self.home/'1eb70483/savedata_prospero/PPSA02433';source.mkdir(parents=True)
-        self.image=source/'PlayerSaveSlot0Save'
+        self.image=source/'sdimg_PlayerSaveSlot0Save'
         self.original=b'\x02'+b'\0'*8191;self.image.write_bytes(self.original)
         self.spoolroot=self.root/'pscloud';self.spoolroot.mkdir()
         self.payload=self.root/'fixture';self.payload.mkdir()

@@ -110,7 +110,8 @@ int main(int argc,char **argv) {
     char sourcepath[1400];snprintf(sourcepath,sizeof sourcepath,"%s/%s/savedata_prospero/%s",home,s.user,s.title);
     int sourceparent=pscloud_open_directory(sourcepath);
     if(sourceparent<0)goto finish;
-    int original=openat(sourceparent,s.slot,O_RDONLY | O_NOFOLLOW | O_NONBLOCK);close(sourceparent);
+    char image_name[80];snprintf(image_name,sizeof image_name,"sdimg_%s",s.slot);
+    int original=openat(sourceparent,image_name,O_RDONLY | O_NOFOLLOW | O_NONBLOCK);close(sourceparent);
     if(original<0)goto finish;
     int parent=pscloud_open_directory(root);
     if(parent<0) {close(original);goto finish;}

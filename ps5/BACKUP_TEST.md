@@ -2,6 +2,7 @@
 
 This adapter selects a specific user, title and save name. It opens the original
 encrypted image read-only, copies it to a unique staging directory under
+The source filename is `sdimg_<SAVE_NAME>` under the selected title directory.
 `/data/pscloud/staging`, checks that source size and timestamps stayed stable,
 mounts that copy, exports game payload (excluding root sce_sys), and checks
 unmount success before publishing `.zip.ready`. It never copies the image back
