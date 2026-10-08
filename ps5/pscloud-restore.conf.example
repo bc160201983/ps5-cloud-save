@@ -1,0 +1,8 @@
+BACKUP=ps5-11.40-PPSA02433-772e56bd2db63f9a3da0d3de37502690.zip
+SHA256=5fca568d4b179edf73d84c80b3f78c074e82136f0dffa86ebd448cf806695478
+TITLE=PPSA02433
+# Set this to the actual decrypted mounted destination from Save Mounter.
+TARGET=/mnt/pfs/REPLACE_WITH_ACTUAL_DISPOSABLE_MOUNT
+# Only change to yes after closing the game and confirming the disposable mount.
+CONFIRM_GAME_CLOSED=no
+CONFIRM_RESTORE=no

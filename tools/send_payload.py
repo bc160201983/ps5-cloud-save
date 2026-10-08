@@ -77,7 +77,8 @@ def send(host, port, path, connect_timeout=15, transfer_timeout=60, reply_timeou
                     raise RuntimeError('elfldr reported an error; see output above')
             else:
                 print('No loader output received.', flush=True)
-    print('Transmission finished. Confirm execution using /data/pscloud-probe.txt.')
+    print('Transmission finished. Confirm execution using the PS5 notification, '
+          '/data/pscloud.log, or the diagnostic report for a probe payload.')
 
 
 def positive(value):

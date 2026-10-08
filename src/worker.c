@@ -1,4 +1,6 @@
+#ifndef __FreeBSD__
 #define _POSIX_C_SOURCE 200809L
+#endif
 #include <curl/curl.h>
 #include <sys/stat.h>
 #include <sys/file.h>
@@ -10,6 +12,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <ctype.h>
+#include "../ps5/common/snapshot.h"
 
 /* Input contract: producer publishes an immutable archive by atomic rename
  * from *.part to a globally unique *.zip.ready in a private spool directory.
@@ -26,6 +29,28 @@ static int valid(const char *s) {
         if(!isalnum((unsigned char)s[i]) && s[i]!='-' && s[i]!='_' && s[i]!='.') return 0;
     return s[0]!='.';
 }
+static int collection(const char *url,const char *user,const char *pass,const char *ca) {
+    CURL *c=curl_easy_init();if(!c)return 1;
+    curl_easy_setopt(c,CURLOPT_URL,url);curl_easy_setopt(c,CURLOPT_PROTOCOLS_STR,"https");
+    curl_easy_setopt(c,CURLOPT_USERNAME,user);curl_easy_setopt(c,CURLOPT_PASSWORD,pass);
+    curl_easy_setopt(c,CURLOPT_CUSTOMREQUEST,"MKCOL");curl_easy_setopt(c,CURLOPT_WRITEFUNCTION,discard);
+    curl_easy_setopt(c,CURLOPT_CONNECTTIMEOUT,15L);curl_easy_setopt(c,CURLOPT_TIMEOUT,60L);curl_easy_setopt(c,CURLOPT_NOSIGNAL,1L);
+    if(ca && *ca)curl_easy_setopt(c,CURLOPT_CAINFO,ca);
+    CURLcode rc=curl_easy_perform(c);long status=0;curl_easy_getinfo(c,CURLINFO_RESPONSE_CODE,&status);
+    curl_easy_cleanup(c);return rc!=CURLE_OK || (status!=201 && status!=405);
+}
+static int put_identity(const char *url,const char *user,const char *pass,const char *ca,const struct pscloud_snapshot *s) {
+    char text[512];snprintf(text,sizeof text,"USER_ID=%s\nTITLE=%s\nSAVE_NAME=%s\nSHA256=%s\n",s->user,s->title,s->slot,s->sha256);
+    CURL *c=curl_easy_init();if(!c)return 1;
+    curl_easy_setopt(c,CURLOPT_URL,url);curl_easy_setopt(c,CURLOPT_PROTOCOLS_STR,"https");
+    curl_easy_setopt(c,CURLOPT_USERNAME,user);curl_easy_setopt(c,CURLOPT_PASSWORD,pass);
+    curl_easy_setopt(c,CURLOPT_CUSTOMREQUEST,"PUT");curl_easy_setopt(c,CURLOPT_POSTFIELDS,text);
+    curl_easy_setopt(c,CURLOPT_POSTFIELDSIZE,(long)strlen(text));curl_easy_setopt(c,CURLOPT_WRITEFUNCTION,discard);
+    curl_easy_setopt(c,CURLOPT_CONNECTTIMEOUT,15L);curl_easy_setopt(c,CURLOPT_TIMEOUT,60L);curl_easy_setopt(c,CURLOPT_NOSIGNAL,1L);
+    if(ca && *ca)curl_easy_setopt(c,CURLOPT_CAINFO,ca);
+    CURLcode rc=curl_easy_perform(c);long status=0;curl_easy_getinfo(c,CURLINFO_RESPONSE_CODE,&status);curl_easy_cleanup(c);
+    return rc!=CURLE_OK || status<200 || status>=300;
+}
 static int upload(const char *base,const char *user,const char *pass,const char *ca,
                   const char *name,int dir) {
     int fd=openat(dir,name,O_RDONLY|O_NOFOLLOW);
@@ -36,9 +61,33 @@ static int upload(const char *base,const char *user,const char *pass,const char 
     if(!f) {close(fd); return 1;}
     CURL *c=curl_easy_init();
     if(!c) {fclose(f); return 1;}
-    char object[256],url[4096];
+    char object[256],url[4096],destination[3600];
     snprintf(object,sizeof object,"%.*s",(int)strlen(name)-6,name); /* remove .ready */
-    if(snprintf(url,sizeof url,"%s/%s",base,object)>=(int)sizeof url) {
+    struct pscloud_snapshot snapshot={0};char identity[272];snprintf(identity,sizeof identity,"%s.identity",object);
+    int meta=openat(dir,identity,O_RDONLY | O_NOFOLLOW | O_NONBLOCK);int structured=meta>=0;
+    if(meta>=0)close(meta);
+    if(structured && pscloud_snapshot_read(dir,identity,&snapshot)) {
+        fprintf(stderr,"Invalid backup identity; upload retained: %s\n",object);
+        curl_easy_cleanup(c);fclose(f);return 1;
+    }
+    if(snprintf(destination,sizeof destination,"%s",base)>=(int)sizeof destination) {
+        curl_easy_cleanup(c);fclose(f);return 1;
+    }
+    if(structured) {
+        char folder[256],hash[65];
+        if(pscloud_snapshot_folder(&snapshot,folder,sizeof folder) || pscloud_file_hash(fd,hash) || strcmp(hash,snapshot.sha256)) {
+            curl_easy_cleanup(c);fclose(f);return 1;
+        }
+        char *state=NULL,*component=strtok_r(folder,"/",&state);
+        while(component) {
+            size_t have=strlen(destination),length=strlen(component);
+            if(have+length+2>sizeof destination) {curl_easy_cleanup(c);fclose(f);return 1;}
+            destination[have++]='/';memcpy(destination+have,component,length+1);
+            if(collection(destination,user,pass,ca)) {curl_easy_cleanup(c);fclose(f);return 1;}
+            component=strtok_r(NULL,"/",&state);
+        }
+    }
+    if(snprintf(url,sizeof url,"%s/%s",destination,object)>=(int)sizeof url) {
         curl_easy_cleanup(c); fclose(f); return 1;
     }
     curl_easy_setopt(c,CURLOPT_URL,url);
@@ -61,12 +110,24 @@ static int upload(const char *base,const char *user,const char *pass,const char 
         fprintf(stderr,"Upload retained for retry: %s (transport=%d, HTTP=%ld)\n",object,rc,status);
         return 1;
     }
+    if(structured) {
+        char manifest[4096];
+        if(snprintf(manifest,sizeof manifest,"%s/%s.identity",destination,object)>=(int)sizeof manifest ||
+           put_identity(manifest,user,pass,ca,&snapshot)) {
+            fprintf(stderr,"Cloud identity commit failed; upload retained: %s\n",object);return 1;
+        }
+    }
     char done[272]; snprintf(done,sizeof done,"%s.sent",object);
     if(renameat(dir,name,dir,done)||fsync(dir)) {perror("queue commit"); return 1;}
     printf("Uploaded: %s\n",object); fflush(stdout);
     return 0;
 }
+#ifdef PSCLOUD_EMBEDDED
+int pscloud_worker_main(int argc,char **argv) {
+#else
 int main(int argc,char **argv) {
+#endif
+    stopped=0;
     if(argc!=3 || (strcmp(argv[2],"--once") && strcmp(argv[2],"--watch"))) {
         fprintf(stderr,"Usage: %s SPOOL --once|--watch\n",argv[0]); return 2;
     }

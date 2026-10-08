@@ -5,6 +5,16 @@ __pycache__/
 probe-host
 *.elf
 export-host
+upload-host
+download-host
+restore-host
+backup-host
+pscloud-backup.conf
+tools/pscloud-recovery.zip
+tools/recovery-*/
+pscloud-download.conf
+pscloud-restore.conf
+pscloud-upload.conf
 pscloud-export.conf
 *.ready
 *.part

@@ -1,10 +1,42 @@
-# PS5 Cloud Save — development milestone 0.3
+# PS5 Cloud Save — development milestone 0.4.0
 
 This is the first tested component of a proposed standalone PS5 cloud-save app.
 It is NOT an installable PS5 application or a complete save-sync implementation.
-PS5 ELF binaries are available as GitHub Actions artifacts. The top-level upload-worker executable is for the host OS; it is not yet a PS5 cloud service.
+PS5 ELF binaries are available as GitHub Actions artifacts. Firmware 11.40 staged
+save export, direct Nextcloud upload and verified cloud download have been tested
+on the console. Automatic game-close detection and startup are still pending.
+
+## Version 0.4.0
+
+- New identity-tagged backups use game/user/save-slot WebDAV folders.
+- Checksum-based duplicate skipping is scoped to the exact user/title/save slot.
+- A cloud identity commit records SHA-256 after the archive upload succeeds.
+- A PS5-hosted Nextcloud dashboard is being implemented in the next release.
+- Requested development changes are published to `main` with VERSION kept current.
+
+```text
+PS5Backups/
+  Crash Bandicoot 4 - PPSA02433/
+    User-1eb70483/
+      PlayerSaveSlot0Save/
+      PlayerSaveProfileSaveData/
+```
+
+Existing flat backups are preserved. They have not been automatically classified
+or moved. Folder routing and duplicate skipping require the new identity format.
+These commits are an initial protocol, not signed or provider-enforced immutable
+manifests. The v0.4.0 changes require CI and console validation.
 
 ## Added in 0.3
+
+- Controlled recovery source for the verified PPSA02433 single-file save format:
+  HTTPS download with a pinned SHA-256 and restore after destination backup.
+  See [ps5/RESTORE_TEST.md](ps5/RESTORE_TEST.md). Game-load validation is pending.
+
+- Next transport work: optional `pscloud-upload.elf` target for direct PS5
+  HTTPS/WebDAV uploads, local configuration and queue watching. Requires separate
+  PS5 curl/OpenSSL libraries; console upload/download have passed on 11.40.
+  See [ps5/UPLOAD_TEST.md](ps5/UPLOAD_TEST.md). Google Drive is still pending.
 
 - PS5 notifications for start, progress, completion and failure in our diagnostic
   and new mounted-save export payload; timestamped logs in /data/pscloud.log.
@@ -13,7 +45,7 @@ PS5 ELF binaries are available as GitHub Actions artifacts. The top-level upload
 - The GitHub build produces separate pscloud-probe and pscloud-export artifacts.
 - See [ps5/EXPORT_TEST.md](ps5/EXPORT_TEST.md) for the next console test.
 - Firmware 11.40 diagnostic enumeration has been confirmed on the user's console.
-  The export payload still needs a real mounted-save test. Firmware 7.00 is deferred.
+  Manual and console-managed staged exports have passed. Firmware 7.00 is deferred.
 
 ## Added in 0.2
 
@@ -33,17 +65,17 @@ No PC relay is part of the intended PS5 deployment architecture.
 
 ## Not implemented yet
 
-Automatic console save mounting/export; game-exit detection; cloud commit
-manifests and authenticated integrity verification; cloud listing/download;
-Google Drive OAuth and API; cross-console import; conflict selection; UI;
-rest-mode operation; automatic startup. Cloud transport tests use a local mock
-server; no live cloud-provider upload has been tested. Google Drive does not expose this WebDAV API and cannot be used by
+Automatic game-exit detection; signed cloud manifests; Google Drive OAuth and API;
+cross-console import; conflict selection; dashboard (in progress); rest-mode
+operation; automatic startup. Host transport tests use a local mock server;
+direct console-to-Nextcloud upload and download hash checks have also passed.
+Google Drive does not expose this WebDAV API and cannot be used by
 setting its URL in this worker.
 
 ## Build and test on Linux / Windows WSL
 
 Install a C compiler, make, libcurl development headers (libcurl >= 7.85), Python 3,
-and OpenSSL CLI. On Ubuntu these are build-essential libcurl4-openssl-dev python3
+and OpenSSL development headers/CLI. On Ubuntu these are build-essential libcurl4-openssl-dev libssl-dev python3
 openssl. Then:
 
 ```sh
