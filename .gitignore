@@ -1,0 +1,6 @@
+cloud-worker
+spool/
+__pycache__/
+.env
+probe-host
+*.elf

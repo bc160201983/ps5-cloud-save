@@ -1,0 +1,28 @@
+name: Build PSCloud diagnostic
+on:
+  workflow_dispatch:
+  push:
+    paths: ['ps5/**', '.github/workflows/build.yml']
+permissions:
+  contents: read
+jobs:
+  probe:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install compiler
+        run: sudo apt-get update && sudo apt-get install -y clang-18 lld-18 unzip
+      - name: Install PS5 payload SDK v0.43
+        run: |
+          curl --fail --location --retry 3 https://github.com/ps5-payload-dev/sdk/releases/download/v0.43/ps5-payload-sdk.zip -o "$RUNNER_TEMP/sdk.zip"
+          unzip -q "$RUNNER_TEMP/sdk.zip" -d "$RUNNER_TEMP/sdk"
+          SDK_MAKE=$(find "$RUNNER_TEMP/sdk" -path '*/toolchain/prospero.mk' -print -quit)
+          test -n "$SDK_MAKE"
+          echo "PS5_PAYLOAD_SDK=${SDK_MAKE%/toolchain/prospero.mk}" >> "$GITHUB_ENV"
+      - name: Build diagnostic ELF
+        run: make -C ps5
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pscloud-probe
+          path: ps5/pscloud-probe.elf
+          if-no-files-found: error
