@@ -1,0 +1,6 @@
+# Upload your edited copy via FTP as /data/pscloud-export.conf.
+# SOURCE must be the EXACT /mnt/pfs/... path returned by Save Mounter.
+# Close the game before mounting. Keep that mount/session active during export.
+SOURCE=/mnt/pfs/REPLACE_WITH_YOUR_ACTUAL_MOUNT_DIRECTORY
+TITLE=PPSA02343
+CONFIRM_GAME_CLOSED=yes

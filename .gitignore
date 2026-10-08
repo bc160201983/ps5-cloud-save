@@ -4,3 +4,9 @@ __pycache__/
 .env
 probe-host
 *.elf
+export-host
+pscloud-export.conf
+*.ready
+*.part
+*.sent
+*.log

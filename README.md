@@ -1,8 +1,19 @@
-# PS5 Cloud Save — development milestone 0.2
+# PS5 Cloud Save — development milestone 0.3
 
 This is the first tested component of a proposed standalone PS5 cloud-save app.
 It is NOT an installable PS5 application or a complete save-sync implementation.
-No PS5 payload binary is included. The executable built here is for the host OS.
+PS5 ELF binaries are available as GitHub Actions artifacts. The top-level upload-worker executable is for the host OS; it is not yet a PS5 cloud service.
+
+## Added in 0.3
+
+- PS5 notifications for start, progress, completion and failure in our diagnostic
+  and new mounted-save export payload; timestamped logs in /data/pscloud.log.
+- Firmware 11.40 manual export of an already-mounted save to an uncompressed ZIP.
+- Root sce_sys exclusion, archive CRCs, unique backup names and failed-copy cleanup.
+- The GitHub build produces separate pscloud-probe and pscloud-export artifacts.
+- See [ps5/EXPORT_TEST.md](ps5/EXPORT_TEST.md) for the next console test.
+- Firmware 11.40 diagnostic enumeration has been confirmed on the user's console.
+  The export payload still needs a real mounted-save test. Firmware 7.00 is deferred.
 
 ## Added in 0.2
 
@@ -10,7 +21,7 @@ No PS5 payload binary is included. The executable built here is for the host OS.
 - Firmware reporting and read-only save-directory enumeration; a local report is written.
 - Windows/Linux Python ELF sender for port 9021.
 - Five new host tests (11 total). See ps5/TESTING.md for console steps.
-- PS5 cross-compilation and hardware execution remain unverified.
+- The initial PS5 diagnostic cross-build succeeded; directory enumeration was tested on firmware 11.40.
 
 ## Implemented
 
@@ -22,11 +33,11 @@ No PC relay is part of the intended PS5 deployment architecture.
 
 ## Not implemented yet
 
-Verified PS5 SDK build/link integration; console save mount/export; game-exit
-detection; archive creation and integrity manifests; cloud listing/download;
+Automatic console save mounting/export; game-exit detection; cloud commit
+manifests and authenticated integrity verification; cloud listing/download;
 Google Drive OAuth and API; cross-console import; conflict selection; UI;
-rest-mode operation; automatic startup. No real cloud account or PS5 was used in
-validation. Google Drive does not expose this WebDAV API and cannot be used by
+rest-mode operation; automatic startup. Cloud transport tests use a local mock
+server; no live cloud-provider upload has been tested. Google Drive does not expose this WebDAV API and cannot be used by
 setting its URL in this worker.
 
 ## Build and test on Linux / Windows WSL
@@ -90,9 +101,8 @@ A 2xx response means server acceptance, not verified restoreability.
 
 ## Next milestone
 
-Confirm both consoles' firmware, jailbreak/loader, and save tool compatibility.
-Implement and test one manual export and restore to a disposable same-console
-save before introducing automatic detection. Then add Google Drive authentication,
+Work on firmware 11.40 first. Validate the mounted-save exporter and then a
+restore to a disposable same-console save before introducing automatic detection. Then add Google Drive authentication,
 upload/list/download, restore verification, and cross-console imports. Do not copy
 sce_sys metadata blindly into the destination save. Never restore during gameplay.
 

@@ -1,8 +1,9 @@
-# Console diagnostic — firmware 7.00 and 11.40
+# Console diagnostic — firmware 11.40 first
 
 This source targets ps5-payload-dev/elfldr on TCP 9021. The diagnostic does not
 patch privileges, mount saves, read save bytes, contact cloud services, or modify
-save files. It writes one report: /data/pscloud-probe.txt (overwritten each run).
+save files. It displays start/finish notifications and writes timestamped events to /data/pscloud.log.
+It also writes one report: /data/pscloud-probe.txt (overwritten each run).
 It enumerates visible user and game directories, anonymizing user IDs. The report
 contains title IDs but no account names, save contents or encryption keys.
 
@@ -22,11 +23,11 @@ make -C ps5
 ```
 
 Alternatively place this project's contents at the root of your GitHub repository
-and run the included “Build PSCloud diagnostic” workflow. Its artifact should be
+and run the included “Build PSCloud payloads” workflow. Its artifact should be
 pscloud-probe.elf. The initial GitHub Actions build succeeded and produced the diagnostic artifact.
 A successful build still requires hardware testing on each console.
 
-## Run on each console
+## Run on the 11.40 console first
 
 1. Load your jailbreak and ps5-payload-dev/elfldr as usual.
 2. Close games for this initial diagnostic.
@@ -74,3 +75,5 @@ verify /data/pscloud-probe.txt. The receiver has no mandatory success acknowledg
 A failed transfer may already have launched a payload; check the report before retry.
 The documented elfldr socket server is 9021. A different jailbreak's initial loader
 may use another port, so use the active loader's displayed port when applicable.
+
+The diagnostic now identifies itself as version 0.3. For mounted-save export, see EXPORT_TEST.md.

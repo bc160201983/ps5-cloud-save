@@ -7,7 +7,7 @@ class ProbeTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         subprocess.run(['cc','-O2','-std=c11','-Wall','-Wextra','-Werror',
-                        '-DPSCLOUD_HOST_TEST',str(ROOT/'ps5/probe.c'),'-o',str(ROOT/'probe-host')],check=True)
+                        '-DPSCLOUD_HOST_TEST',str(ROOT/'ps5/probe.c'),str(ROOT/'ps5/common/log.c'),'-o',str(ROOT/'probe-host')],check=True)
     def test_enumerates_without_reading_or_changing_save(self):
         with tempfile.TemporaryDirectory() as tmp:
             root=Path(tmp)/'users'
@@ -19,7 +19,10 @@ class ProbeTests(unittest.TestCase):
             (root/'1a2b'/'savedata_prospero'/'PPSA99999').symlink_to(title,target_is_directory=True)
             (root/'not-a-user').mkdir()
             report=Path(tmp)/'report'
-            subprocess.run([str(ROOT/'probe-host'),str(root),str(report)],check=True,capture_output=True)
+            result=subprocess.run([str(ROOT/'probe-host'),str(root),str(report)],check=True,capture_output=True,text=True)
+            self.assertIn('[PS5 notification] Diagnostic started',result.stdout)
+            self.assertIn('Diagnostic complete - save folders scanned',result.stdout)
+            self.assertIn('Scanning save folders for user 1',Path(str(report)+'.log').read_text())
             text=report.read_text()
             self.assertIn('title=PPSA12345',text)
             self.assertNotIn('PPSA99999',text)
@@ -30,7 +33,7 @@ class ProbeTests(unittest.TestCase):
     def test_missing_root_reports_unavailable(self):
         with tempfile.TemporaryDirectory() as tmp:
             report=Path(tmp)/'report'
-            subprocess.run([str(ROOT/'probe-host'),str(Path(tmp)/'missing'),str(report)],check=True,capture_output=True)
+            subprocess.run([str(ROOT/'probe-host'),str(Path(tmp)/'missing'),str(report)],capture_output=True)
             self.assertIn('user_scan=unavailable',report.read_text())
     def test_report_symlink_refused(self):
         with tempfile.TemporaryDirectory() as tmp:

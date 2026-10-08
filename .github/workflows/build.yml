@@ -1,4 +1,4 @@
-name: Build PSCloud diagnostic
+name: Build PSCloud payloads
 on:
   workflow_dispatch:
   push:
@@ -19,10 +19,15 @@ jobs:
           SDK_MAKE=$(find "$RUNNER_TEMP/sdk" -path '*/toolchain/prospero.mk' -print -quit)
           test -n "$SDK_MAKE"
           echo "PS5_PAYLOAD_SDK=${SDK_MAKE%/toolchain/prospero.mk}" >> "$GITHUB_ENV"
-      - name: Build diagnostic ELF
+      - name: Build diagnostic and export ELFs
         run: make -C ps5
       - uses: actions/upload-artifact@v4
         with:
           name: pscloud-probe
           path: ps5/pscloud-probe.elf
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pscloud-export
+          path: ps5/pscloud-export.elf
           if-no-files-found: error
