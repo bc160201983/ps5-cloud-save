@@ -113,20 +113,25 @@ int main(int argc,char **argv) {
         *root="/data/pscloud",*log="/data/pscloud.log";
 #endif
     pscloud_log_open(log);pscloud_notify("Console-managed backup started");
-    struct selection s={0};int result=1;
+    struct selection s={0};int result=1;const char *phase="selection validation";
 #ifndef PSCLOUD_HOST_TEST
     if((kernel_get_fw_version()&0xffff0000U)!=0x11400000U)goto config_error;
 #endif
     if(select_save(config,&s))goto config_error;
+    phase="foreign mount check";
     if(no_foreign_mount()) {pscloud_notify("Backup stopped: unmount other saves first");goto finish;}
+    phase="source directory";
     char sourcepath[1400];snprintf(sourcepath,sizeof sourcepath,"%s/%s/savedata_prospero/%s",home,s.user,s.title);
     int sourceparent=pscloud_open_directory(sourcepath);
     if(sourceparent<0)goto finish;
+    phase="source image";
     char image_name[80];snprintf(image_name,sizeof image_name,"sdimg_%s",s.slot);
     int original=openat(sourceparent,image_name,O_RDONLY | O_NOFOLLOW | O_NONBLOCK);close(sourceparent);
     if(original<0)goto finish;
+    phase="backup root";
     int parent=pscloud_open_directory(root);
     if(parent<0) {close(original);goto finish;}
+    phase="lifecycle lock";
     int lock=openat(parent,".mount.lock",O_CREAT | O_RDWR | O_NOFOLLOW,0600);
     if(lock<0 || flock(lock,LOCK_EX | LOCK_NB)) {
         if(lock>=0)close(lock);
@@ -136,31 +141,39 @@ int main(int argc,char **argv) {
         pscloud_notify("Backup stopped: prior staged mount requires inspection");
         close(lock);close(parent);close(original);goto finish;
     }
-    int initialized=(mkdirat(parent,"staging",0700)==0 || errno==EEXIST) &&
-        (mkdirat(parent,"spool",0700)==0 || errno==EEXIST);
+    phase="staging and spool directories";
+    /* Resolve/open afterward: this validates both existing and newly created
+     * directories without depending on the target's errno translation. */
+    (void)mkdirat(parent,"staging",0700);
+    (void)mkdirat(parent,"spool",0700);
     char stagebase[1400],spoolpath[1400];
     snprintf(stagebase,sizeof stagebase,"%s/staging",root);snprintf(spoolpath,sizeof spoolpath,"%s/spool",root);
-    int stages=initialized?pscloud_open_directory(stagebase):-1;
-    int spool=initialized?pscloud_open_directory(spoolpath):-1;
+    int stages=pscloud_open_directory(stagebase);
+    int spool=pscloud_open_directory(spoolpath);
     char id[33],stage[1500],image[1600],mount[1600],name[128],part[1800],ready[1800];
     int created=0;struct pscloud_mount_state state={0};int part_created=0;
     int marker_created=0,mount_attempted=0,unmounted=0;
     if(stages<0 || spool<0 || random_id(id))goto cleanup;
+    phase="unique staging directory";
     if(mkdirat(stages,id,0700))goto cleanup;
     created=1;
     snprintf(stage,sizeof stage,"%s/%s",stagebase,id);
     snprintf(image,sizeof image,"%s/image",stage);snprintf(mount,sizeof mount,"%s/mount",stage);
     snprintf(name,sizeof name,"ps5-11.40-%s-%s.zip",s.title,id);
     snprintf(part,sizeof part,"%s/%s.part",spoolpath,name);snprintf(ready,sizeof ready,"%s/%s.ready",spoolpath,name);
+    phase="staging file creation";
     int stagefd=pscloud_open_directory(stage);
     if(stagefd<0)goto cleanup;
     int destination=openat(stagefd,"image",O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW,0600);
+    phase="stable source image copy";
     int copied=destination>=0 && copy_image(original,destination)==0;
     if(destination>=0 && close(destination))copied=0;
     if(!copied || mkdirat(stagefd,"mount",0700) || fsync(stagefd)) {close(stagefd);goto cleanup;}
     close(stagefd);close(original);original=-1;
     pscloud_log("INFO","Selection: user=%s title=%s save=%s; staged copy=%s",s.user,s.title,s.slot,image);
+    phase="payload credentials";
     if(pscloud_mount_begin(&state))goto cleanup;
+    phase="active marker publication";
     int marker=openat(parent,".mount-active",O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW,0600);
     if(marker<0)goto cleanup;
     marker_created=1;
@@ -169,21 +182,27 @@ int main(int argc,char **argv) {
     if(close(marker))marker_bad=1;
     if(marker_bad || fsync(parent))goto cleanup;
     mount_attempted=1;
+    phase="staged image mount";
     if(pscloud_mount_copy(&state,image,mount))goto cleanup;
     const char *payload=mount;
 #ifdef PSCLOUD_HOST_TEST
     payload=getenv("PSCLOUD_TEST_PAYLOAD");if(!payload)goto cleanup;
 #endif
+    phase="mounted payload directory";
     int mounted=pscloud_open_directory(payload);
     if(mounted<0)goto cleanup;
     unsigned files=0;unsigned long long bytes=0;
     part_created=1;
+    phase="ZIP export";
     int exported=pscloud_zip_export(mounted,part,&files,&bytes)==0;close(mounted);
     if(!exported)goto cleanup;
+    phase="checked unmount";
     if(pscloud_mount_end(&state,mount))goto cleanup;
     unmounted=1;
+    phase="credential restoration";
     if(pscloud_mount_leave(&state))goto cleanup;
     /* Bind the queue snapshot to its exact user/title/slot in a local sidecar. */
+    phase="queue identity and archive publication";
     char identity[160];snprintf(identity,sizeof identity,"%s.identity",name);
     int meta=openat(spool,identity,O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW,0600);
     if(meta<0)goto cleanup;
@@ -194,6 +213,7 @@ int main(int argc,char **argv) {
     if(bad || rename(part,ready) || fsync(spool))goto cleanup;
     part_created=0;result=0;pscloud_notify("Console backup ready: %u files - original untouched",files);
 cleanup:
+    if(result)pscloud_log("ERROR","Backup stopped at %s: errno=%d",phase,errno);
     if(state.mounted) {
         if(pscloud_mount_end(&state,mount)) {
             result=1;pscloud_log("ERROR","Unmount failed; staged image retained for inspection");
@@ -215,6 +235,7 @@ cleanup:
 config_error:
     result=2;pscloud_notify("Backup stopped: firmware/config/game-closed confirmation invalid");
 finish:
-    if(result==1)pscloud_notify("Console backup failed - original save was not replaced");
+    if(result==1) {pscloud_log("ERROR","Failed phase: %s",phase);pscloud_notify("Console backup failed - original save was not replaced");}
     pscloud_log_close();return result;
 }
+
