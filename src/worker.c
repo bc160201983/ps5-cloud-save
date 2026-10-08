@@ -66,7 +66,11 @@ static int upload(const char *base,const char *user,const char *pass,const char 
     printf("Uploaded: %s\n",object); fflush(stdout);
     return 0;
 }
+#ifdef PSCLOUD_EMBEDDED
+int pscloud_worker_main(int argc,char **argv) {
+#else
 int main(int argc,char **argv) {
+#endif
     if(argc!=3 || (strcmp(argv[2],"--once") && strcmp(argv[2],"--watch"))) {
         fprintf(stderr,"Usage: %s SPOOL --once|--watch\n",argv[0]); return 2;
     }

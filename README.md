@@ -6,6 +6,11 @@ PS5 ELF binaries are available as GitHub Actions artifacts. The top-level upload
 
 ## Added in 0.3
 
+- Next transport work: optional `pscloud-upload.elf` target for direct PS5
+  HTTPS/WebDAV uploads, local configuration and queue watching. Requires separate
+  PS5 curl/OpenSSL libraries; console build/runtime remain unverified.
+  See [ps5/UPLOAD_TEST.md](ps5/UPLOAD_TEST.md). Google Drive is still pending.
+
 - PS5 notifications for start, progress, completion and failure in our diagnostic
   and new mounted-save export payload; timestamped logs in /data/pscloud.log.
 - Firmware 11.40 manual export of an already-mounted save to an uncompressed ZIP.

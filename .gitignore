@@ -5,6 +5,8 @@ __pycache__/
 probe-host
 *.elf
 export-host
+upload-host
+pscloud-upload.conf
 pscloud-export.conf
 *.ready
 *.part
