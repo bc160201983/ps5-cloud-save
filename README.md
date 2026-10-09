@@ -1,4 +1,19 @@
-# PS5 Cloud Save — development milestone 0.11.7
+# PS5 Cloud Save — development milestone 0.11.8
+
+## Version 0.11.8 — Crash portable sharing staged pilot
+
+A separate stage-only sharing tool exports Crash's primary progress/profile
+payloads without console encryption keys or SFO/profile metadata. A strict
+portable ZIP parser checks canonical layout, payload limits, CRC and SHA-256.
+Recipient checks use copies of its own existing containers, preserve metadata
+and sealed keys, and verify that live image hashes remain unchanged. The pilot
+does not replace live containers, add database entries or enable dashboard
+cross-console restore. Other games/extra slots are not supported by this format.
+
+A diagnostic-only payload ran successfully on firmware 7.00 and enumerated save
+folders; no saves were mounted or changed. Native staged export/import and
+cross-console game-load compatibility remain unverified. Host/native builds are
+pending. See [sharing pilot instructions](ps5/SHARING.md).
 
 ## Version 0.11.7 — local-first restore and optional backup housekeeping
 

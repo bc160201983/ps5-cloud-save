@@ -1,0 +1,7 @@
+# Stage-only Crash sharing pilot. No live save replacement is implemented.
+# Export on source FW 11.40. Check on recipient FW 7.00 or 11.40.
+MODE=export
+USER_ID=REPLACE_WITH_HEX_USER_ID
+CONFIRM_GAME_CLOSED=no
+# For MODE=check, copy a verified portable ZIP into /data/pscloud/share/.
+# PACKAGE=portable-crash.zip

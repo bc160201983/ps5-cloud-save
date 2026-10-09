@@ -23,7 +23,7 @@ jobs:
           test -f "$SDK/toolchain/prospero.mk"
           echo "PS5_PAYLOAD_SDK=$SDK" >> "$GITHUB_ENV"
       - name: Build direct uploader
-        run: make -C ps5 upload recovery backup dashboard
+        run: make -C ps5 upload recovery backup dashboard share
       - name: Package uploader and trusted CA bundle
         run: |
           mkdir -p upload-package
@@ -38,6 +38,8 @@ jobs:
           mkdir -p dashboard-package
           cp ps5/pscloud-dashboard.elf ps5/DASHBOARD.md VERSION dashboard-package/
           cp "$CA" dashboard-package/pscloud-ca.pem
+          mkdir -p share-package
+          cp ps5/pscloud-share.elf ps5/pscloud-share.conf.example ps5/SHARING.md VERSION share-package/
       - uses: actions/upload-artifact@v4
         with:
           name: pscloud-upload
@@ -57,6 +59,11 @@ jobs:
         with:
           name: pscloud-dashboard
           path: dashboard-package/
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pscloud-share
+          path: share-package/
           if-no-files-found: error
   host-tests:
     runs-on: ubuntu-24.04

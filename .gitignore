@@ -32,3 +32,6 @@ google.conf
 google.conf.new
 pscloud-google.conf
 *oauth-client*.json
+share-host
+portable-host.so
+pscloud-share.conf

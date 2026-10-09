@@ -3,7 +3,7 @@ $(error Set PS5_PAYLOAD_SDK to the installed ps5-payload SDK directory)
 endif
 include $(PS5_PAYLOAD_SDK)/toolchain/prospero.mk
 
-.PHONY: all clean deploy upload recovery backup dashboard
+.PHONY: all clean deploy upload recovery backup dashboard share
 all: pscloud-probe.elf pscloud-export.elf
 pscloud-probe.elf: probe.c common/log.c common/log.h
 	$(CC) -O2 -Wall -Wextra -Werror -o $@ probe.c common/log.c
@@ -19,6 +19,9 @@ pscloud-upload.elf: upload.c ../src/worker.c common/log.c common/log.h common/cl
 recovery: pscloud-download.elf pscloud-restore.elf
 backup: pscloud-backup.elf
 dashboard: pscloud-dashboard.elf
+share: pscloud-share.elf
+pscloud-share.elf: share.c backup.c common/portable.c common/portable.h common/mount.c common/restore.c common/zip.c common/log.c common/snapshot.c common/savemeta.c
+	$(CC) -O2 -Wall -Wextra -Werror -DPSCLOUD_BACKUP_EMBEDDED $$($(CURL_CONFIG) --cflags) -o $@ share.c backup.c common/portable.c common/mount.c common/restore.c common/zip.c common/log.c common/snapshot.c common/savemeta.c $$($(CURL_CONFIG) --static-libs) -lkernel -lSceFsInternalForVsh
 ui.h: ui.html ../VERSION ../tools/embed_ui.py
 	python3 ../tools/embed_ui.py ui.html ui.h ../VERSION
 pscloud-dashboard.elf: dashboard.c ui.h backup.c download.c ../src/worker.c common/managed.c common/managed.h common/mount.c common/restore.c common/zip.c common/log.c common/cloud.c common/snapshot.c common/appmeta.c common/appmeta.h common/bundle.c common/bundle.h common/savemeta.c common/savemeta.h common/google.c common/google.h common/transfer.h
