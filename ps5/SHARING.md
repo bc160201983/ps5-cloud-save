@@ -6,6 +6,10 @@ Export and check modes accept both 7.00 and 11.40. Restore is deliberately gated
 to 11.40. This release adds a manual live restore path, not dashboard sharing.
 The new live path has not been console/game-load verified. Do not treat the
 older staged reverse-direction test below as proof that it works in-game.
+All 114 host tests and native builds passed. Native 7.00 export and 11.40 staged
+import passed on 2026-10-09, including both clean unmounts, payload checksum,
+unchanged recipient metadata/key and unchanged live-image checks. No live
+replacement was run. Receiver configuration was left in check-only mode.
 
 1. Close Crash on both consoles. On the 7.00 source, use MODE=export with its
    own USER_ID. Send the sharing ELF and require success in share.log.

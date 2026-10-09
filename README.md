@@ -9,7 +9,11 @@ confirmation, retains rollback copies, journals replacement and attempts verifie
 rollback on a partial failure. Extra slots remain untouched. No automatic live
 replacement is performed by deployment, export or check modes.
 
-This new restore path is implemented but not yet console/game-load verified.
+All 114 host tests and native builds passed. On 2026-10-09, export from the
+7.00 console and staged import into the 11.40 console both passed: payload
+checksums, recipient metadata and sealed keys were preserved, both slots
+unmounted cleanly, and all live saves stayed unchanged.
+This new live restore path is implemented but not yet console/game-load verified.
 The previous reverse-direction staged test is not evidence for a live restore.
 Dashboard sharing is still unavailable. See [manual sharing](ps5/SHARING.md).
 
