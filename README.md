@@ -1,4 +1,12 @@
-# PS5 Cloud Save — development milestone 0.6.0
+# PS5 Cloud Save — development milestone 0.6.1
+
+### 0.6.1 validation follow-up
+
+Whole-game console export and Koofr ZIP upload are verified: both encrypted
+images and the manifest pass cloud checksum and ZIP CRC checks. Snapshot dates
+are visible in the dashboard. The first repeat test found duplicate archives;
+additional deduplication diagnostics are included while this is investigated.
+Do not assume whole-game duplicate skipping is console-validated yet.
 
 ## Version 0.6.0
 

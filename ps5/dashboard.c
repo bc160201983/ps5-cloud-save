@@ -237,6 +237,7 @@ static void action(int sock,const char *path,const char *form) {
     if(!strcmp(path,"/api/backup")) {
         if(parameter(form,"closed",closed,sizeof closed) || strcmp(closed,"yes")) {message(sock,400,"Close the game and confirm before backup");return;}
         if(!strcmp(chosen.slot,"WholeGame")) {
+            pscloud_log_open(logpath);
 #ifndef PSCLOUD_HOST_TEST
             if((kernel_get_fw_version()&0xffff0000U)!=0x11400000U) {message(sock,400,"Whole-game backup requires validated firmware 11.40");return;}
 #endif

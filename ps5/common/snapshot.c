@@ -61,25 +61,32 @@ int pscloud_file_hash(int fd,char hex[65]) {
     for(unsigned i=0;i<32;i++)snprintf(hex+2*i,3,"%02x",digest[i]);
     return 0;
 }
-int pscloud_snapshot_exists(int dir,const struct pscloud_snapshot *wanted) {
+int pscloud_snapshot_exists_checked(int dir,const struct pscloud_snapshot *wanted,struct pscloud_dedup_stats *stats) {
+    memset(stats,0,sizeof *stats);
     int scan=openat(dir,".",O_RDONLY | O_DIRECTORY | O_NOFOLLOW);if(scan<0)return -1;
     DIR *d=fdopendir(scan);if(!d) {close(scan);return -1;}
     struct dirent *e;int same=0;
     while((e=readdir(d))) {
         size_t n=strlen(e->d_name);
         if(n<10 || n>200 || strcmp(e->d_name+n-9,".identity"))continue;
+        stats->scanned++;
         struct pscloud_snapshot s={0};
-        if(pscloud_snapshot_read(dir,e->d_name,&s) || strcmp(s.user,wanted->user) || strcmp(s.title,wanted->title) ||
+        if(pscloud_snapshot_read(dir,e->d_name,&s)) {stats->invalid++;continue;}
+        if(strcmp(s.user,wanted->user) || strcmp(s.title,wanted->title) ||
            strcmp(s.slot,wanted->slot) || strcmp(s.sha256,wanted->sha256))continue;
+        stats->matched++;
         char file[256];int fd=-1;
         for(unsigned i=0;i<2 && fd<0;i++) {
             snprintf(file,sizeof file,"%.*s.%s",(int)n-9,e->d_name,i?"sent":"ready");
             fd=openat(dir,file,O_RDONLY | O_NOFOLLOW | O_NONBLOCK);
         }
-        char hash[65];if(fd>=0) {if(!pscloud_file_hash(fd,hash) && !strcmp(hash,wanted->sha256))same=1;close(fd);}
+        char hash[65];if(fd>=0) {if(pscloud_file_hash(fd,hash))stats->hash_failed++;else if(!strcmp(hash,wanted->sha256))same=1;else stats->different++;close(fd);}else stats->missing++;
         if(same)break;
     }
     closedir(d);return same;
+}
+int pscloud_snapshot_exists(int dir,const struct pscloud_snapshot *wanted) {
+    struct pscloud_dedup_stats stats;return pscloud_snapshot_exists_checked(dir,wanted,&stats);
 }
 int pscloud_snapshot_folder(const struct pscloud_snapshot *s,char *folder,unsigned size) {
     if(!pscloud_snapshot_valid(s))return -1;
