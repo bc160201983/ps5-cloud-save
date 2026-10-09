@@ -12,6 +12,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <ctype.h>
+#include <openssl/evp.h>
 #include "../ps5/common/snapshot.h"
 
 /* Input contract: producer publishes an immutable archive by atomic rename
@@ -30,6 +31,33 @@ static int valid(const char *s) {
     return s[0]!='.';
 }
 struct remote_body {char text[1025];size_t size;};
+struct remote_hash {EVP_MD_CTX *ctx;curl_off_t size,limit;};
+static size_t hash_remote(char *p,size_t a,size_t b,void *ctx) {
+    struct remote_hash *h=ctx;if(b && a>(size_t)-1/b)return 0;size_t n=a*b;
+    if((curl_off_t)n<0 || (curl_off_t)n>h->limit-h->size || EVP_DigestUpdate(h->ctx,p,n)!=1)return 0;
+    h->size+=(curl_off_t)n;return n;
+}
+/* 1 verified, 0 complete but different/missing, -1 cannot establish. Streaming
+ * readback costs bandwidth but prevents a successful PUT from committing a
+ * corrupt archive. No full second copy is allocated in console memory. */
+static int verify_remote(const char *url,const char *user,const char *pass,const char *ca,
+                         const char *expected,curl_off_t size) {
+    CURL *c=curl_easy_init();EVP_MD_CTX *ctx=EVP_MD_CTX_new();
+    if(!c || !ctx) {if(c)curl_easy_cleanup(c);EVP_MD_CTX_free(ctx);return -1;}
+    if(EVP_DigestInit_ex(ctx,EVP_sha256(),NULL)!=1) {curl_easy_cleanup(c);EVP_MD_CTX_free(ctx);return -1;}
+    struct remote_hash body={ctx,0,size};
+    curl_easy_setopt(c,CURLOPT_URL,url);curl_easy_setopt(c,CURLOPT_PROTOCOLS_STR,"https");
+    curl_easy_setopt(c,CURLOPT_USERNAME,user);curl_easy_setopt(c,CURLOPT_PASSWORD,pass);
+    curl_easy_setopt(c,CURLOPT_CONNECTTIMEOUT,15L);curl_easy_setopt(c,CURLOPT_TIMEOUT,300L);curl_easy_setopt(c,CURLOPT_NOSIGNAL,1L);
+    curl_easy_setopt(c,CURLOPT_WRITEFUNCTION,hash_remote);curl_easy_setopt(c,CURLOPT_WRITEDATA,&body);
+    if(ca && *ca)curl_easy_setopt(c,CURLOPT_CAINFO,ca);
+    CURLcode rc=curl_easy_perform(c);long status=0;curl_easy_getinfo(c,CURLINFO_RESPONSE_CODE,&status);curl_easy_cleanup(c);
+    unsigned char digest[32];unsigned length=0;int final=EVP_DigestFinal_ex(ctx,digest,&length);EVP_MD_CTX_free(ctx);
+    if(status==404 && rc==CURLE_OK)return 0;
+    if(rc!=CURLE_OK || status!=200 || final!=1 || length!=32)return -1;
+    char hash[65];for(unsigned i=0;i<32;i++)snprintf(hash+2*i,3,"%02x",digest[i]);
+    return body.size==size && !strcmp(hash,expected)?1:0;
+}
 static size_t collect_identity(char *p,size_t a,size_t b,void *ctx) {
     struct remote_body *r=ctx;if(b && a>1024/b)return 0;
     size_t n=a*b;if(n>1024-r->size)return 0;
@@ -57,7 +85,7 @@ static int cloud_copy(const char *archive,const char *identity,const char *user,
     if(rc!=CURLE_OK || (status!=200 && status!=404))return -1;
     if(status==404)return 0;
     if(length<0)return -1;
-    return length==size?1:0;
+    return length==size?verify_remote(archive,user,pass,ca,s->sha256,size):0;
 }
 static int collection(const char *url,const char *user,const char *pass,const char *ca) {
     CURL *c=curl_easy_init();if(!c)return 1;
@@ -99,6 +127,7 @@ static int upload(const char *base,const char *user,const char *pass,const char 
     struct stat st;
     if(fd<0) return 1;
     if(fstat(fd,&st)||!S_ISREG(st.st_mode)||st.st_size<=0) {close(fd); return 1;}
+    char local_hash[65];if(pscloud_file_hash(fd,local_hash)) {close(fd);return 1;}
     FILE *f=fdopen(fd,"rb");
     if(!f) {close(fd); return 1;}
     CURL *c=curl_easy_init();
@@ -165,6 +194,9 @@ static int upload(const char *base,const char *user,const char *pass,const char 
     if(rc!=CURLE_OK || status<200 || status>=300) {
         fprintf(stderr,"Upload retained for retry: %s (transport=%d, HTTP=%ld)\n",object,rc,status);
         return 1;
+    }
+    if(verify_remote(url,user,pass,ca,local_hash,(curl_off_t)st.st_size)!=1) {
+        fprintf(stderr,"Remote archive verification failed; local backup retained for retry: %s\n",object);return 1;
     }
     if(structured) {
         char manifest[4096];

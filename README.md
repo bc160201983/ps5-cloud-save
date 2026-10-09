@@ -1,4 +1,18 @@
-# PS5 Cloud Save — development milestone 0.11.0
+# PS5 Cloud Save — development milestone 0.11.1
+
+## Version 0.11.1 — verify cloud contents before queue completion
+
+- WebDAV uploads now stream the uploaded archive back through SHA-256 before
+  publishing the identity commit or marking the local queue entry sent. Failed
+  or corrupt readbacks retain the local backup. Existing-cloud deduplication also
+  verifies contents, not just the metadata and byte count. This deliberately
+  costs additional bandwidth; no full readback copy is allocated in memory.
+- Browser startup can load its page during another operation and waits using the
+  lightweight health endpoint. Old game-list responses cannot overwrite a newer
+  game selection. No automatic background uploads or save operations are added.
+- v0.11.0 passed all 96 host tests and native PS5 builds. New corruption/retry
+  fixtures and v0.11.1 builds are pending. No live saves/cloud files have been
+  modified or new payload deployed during this development work.
 
 ## Version 0.11.0 — responsive requests and Google sign-in foundation
 
@@ -17,7 +31,7 @@
   TV/Limited Input OAuth client is needed for real sign-in validation. Resumable
   uploads, provider switching, verified listings/downloads and transfer progress
   and retries still need implementation. This release is a sign-in foundation.
-- Validation in progress: host fixtures cover idle sockets, a blocked cloud list,
+- All 96 host tests and native builds passed: idle sockets, a blocked cloud list,
   Google approval/denial, scope checks, private persistence and unchanged WebDAV.
   Native threading and live Google login are not yet console-tested.
 - Previous milestone: all 90 host tests and native v0.10.1 builds passed. Crash's

@@ -27,6 +27,7 @@ class WorkerTest(unittest.TestCase):
         self.manifest_status = 201
         self.collections=set()
         self.puts=[]
+        self.corrupt_upload=False
         parent = self
         class Handler(http.server.BaseHTTPRequestHandler):
             def do_MKCOL(self):
@@ -74,7 +75,7 @@ class WorkerTest(unittest.TestCase):
                     status=parent.manifest_status if self.path.endswith('.identity') else parent.status
                     if status == 201:
                         parent.puts.append(self.path)
-                        parent.objects[self.path] = body
+                        parent.objects[self.path] = (bytes([body[0]^1])+body[1:]) if parent.corrupt_upload and body and not self.path.endswith('.identity') else body
                     self.send_response(status)
                 self.end_headers()
             def log_message(self, *args): pass
@@ -120,6 +121,14 @@ class WorkerTest(unittest.TestCase):
         p = self.job()
         self.assertEqual(self.run_worker(PSCLOUD_PASSWORD='wrong').returncode, 1)
         self.assertTrue(p.exists())
+    def test_successful_http_upload_with_corrupt_content_keeps_local_backup(self):
+        p=self.job();original=p.read_bytes();self.corrupt_upload=True
+        self.assertEqual(self.run_worker().returncode,1)
+        self.assertEqual(p.read_bytes(),original)
+        self.assertFalse(p.with_name(p.name[:-6]+'.sent').exists())
+        self.corrupt_upload=False
+        self.assertEqual(self.run_worker().returncode,0)
+        self.assertEqual(next(iter(self.objects.values())),original)
     def test_untrusted_tls_rejected(self):
         p = self.job()
         self.assertEqual(self.run_worker(PSCLOUD_CA_BUNDLE='').returncode, 1)
@@ -149,6 +158,21 @@ class WorkerTest(unittest.TestCase):
         p=self.structured_job();self.manifest_status=503
         self.assertEqual(self.run_worker().returncode,1);self.assertTrue(p.exists())
         self.manifest_status=201;self.assertEqual(self.run_worker().returncode,0)
+
+    def test_corrupt_remote_copy_is_reuploaded_instead_of_skipped(self):
+        p=self.structured_job();original=p.read_bytes()
+        self.assertEqual(self.run_worker().returncode,0)
+        sent=p.with_name(p.name[:-6]+'.sent');sent.rename(p)
+        remote=next(k for k in self.objects if not k.endswith('.identity'))
+        self.objects[remote]=bytes([original[0]^1])+original[1:]
+        self.puts.clear()
+        self.assertEqual(self.run_worker().returncode,0)
+        self.assertIn(remote,self.puts);self.assertEqual(self.objects[remote],original)
+
+    def test_corrupt_upload_does_not_publish_identity_commit(self):
+        p=self.structured_job();self.corrupt_upload=True
+        self.assertEqual(self.run_worker().returncode,1);self.assertTrue(p.exists())
+        self.assertFalse(any(k.endswith('.identity') for k in self.objects))
 
     def test_identity_traversal_rejected(self):
         p=self.structured_job();meta=self.spool/(p.name[:-6]+'.identity')

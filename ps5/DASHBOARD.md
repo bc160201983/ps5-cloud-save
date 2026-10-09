@@ -1,6 +1,18 @@
 # PSCloud dashboard
 
-## Current behavior — 0.10.0
+## Current behavior — 0.11.1
+
+Dashboard HTML and authenticated `/api/health` remain available while a slow
+operation runs. Save/cloud operations are still serialized: competing API calls
+return a busy response immediately. Up to eight bounded client threads are used;
+idle browser sockets no longer block all requests. Cloud lists have a 60-second
+browser cache; Refresh bypasses it. WebDAV upload completion requires SHA-256
+readback of the remote archive before committing the queue entry.
+
+Cloud Settings includes a Google device-sign-in developer preview. This is NOT
+an active Google transfer provider yet: a registered TV/device OAuth client and
+real authorization tests are needed. WebDAV stays active and its configuration
+is untouched. See [Google integration status](GOOGLE_DRIVE.md).
 
 Choose any discovered PS5/PPSA game and user, select Whole game, close the game
 and confirm, then Back up now. All active save containers are included, not only

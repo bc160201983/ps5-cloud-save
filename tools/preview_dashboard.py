@@ -28,10 +28,12 @@ class Handler(BaseHTTPRequestHandler):
                        'url':'https://your-nextcloud.example/remote.php/dav/files/you/PS5Backups','username':'Your Nextcloud account'})
         elif path=='/api/preferences':
             self.send({'auto_upload':True,'activity_refresh':True,'game_close_available':False,'sharing_available':False})
+        elif path=='/api/health':self.send({'busy':False})
+        elif path=='/api/google/status':self.send({'configured':False,'authorized':False,'pending':False,'transfers_available':False})
         elif path=='/api/queue':
             self.send({'items':[],'count':0,'truncated':False})
         elif path=='/api/games':
-            self.send({'games':[{'user':'1eb70483','title':'PPSA02433','slot':slot,
+            self.send({'games':[{'user':'00000001','title':'PPSA02433','slot':slot,
                                  'name':'Crash Bandicoot 4','supported':True}
                                 for slot in ['PlayerSaveSlot0Save','PlayerSaveProfileSaveData']]})
         elif path=='/api/backups':
@@ -47,6 +49,8 @@ class Handler(BaseHTTPRequestHandler):
         n=int(self.headers.get('Content-Length','0'))
         if n>8192:self.send({'message':'Request too large'},status=400);return
         self.rfile.read(n)
+        if self.path.startswith('/api/google/'):
+            self.send({'message':'Design preview only. Google sign-in requires the native payload and a registered app.'},status=501);return
         self.send({'ok':True,'message':'Preview only — no saves, settings or cloud files were changed.'})
 
 if __name__=='__main__':
