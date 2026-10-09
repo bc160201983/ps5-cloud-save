@@ -112,6 +112,23 @@ class GenericSharingTests(unittest.TestCase):
             finally:os.environ.pop('PSCLOUD_TEST_UNMOUNT_FAIL')
             self.assertTrue((f[1]/'.mount-active').exists())
 
+    def test_system_memory_layout_without_identity_fields_is_supported(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            f=self.fixture(Path(tmp),slots=('sce_sdmemory',))
+            sfo=f[4]/'sce_sdmemory/sce_sys/param.sfo'
+            # Valid SFO table with one non-identity field, not a truncated file.
+            key=b'TITLE\0';value=b'Memory\0'
+            sfo.write_bytes(struct.pack('<IIIII',0x46535000,0x101,36,36+len(key),1)+struct.pack('<HHIII',0,0x0204,len(value),len(value),0)+key+value)
+            before=sfo.read_bytes()
+            self.assertEqual(self.run_share(f,1,portable(slots=('sce_sdmemory',)))[0],0)
+            self.assertEqual(sfo.read_bytes(),before)
+
+    def test_normal_slot_missing_identity_still_refused(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            f=self.fixture(Path(tmp),slots=('save1',));sfo=f[4]/'save1/sce_sys/param.sfo'
+            sfo.write_bytes(struct.pack('<IIIII',0x46535000,0x101,20,20,0))
+            self.assertNotEqual(self.run_share(f,1,portable(slots=('save1',)))[0],0)
+
     def test_restore_and_partial_rollback_retain_recovery_copies(self):
         for failure in (False,True):
             with self.subTest(failure=failure),tempfile.TemporaryDirectory() as tmp:

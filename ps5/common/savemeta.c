@@ -17,7 +17,7 @@ static int present(int dir,const char *name) {
     struct dirent *e;int found=0;while((e=readdir(d)))if(!strcmp(e->d_name,name)) {found=1;break;}
     closedir(d);return found;
 }
-int pscloud_save_meta_read(int payload,struct pscloud_save_meta *meta,char hash[65]) {
+static int read_meta(int payload,struct pscloud_save_meta *meta,char hash[65],unsigned required) {
     memset(meta,0,sizeof *meta);
     if(!present(payload,"sce_sys"))return -1;
     int dir=openat(payload,"sce_sys",O_RDONLY | O_DIRECTORY | O_NOFOLLOW);if(dir<0)return -1;
@@ -51,8 +51,10 @@ int pscloud_save_meta_read(int payload,struct pscloud_save_meta *meta,char hash[
         }
     }
     free(data);pscloud_log("INFO","Recovery SFO identity: title_field=%s directory_field=%s account_field=%s",*meta->title?"present":"missing",*meta->slot?"present":"missing",meta->account_size?"present":"missing");
-    return bad || seen!=7?-1:0;
+    return bad || seen!=required?-1:0;
 }
+int pscloud_save_meta_read(int payload,struct pscloud_save_meta *meta,char hash[65]) {return read_meta(payload,meta,hash,7);}
+int pscloud_save_meta_read_memory(int payload,struct pscloud_save_meta *meta,char hash[65]) {return read_meta(payload,meta,hash,0);}
 int pscloud_save_meta_matches(const struct pscloud_save_meta *m,const char *title,const char *slot) {
     return !strcmp(m->title,title) && !strcmp(m->slot,slot) && m->account_size==8;
 }

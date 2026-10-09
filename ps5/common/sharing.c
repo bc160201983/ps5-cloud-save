@@ -151,6 +151,14 @@ static int extract_payload(int dir,const struct entry *archive) {
     free(files);return bad?-1:fsync(dir);
 }
 static int order(const void *a,const void *b) {return strcmp(a,b);}
+static int metadata_read(int dir,const char *title,const char *slot,struct pscloud_save_meta *meta,char hash[65]) {
+    if(!pscloud_save_meta_read(dir,meta,hash))return pscloud_save_meta_matches(meta,title,slot)?0:-1;
+    if(strcmp(slot,"sce_sdmemory")||pscloud_save_meta_read_memory(dir,meta,hash))return -1;
+    /* Identity is the selected local user's existing PPSA directory, matching
+     * installed contentVersion, exact system slot and its original sealed key.
+     * The SFO is still required, bounded, structurally parsed and preserved. */
+    pscloud_log("INFO","Validated system-memory metadata; identity anchored to existing local game/user container");return 0;
+}
 static int inventory(int source,struct package *p) {
     int scan=openat(source,".",O_RDONLY|O_DIRECTORY|O_NOFOLLOW);DIR *d=scan<0?NULL:fdopendir(scan);if(!d) {if(scan>=0)close(scan);return -1;}
     struct dirent *e;int bad=0;
@@ -242,10 +250,10 @@ int pscloud_share_game(const char *home,const char *root,const char *appmeta,con
         char fixture[1800];const char *fixtures=getenv("PSCLOUD_TEST_GENERIC_PAYLOADS");if(fixtures) {snprintf(fixture,sizeof fixture,"%s/%s",fixtures,p->slots[i]);payload=fixture;}
 #endif
         int dir=pscloud_open_directory(payload);struct pscloud_save_meta meta;char metadata[65],after[65];
-        bad=dir<0||pscloud_save_meta_read(dir,&meta,metadata)||!pscloud_save_meta_matches(&meta,title,p->slots[i]);
-        if(!bad&&i)bad=meta.account_size!=first.account_size||memcmp(meta.account,first.account,meta.account_size);
-        if(!bad&&!i)first=meta;
-        if(!bad&&mode)bad=extract_payload(dir,&p->entries[i+1])||pscloud_save_meta_read(dir,&meta,after)||strcmp(metadata,after);
+        bad=dir<0||metadata_read(dir,title,p->slots[i],&meta,metadata);
+        if(!bad&&meta.account_size&&first.account_size)bad=meta.account_size!=first.account_size||memcmp(meta.account,first.account,meta.account_size);
+        if(!bad&&meta.account_size&&!first.account_size)first=meta;
+        if(!bad&&mode)bad=extract_payload(dir,&p->entries[i+1])||metadata_read(dir,title,p->slots[i],&meta,after)||strcmp(metadata,after);
         if(!bad&&!mode) {unsigned files=0;unsigned long long bytes=0;snprintf(path,sizeof path,"%s/slot-%u.zip",stage_path,i);bad=pscloud_zip_export(dir,path,&files,&bytes);}
         if(dir>=0)close(dir);
         if(bad)goto done;

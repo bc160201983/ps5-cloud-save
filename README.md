@@ -12,8 +12,12 @@ are distinct from portable packages and are not accepted for sharing.
 
 Imports require the same PPSA ID and installed contentVersion, existing receiver
 slots with the same names and at least the source container capacity, and valid
-local SFO identity/account. Recipient metadata and keys are preserved. Additional
-recipient slots remain unchanged. All payload work occurs on copied containers;
+local SFO identity/account. Recipient metadata and keys are preserved.
+System-memory slots (sce_sdmemory) with structurally valid SFO but no normal
+identity fields are anchored to the existing local game/user container and
+installed version; their SFO and sealed keys are preserved. This is save-type
+handling, not a per-game exception. Normal slots still require full SFO identity.
+Additional recipient slots remain unchanged. All payload work occurs on copied containers;
 live replacement rechecks originals and retains before-N.img rollback with a
 durable safety journal. A partial failure attempts verified rollback. A power
 loss across multiple slot renames is not atomic; an uncertain journal blocks
