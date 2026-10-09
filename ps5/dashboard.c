@@ -294,7 +294,7 @@ static void import_pc(int sock,const char *query,const unsigned char *data,size_
     if(!EVP_Digest(data,size,digest,&digest_size,EVP_sha256(),NULL) || digest_size!=32) {message(sock,500,"Cannot verify ZIP checksum");return;}
     for(unsigned i=0;i<32;i++)snprintf(s.sha256+2*i,3,"%02x",digest[i]);
     char policy[16]="ask";
-    (void)parameter(query,"policy",policy,sizeof policy);
+    if(parameter(query,"policy",policy,sizeof policy))strcpy(policy,"ask");
     if(strcmp(policy,"ask") && strcmp(policy,"check") && strcmp(policy,"skip") && strcmp(policy,"replace") && strcmp(policy,"new")) {message(sock,400,"Invalid duplicate policy");return;}
     char catalog[1400],matching[128]={0};struct pscloud_snapshot match={0};struct pscloud_dedup_stats stats;
     snprintf(catalog,sizeof catalog,"%s/spool",root);int catalog_fd=pscloud_open_directory(catalog);
