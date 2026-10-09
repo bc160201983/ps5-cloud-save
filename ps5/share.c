@@ -77,7 +77,7 @@ int main(int argc,char **argv) {
     int check=!strcmp(s.mode,"check");if((!check&&fw!=0x11400000U)||(check&&fw!=0x11400000U&&fw!=0x07000000U))return 2;
     (void)mkdir(root,0700);char logpath[1400];snprintf(logpath,sizeof logpath,"%s/share.log",root);pscloud_log_open(logpath);
     pscloud_notify("Crash portable sharing %s - staged copies only; live saves will not be replaced",s.mode);
-    int result=1,parent=-1,lock=-1,source=-1,stage=-1,shared=-1,original[2]={-1,-1},marker=0;
+    int result=1,parent=-1,lock=-1,source=-1,stage=-1,shared=-1,original[2]={-1,-1},marker=0,attempted=0,unmounted=0;
     struct pscloud_mount_state state={0};struct stat before[2];char baseline[2][65],id[33],stage_name[64],stage_path[1600],mount[1800]={0},source_path[1400],package_path[1600];
     unsigned char *package=NULL;size_t package_size=0;struct pscloud_portable portable={0};struct pscloud_save_meta first_meta={0};
     parent=pscloud_open_directory(root);if(parent<0)goto done;
@@ -97,7 +97,8 @@ int main(int argc,char **argv) {
         int bad=out<0||lseek(original[i],0,SEEK_SET)<0||pscloud_copy_image(original[i],out);if(out>=0&&close(out))bad=1;if(bad)goto done;
         snprintf(image,sizeof image,"%s/%s",stage_path,name);snprintf(name,sizeof name,"mount-%u",i);if(mkdirat(stage,name,0700))goto done;snprintf(mount,sizeof mount,"%s/%s",stage_path,name);
         int journal=openat(parent,".mount-active",O_WRONLY|O_CREAT|O_EXCL|O_NOFOLLOW,0600);if(journal<0)goto done;
-        marker=1;size_t length=strlen(mount);bad=write(journal,mount,length)!=(ssize_t)length||fsync(journal);if(close(journal))bad=1;if(bad||fsync(parent)||pscloud_mount_begin(&state))goto done;
+        marker=1;attempted=0;unmounted=0;size_t length=strlen(mount);bad=write(journal,mount,length)!=(ssize_t)length||fsync(journal);if(close(journal))bad=1;if(bad||fsync(parent)||pscloud_mount_begin(&state))goto done;
+        attempted=1;
         if(pscloud_mount_copy(&state,image,mount))goto done;
         const char *payload=mount;
 #ifdef PSCLOUD_HOST_TEST
@@ -117,7 +118,8 @@ int main(int argc,char **argv) {
             if(!bad)bad=renameat(dir,".pscloud-share.part",dir,"ue4savegame.dpx.sav")||fsync(dir);
             if(!bad)bad=payload_verify(dir,portable.payload[i],portable.size[i])||pscloud_save_meta_read(dir,&meta,after_hash)||strcmp(metadata_hash,after_hash);}
         pscloud_log("INFO","Portable stage %u: closing payload directory before unmount",i);if(dir>=0)close(dir);if(bad)goto done;
-        if(pscloud_mount_end(&state,mount)||pscloud_mount_leave(&state))goto done;
+        if(pscloud_mount_end(&state,mount))goto done;
+        unmounted=1;if(pscloud_mount_leave(&state))goto done;
         if(unlinkat(parent,".mount-active",0)||fsync(parent))goto done;
         marker=0;
         int copy=open(image,O_RDONLY|O_NOFOLLOW|O_NONBLOCK);unsigned char a[0x60],b[0x60];
@@ -129,9 +131,9 @@ int main(int argc,char **argv) {
         pscloud_log("EVENT","PORTABLE_PACKAGE=%s",package_path);}
     pscloud_log("EVENT","LIVE_SAVES_UNCHANGED=yes; staged sharing %s passed; stage=%s",s.mode,stage_path);result=0;
 done:
-    if(state.mounted) {if(pscloud_mount_end(&state,mount))result=1;}
+    if(state.mounted) {if(pscloud_mount_end(&state,mount))result=1;else unmounted=1;}
     if(pscloud_mount_leave(&state))result=1;
-    if(marker&&!state.mounted&&!state.credentials_saved&&parent>=0) {if(unlinkat(parent,".mount-active",0)||fsync(parent))result=1;}
+    if(marker&&(!attempted||unmounted)&&!state.mounted&&!state.credentials_saved&&parent>=0) {if(unlinkat(parent,".mount-active",0)||fsync(parent))result=1;}
     for(unsigned i=0;i<2;i++)if(original[i]>=0)close(original[i]);
     free(package);if(shared>=0)close(shared);if(stage>=0)close(stage);if(source>=0)close(source);if(lock>=0)close(lock);if(parent>=0)close(parent);
     pscloud_notify(result?"Portable sharing pilot failed - originals not committed; inspect share.log and staging marker":"Portable sharing pilot passed - live saves unchanged; recipient restore is not enabled yet");pscloud_log_close();return result;

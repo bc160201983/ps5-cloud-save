@@ -64,6 +64,18 @@ class PortableTests(unittest.TestCase):
         (path/'sce_sys/param.sfo').write_bytes(struct.pack('<IIIII',0x46535000,0x101,offset,offset+len(keys),len(fields))+b''.join(entries)+keys+values)
         (path/'ue4savegame.dpx.sav').write_bytes(b'old recipient payload')
 
+    def test_failed_mount_preserves_marker_and_originals(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base=Path(tmp);home=base/'home';root=base/'root';root.mkdir()
+            live=home/'1eb70483/savedata_prospero/PPSA02433';live.mkdir(parents=True)
+            original=b'\x02'+b'\0'*8191
+            for slot in SLOTS:(live/('sdimg_'+slot)).write_bytes(original)
+            config=base/'config';config.write_text('MODE=export\nUSER_ID=1eb70483\nCONFIRM_GAME_CLOSED=yes\n')
+            r=subprocess.run([str(ROOT/'share-host'),str(config),str(home),str(root)],env=dict(os.environ,PSCLOUD_TEST_MOUNT_FAIL='1'),capture_output=True,timeout=10)
+            self.assertNotEqual(r.returncode,0);self.assertTrue((root/'.mount-active').exists())
+            for slot in SLOTS:self.assertEqual((live/('sdimg_'+slot)).read_bytes(),original)
+            self.assertFalse(list((root/'share').glob('*.zip')))
+
     def test_export_and_recipient_check_preserve_live_images_and_account_metadata(self):
         with tempfile.TemporaryDirectory() as tmp:
             base=Path(tmp);home=base/'home';root=base/'root';root.mkdir()
