@@ -64,8 +64,9 @@ static int safe_word(const char *s,size_t max) {
     return 1;
 }
 static int valid_archive(const char *s) {
-    const char *prefix="ps5-11.40-PPSA02433-";size_t n=strlen(prefix);
-    if(strlen(s)!=n+36 || strncmp(s,prefix,n) || strcmp(s+n+32,".zip"))return 0;
+    const char *prefix="ps5-11.40-";size_t n=20;
+    if(strlen(s)!=n+36 || strncmp(s,prefix,strlen(prefix)) || s[19]!='-' || strcmp(s+n+32,".zip"))return 0;
+    char title[10];memcpy(title,s+10,9);title[9]=0;if(!pscloud_title_valid(title))return 0;
     for(unsigned i=0;i<32;i++)if(!strchr("0123456789abcdef",s[n+i]))return 0;
     return 1;
 }
@@ -102,8 +103,9 @@ static int selection(const char *form,struct pscloud_snapshot *s) {
     memset(s,0,sizeof *s);
     if(parameter(form,"user",s->user,sizeof s->user) || parameter(form,"title",s->title,sizeof s->title) || parameter(form,"slot",s->slot,sizeof s->slot))return -1;
     memset(s->sha256,'0',64);s->sha256[64]=0;
-    return !pscloud_snapshot_valid(s) || strcmp(s->title,"PPSA02433") ||
-        (strcmp(s->slot,"PlayerSaveSlot0Save") && strcmp(s->slot,"PlayerSaveProfileSaveData") && strcmp(s->slot,"WholeGame"))?-1:0;
+    if(!pscloud_snapshot_valid(s))return -1;
+    if(!strcmp(s->slot,"WholeGame"))return 0;
+    return strcmp(s->title,"PPSA02433") || (strcmp(s->slot,"PlayerSaveSlot0Save") && strcmp(s->slot,"PlayerSaveProfileSaveData"))?-1:0;
 }
 static int atomic_config(const char *path,const char *text) {
     char part[1400];snprintf(part,sizeof part,"%s.new",path);
@@ -218,7 +220,7 @@ static void games(int sock) {
             DIR *slots=fdopendir(titlefd);if(!slots) {close(titlefd);continue;}struct dirent *e;
             while((e=readdir(slots)) && count<256) {
                 if(strncmp(e->d_name,"sdimg_",6) || !strncmp(e->d_name,"sdimg_sce_bu_",13) || !safe_word(e->d_name+6,63))continue;
-                int supported=!strcmp(t->d_name,"PPSA02433") && (!strcmp(e->d_name+6,"PlayerSaveSlot0Save") || !strcmp(e->d_name+6,"PlayerSaveProfileSaveData"));
+                int supported=safe_word(e->d_name+6,63);
                 int written=snprintf(json+pos,sizeof json-pos,"%s{\"user\":\"%s\",\"title\":\"%s\",\"slot\":\"%s\",\"name\":\"%s\",\"icon\":\"/api/icon?title=%s\",\"supported\":%s}",count?",":"",u->d_name,t->d_name,e->d_name+6,escaped_name,t->d_name,supported?"true":"false");
                 if(written<0 || (size_t)written>=sizeof json-pos-4)break;
                 pos+=(size_t)written;count++;
@@ -310,8 +312,8 @@ static int store_blob(int dir,const char *name,const unsigned char *data,size_t 
     return bad?-1:0;
 }
 static int archive_valid(const unsigned char *data,size_t size,const struct pscloud_snapshot *s) {
-    const unsigned char *images[2];size_t sizes[2];const unsigned char *payload;size_t length;
-    return !strcmp(s->slot,"WholeGame")?pscloud_bundle_parse(data,size,s,images,sizes):pscloud_save_payload(data,size,&payload,&length);
+    struct pscloud_bundle bundle;const unsigned char *payload;size_t length;
+    return !strcmp(s->slot,"WholeGame")?pscloud_bundle_index(data,size,s,&bundle):pscloud_save_payload(data,size,&payload,&length);
 }
 static void download_pc(int sock,const char *query,int local) {
     char file[128];struct pscloud_snapshot s={0},chosen;unsigned char *data=NULL;size_t size=0;
@@ -331,8 +333,8 @@ static void download_pc(int sock,const char *query,int local) {
     free(data);
 }
 static void import_pc(int sock,const char *query,const unsigned char *data,size_t size) {
-    struct pscloud_snapshot s;const unsigned char *images[2];size_t sizes[2];
-    if(selection(query,&s) || strcmp(s.slot,"WholeGame") || pscloud_bundle_parse(data,size,&s,images,sizes)) {message(sock,400,"Select Whole game and upload an unmodified PSCloud ZIP for this game and PS5 user");return;}
+    struct pscloud_snapshot s;struct pscloud_bundle bundle;
+    if(selection(query,&s) || strcmp(s.slot,"WholeGame") || pscloud_bundle_index(data,size,&s,&bundle)) {message(sock,400,"Select Whole game and upload an unmodified PSCloud ZIP for this game and PS5 user");return;}
     unsigned char digest[32];unsigned digest_size=0;
     if(!EVP_Digest(data,size,digest,&digest_size,EVP_sha256(),NULL) || digest_size!=32) {message(sock,500,"Cannot verify ZIP checksum");return;}
     for(unsigned i=0;i<32;i++)snprintf(s.sha256+2*i,3,"%02x",digest[i]);
@@ -398,7 +400,7 @@ static void import_pc(int sock,const char *query,const unsigned char *data,size_
             }
             strcpy(file,matching);s.created=match.created;
         }
-    } else snprintf(file,sizeof file,"ps5-11.40-PPSA02433-%s.zip",id);
+    } else snprintf(file,sizeof file,"ps5-11.40-%s-%s.zip",s.title,id);
     snprintf(part,sizeof part,"%s.part",file);snprintf(ready,sizeof ready,"%s.ready",file);snprintf(identity,sizeof identity,"%s.identity",file);
     int fd=openat(dir,part,O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW,0600),bad=fd<0;size_t have=0;
     while(!bad && have<size) {ssize_t n=write(fd,data+have,size-have);if(n<=0)bad=1;else have+=(size_t)n;}
@@ -449,7 +451,7 @@ static void action(int sock,const char *path,const char *form) {
 #ifndef PSCLOUD_HOST_TEST
             if((kernel_get_fw_version()&0xffff0000U)!=0x11400000U) {message(sock,400,"Whole-game backup requires validated firmware 11.40");return;}
 #endif
-            if(pscloud_game_backup(home,root,chosen.user,chosen.title)) {message(sock,500,"Whole-game backup failed; originals untouched. Both progress and profile saves must exist");return;}
+            if(pscloud_game_backup(home,root,chosen.user,chosen.title)) {message(sock,500,"Whole-game backup failed; originals untouched. Check Activity for invalid/changing files, slot or size limits, or an active restore marker");return;}
             if(!auto_upload) {message(sock,200,"Whole-game backup saved in local queue; automatic upload is off");return;}
             int result=upload_queue();message(sock,result?502:200,result?"Whole-game backup retained locally; upload pending":"Whole-game backup checked and uploaded");return;
         }
@@ -475,7 +477,7 @@ static void action(int sock,const char *path,const char *form) {
         int bad=strcmp(snapshot.user,chosen.user) || strcmp(snapshot.title,chosen.title) || strcmp(snapshot.slot,chosen.slot) || strcmp(snapshot.slot,"WholeGame");
         if(!bad)bad=pscloud_bundle_restore(home,root,&snapshot,data,size);
         free(data);
-        message(sock,bad?500:200,bad==2?"Save was recreated and encryption keys changed. Raw-image restore cannot recover it; preserve this backup":bad?"Restore refused or failed. Keep game closed; inspect activity and rollback":"Whole-game restore complete; original images retained in rollback");return;
+        message(sock,bad?500:200,bad==2?"This game's keys changed; recreated-save recovery is only available for the Crash UE4 format":bad==4?"Backup and current save slots differ. No saves changed; preserve the backup and do not delete other slots":bad==3?"Restore metadata could not confirm game, slot and account identity":bad?"Restore refused or failed. Keep game closed; inspect activity and rollback":"Whole-game restore complete; original images retained in rollback");return;
     }
     char file[128];struct settings cloud={0};struct pscloud_snapshot snapshot;
     if(parameter(form,"file",file,sizeof file) || pscloud_configure(cloudpath,&cloud) || remote_snapshot(&cloud,&chosen,file,&snapshot)) {message(sock,400,"Cloud backup identity could not be verified");return;}
@@ -499,7 +501,7 @@ static void action(int sock,const char *path,const char *form) {
             if(!bad)bad=renameat(dir,part,dir,file) || fsync(dir);
             if(dir>=0) {if(bad)unlinkat(dir,part,0);close(dir);}
         }
-        free(data);message(sock,bad?500:200,bad==3?"Recovery metadata could not confirm matching game, save slot and account. No live save was replaced":bad?"Whole-game operation failed; keep game closed if restoring and inspect activity":checking?"Recovery staged check passed; both live saves untouched":restoring?"Whole-game restore complete; rollback retained":"Whole-game ZIP downloaded and verified on PS5");return;
+        free(data);message(sock,bad?500:200,bad==4?"Backup and current save slots differ. No saves changed; preserve the backup and do not delete other slots":bad==2?"This game's keys changed; recreated-save recovery is only available for the Crash UE4 format":bad==3?"Recovery metadata could not confirm matching game, save slot and account. No live save was replaced":bad?"Whole-game operation failed; keep game closed if restoring and inspect activity":checking?"Recovery staged check passed; all live saves untouched":restoring?"Whole-game restore complete; rollback retained":"Whole-game ZIP downloaded and verified on PS5");return;
     }
     if(restoring) {
         char confirm[8];
@@ -586,7 +588,7 @@ static void serve(int sock) {
         if(header_value(request,"Content-Length",length,sizeof length)) {message(sock,400,"Content length missing");return;}
         char *end=NULL;unsigned long n=strtoul(length,&end,10);
         if(!strncmp(url,"/api/import?",12)) {
-            if(!*length || *end || !n || n>PSCLOUD_RESTORE_MAX) {message(sock,400,"ZIP upload limit is 16 MiB");return;}
+            if(!*length || *end || !n || n>PSCLOUD_RESTORE_MAX) {message(sock,400,"ZIP upload limit is 256 MiB");return;}
             unsigned char *data=malloc(n);if(!data) {message(sock,500,"Not enough memory");return;}
             size_t have=size-headers;if(have>n)have=n;memcpy(data,body,have);time_t deadline=time(NULL)+120;
             while(have<n && time(NULL)<deadline) {ssize_t got=recv(sock,data+have,n-have,0);if(got<=0)break;have+=(size_t)got;}

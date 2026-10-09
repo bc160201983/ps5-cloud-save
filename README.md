@@ -1,4 +1,29 @@
-# PS5 Cloud Save — development milestone 0.9.0
+# PS5 Cloud Save — development milestone 0.10.0
+
+## Version 0.10.0 — dynamic PS5 save-slot backups
+
+- Encrypted whole-game backup discovers every active `sdimg_` container for the
+  selected PPSA game/user, including numbered, profile, replay and custom slots.
+  Sony `sdimg_sce_bu_` shadow copies are excluded. Slot names are validated and
+  ordered deterministically; regular files, stability and hashes are checked.
+- Generic V2 ZIPs include a canonical per-image checksum manifest. Limits are
+  128 active slots and 256 MiB per archive: exceeding either aborts the whole
+  backup, never silently drops files. Existing two-slot Crash V1 ZIPs still read
+  and retain their unchanged-backup fingerprint.
+- All discovered PS5 titles can select whole-game backup, cloud upload/download,
+  queue and original-PC-ZIP import. This does not include PS4/CUSA saves.
+- Experimental same-console restore handles every archived slot as one guarded
+  transaction, retaining all originals and a slot-index rollback journal. Exact
+  destination slot inventory and existing registered containers are required.
+  V2 restores check mounted source/destination SFO game, slot and account identity.
+  Generic raw restore requires unchanged sealed keys and sizes; it does not assume
+  UE4 payload names. Recreated-container payload migration stays Crash/UE4-only.
+- This is general encrypted-container support, NOT a promise that every game,
+  firmware, save size or account-specific payload is compatible. Cross-console
+  sharing, game-close automation, missing save-database creation and automatic
+  power-loss recovery remain unavailable. Hardware support remains FW 11.40.
+- Implemented; new host fixtures and native build validation pending. No new live
+  backup or restore test has been run for this release yet.
 
 ## Version 0.9.0 — cloud settings, activity and user preferences
 

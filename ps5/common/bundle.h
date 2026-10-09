@@ -2,6 +2,15 @@
 #define PSCLOUD_BUNDLE_H
 #include "snapshot.h"
 #include <stddef.h>
+#define PSCLOUD_GAME_SLOTS 128
+struct pscloud_bundle {
+    unsigned count;
+    int legacy;
+    char names[PSCLOUD_GAME_SLOTS][70];
+    const unsigned char *images[PSCLOUD_GAME_SLOTS];
+    size_t sizes[PSCLOUD_GAME_SLOTS];
+};
+int pscloud_bundle_index(const unsigned char *archive,size_t length,const struct pscloud_snapshot *identity,struct pscloud_bundle *bundle);
 /* Closed-game, same-console encrypted backup. Does not mount or modify saves.
  * Full-game restore is deliberately not supported by the single-slot restorer. */
 int pscloud_game_backup(const char *home,const char *root,const char *user,const char *title);

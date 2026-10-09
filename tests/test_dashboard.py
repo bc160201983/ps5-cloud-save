@@ -346,20 +346,120 @@ class DashboardTests(unittest.TestCase):
         self.assertEqual(status,200);self.assertEqual(len(listing['backups']),1)
         self.assertGreater(listing['backups'][0]['created'],0)
 
-    def test_whole_game_missing_or_symlinked_profile_is_not_published(self):
+    def test_whole_game_single_slot_valid_and_symlink_rejected(self):
         chosen=self.selected(closed='yes');chosen['slot']='WholeGame'
-        self.assertEqual(self.request('/api/backup',chosen)[0],500)
+        self.assertEqual(self.request('/api/backup',chosen)[0],200)
+        archive=next((self.root/'spool').glob('*.sent'))
+        with zipfile.ZipFile(archive) as z:
+            self.assertEqual(z.namelist(),['sdimg_'+SLOT,'manifest.txt'])
+            self.assertIn(b'SLOTS=1\n',z.read('manifest.txt'))
         profile=self.image.with_name('sdimg_PlayerSaveProfileSaveData');profile.symlink_to(self.image)
         self.assertEqual(self.request('/api/backup',chosen)[0],500)
         self.assertFalse(list((self.root/'spool').glob('*.ready')))
         self.assertEqual(self.image.read_bytes(),self.original)
 
-    def test_whole_game_rejects_unvalidated_extra_slots(self):
+    def test_whole_game_includes_every_crash_slot(self):
         self.image.with_name('sdimg_PlayerSaveProfileSaveData').write_bytes(self.original)
         self.image.with_name('sdimg_PlayerSaveSlot1Save').write_bytes(self.original)
         chosen=self.selected(closed='yes');chosen['slot']='WholeGame'
-        self.assertEqual(self.request('/api/backup',chosen)[0],500)
+        self.assertEqual(self.request('/api/backup',chosen)[0],200)
+        archive=next((self.root/'spool').glob('*.sent'));data=archive.read_bytes()
+        with zipfile.ZipFile(archive) as z:
+            self.assertEqual(z.namelist(),['sdimg_PlayerSaveProfileSaveData','sdimg_PlayerSaveSlot0Save','sdimg_PlayerSaveSlot1Save','manifest.txt'])
+            self.assertIsNone(z.testzip());self.assertIn(b'SLOTS=3\n',z.read('manifest.txt'))
+        self.assertEqual(self.import_fixture(chosen,data)[0],200)
+        self.assertEqual(self.request('/api/backup',chosen)[0],200)
+        self.assertEqual(len(list((self.root/'spool').glob('*.sent'))),2) # explicit PC separate import
         self.assertEqual(self.image.read_bytes(),self.original)
+
+    def test_general_game_many_slots_backup_import_and_dedup(self):
+        folder=self.home/'1eb70483/savedata_prospero/PPSA10595';folder.mkdir()
+        slots=[f'sdimg_replay{i:03}' for i in range(50)]
+        for name in reversed(slots):(folder/name).write_bytes(self.original)
+        chosen={'user':'1eb70483','title':'PPSA10595','slot':'WholeGame','closed':'yes'}
+        self.assertEqual(self.request('/api/backup',chosen)[0],200)
+        archive=next((self.root/'spool').glob('*.sent'));data=archive.read_bytes()
+        self.assertTrue(archive.name.startswith('ps5-11.40-PPSA10595-'))
+        with zipfile.ZipFile(archive) as z:
+            self.assertEqual(z.namelist(),slots+['manifest.txt']);self.assertIsNone(z.testzip())
+        self.assertEqual(self.request('/api/backup',chosen)[0],200)
+        self.assertEqual(len(list((self.root/'spool').glob('*.sent'))),1)
+        status,_,body=self.binary('/api/import?'+urllib.parse.urlencode(dict(chosen,policy='check')),data)
+        self.assertEqual(status,200);self.assertTrue(json.loads(body)['duplicate'])
+        self.assertEqual(self.import_fixture(chosen,data)[0],200)
+        item=self.request('/api/queue')[1]['items'][0];self.assertEqual(item['title'],'PPSA10595')
+        self.assertEqual(self.binary('/api/queue-download?file='+item['file'])[2],data)
+        self.assertEqual(self.request('/api/sync-one',{'file':item['file']})[0],200)
+
+    def test_general_game_changed_keys_refused_and_slot_inventory_guard(self):
+        folder=self.home/'1eb70483/savedata_prospero/PPSA10595';folder.mkdir()
+        image=folder/'sdimg_global1';image.write_bytes(self.original)
+        chosen={'user':'1eb70483','title':'PPSA10595','slot':'WholeGame','closed':'yes','confirm':'yes'}
+        self.assertEqual(self.request('/api/backup',chosen)[0],200)
+        archive=next((self.root/'spool').glob('*.sent'));file=archive.name[:-5]
+        changed=bytearray(self.original);changed[0x800]=99;image.write_bytes(changed)
+        status,result=self.request('/api/restore',dict(chosen,file=file));self.assertEqual(status,500)
+        self.assertIn('keys changed',result['message']);self.assertEqual(image.read_bytes(),changed)
+        extra=folder/'sdimg_extra';extra.write_bytes(self.original)
+        status,result=self.request('/api/restore',dict(chosen,file=file));self.assertEqual(status,500)
+        self.assertIn('slots differ',result['message']);self.assertEqual(extra.read_bytes(),self.original)
+
+    def test_general_game_slot_limit_refuses_incomplete_backup(self):
+        folder=self.home/'1eb70483/savedata_prospero/PPSA10595';folder.mkdir()
+        for i in range(129):(folder/f'sdimg_slot{i}').write_bytes(self.original)
+        chosen={'user':'1eb70483','title':'PPSA10595','slot':'WholeGame','closed':'yes'}
+        self.assertEqual(self.request('/api/backup',chosen)[0],500)
+        self.assertFalse(list((self.root/'spool').glob('*.sent')))
+
+    def sfo_fixture(self,folder,title,slot,account=b'\x01'*8):
+        (folder/'sce_sys').mkdir(parents=True)
+        fields=[('TITLE_ID',0x0204,title.encode()+b'\0'),('SAVEDATA_DIRECTORY',0x0204,slot.encode()+b'\0'),('ACCOUNT_ID',0x0004,account)]
+        keys=b'';values=b'';entries=[]
+        for key,fmt,value in fields:
+            entries.append(struct.pack('<HHIII',len(keys),fmt,len(value),len(value),len(values)))
+            keys+=key.encode()+b'\0';values+=value
+        key_offset=20+16*len(fields);value_offset=key_offset+len(keys)
+        (folder/'sce_sys/param.sfo').write_bytes(struct.pack('<IIIII',0x46535000,0x101,key_offset,value_offset,len(fields))+b''.join(entries)+keys+values)
+        (folder/'arbitrary-game-file.dat').write_bytes(b'not a UE4 save')
+
+    def test_general_three_slot_restore_and_rollback_without_ue4_assumption(self):
+        folder=self.home/'1eb70483/savedata_prospero/PPSA10595';folder.mkdir()
+        slots=['global1','progress','replay1']
+        for slot in slots:(folder/('sdimg_'+slot)).write_bytes(self.original)
+        chosen={'user':'1eb70483','title':'PPSA10595','slot':'WholeGame','closed':'yes','confirm':'yes'}
+        self.assertEqual(self.request('/api/backup',chosen)[0],200)
+        archive=next((self.root/'spool').glob('*.sent'));file=archive.name[:-5]
+        source=self.fixture.root/'general-source';target=self.fixture.root/'general-target'
+        for i,slot in enumerate(slots):
+            self.sfo_fixture(source/str(i),'PPSA10595',slot)
+            self.sfo_fixture(target/str(i),'PPSA10595',slot)
+        changed=bytearray(self.original);changed[4096]=7
+        for slot in slots:(folder/('sdimg_'+slot)).write_bytes(changed)
+        self.process.terminate();self.process.communicate(timeout=5)
+        self.start_server(PSCLOUD_TEST_SOURCE_ROOT=str(source),PSCLOUD_TEST_TARGET_ROOT=str(target),PSCLOUD_TEST_BUNDLE_COMMIT_FAIL='1')
+        request=dict(chosen,file=file)
+        self.assertEqual(self.request('/api/restore',request)[0],500)
+        for slot in slots:self.assertEqual((folder/('sdimg_'+slot)).read_bytes(),changed)
+        self.process.terminate();self.process.communicate(timeout=5)
+        self.start_server(PSCLOUD_TEST_SOURCE_ROOT=str(source),PSCLOUD_TEST_TARGET_ROOT=str(target))
+        status,result=self.request('/api/restore',request);self.assertEqual(status,200,result)
+        for slot in slots:self.assertEqual((folder/('sdimg_'+slot)).read_bytes(),self.original)
+        for i in range(3):self.assertEqual((target/str(i)/'arbitrary-game-file.dat').read_bytes(),b'not a UE4 save')
+        self.assertFalse((self.root/'.restore-active').exists());self.assertFalse((self.root/'.mount-active').exists())
+
+    def test_general_archive_rejects_wrong_game_and_traversal(self):
+        folder=self.home/'1eb70483/savedata_prospero/PPSA10595';folder.mkdir()
+        (folder/'sdimg_global1').write_bytes(self.original)
+        chosen={'user':'1eb70483','title':'PPSA10595','slot':'WholeGame','closed':'yes'}
+        self.assertEqual(self.request('/api/backup',chosen)[0],200)
+        data=next((self.root/'spool').glob('*.sent')).read_bytes()
+        wrong=dict(chosen,title='PPSA99999');self.assertEqual(self.import_fixture(wrong,data)[0],400)
+        with zipfile.ZipFile(io.BytesIO(data)) as z:
+            manifest=z.read('manifest.txt').replace(b'sdimg_global1=',b'sdimg_../bad=')
+            b=io.BytesIO()
+            with zipfile.ZipFile(b,'w') as out:
+                out.writestr('sdimg_../bad',self.original);out.writestr('manifest.txt',manifest)
+        self.assertEqual(self.import_fixture(chosen,b.getvalue())[0],400)
 
     def test_deleted_cloud_game_copy_reuploads_same_archive_without_new_version(self):
         self.image.with_name('sdimg_PlayerSaveProfileSaveData').write_bytes(self.original)

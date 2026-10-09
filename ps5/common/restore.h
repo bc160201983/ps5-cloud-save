@@ -1,7 +1,7 @@
 #ifndef PSCLOUD_RESTORE_H
 #define PSCLOUD_RESTORE_H
 #include <stddef.h>
-#define PSCLOUD_RESTORE_MAX (16U*1024U*1024U)
+#define PSCLOUD_RESTORE_MAX (256U*1024U*1024U)
 struct restore_settings {
     char backup[128], sha256[65], title[10], target[1024],user[17],slot[64];
 };
