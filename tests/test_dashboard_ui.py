@@ -33,10 +33,11 @@ const source=html.slice(html.indexOf('async function api('),html.indexOf('\nfunc
  const start=html.indexOf('function setControls()'),end=html.indexOf('\nasync function operation',start);
  const buttons=[{id:'backup',classList:{contains:()=>false},dataset:{}},{id:'back',classList:{contains:()=>false},dataset:{}}];
  const confirm={checked:true},restore={},bar={classList:{toggle:()=>{}}};
- const controls={busy:false,versionLoading:true,document:{querySelectorAll:()=>buttons},$:id=>id==='busybar'?bar:id==='confirmRestore'?restore:confirm};
+ const controls={busy:false,versionLoading:true,backgroundRunning:false,document:{querySelectorAll:()=>buttons},$:id=>id==='busybar'?bar:id==='confirmRestore'?restore:confirm};
  vm.runInNewContext(html.slice(start,end),controls);controls.setControls();
  assert.equal(buttons[0].disabled,true);assert.equal(buttons[1].disabled,false);assert.equal(restore.disabled,true);
  controls.versionLoading=false;controls.setControls();assert.equal(buttons[0].disabled,false);
+ controls.backgroundRunning=true;controls.setControls();assert.equal(buttons[0].disabled,true);assert.equal(buttons[1].disabled,false);
  console.log('Read retry/write non-replay/control fixtures passed');
 })().catch(e=>{console.error(e);process.exit(1);});
 """

@@ -7,7 +7,12 @@ struct pscloud_transfer_status {
     int phase,failed_phase,transport;
     long http;
     unsigned long long done,total;
+    char file[256];
 };
 void pscloud_worker_status(struct pscloud_transfer_status *);
 long pscloud_transfer_timeout(unsigned long long);
+void pscloud_worker_cancel(void);
+void pscloud_worker_prepare(void);
+struct settings;
+int pscloud_worker_upload(const char *,const char *,const struct settings *);
 #endif

@@ -1,4 +1,26 @@
-# PS5 Cloud Save — development milestone 0.11.4
+# PS5 Cloud Save — development milestone 0.11.5
+
+## Version 0.11.5 — background queue uploads and corner progress
+
+Upload this / Upload all now start a console background worker and return without
+waiting for the transfer. A compact bottom-right panel shows the current game's
+name, upload/checksum-verification stage, byte progress and result. Reopening the
+dashboard reconnects to the running job; closing the browser does not cancel it.
+Cancel upload retains the local archive for retry. Completion still requires
+verified remote bytes and the cloud identity commit, not just a completed PUT.
+
+Library, cached queue, connection state and activity remain readable. Save-changing
+operations remain serialized and disabled during uploads. Queue views are captured
+at job start and refreshed on completion. Only one upload job runs at a time.
+PC imports remain manual queue entries; the existing upload preference is preserved.
+Manual-backup automatic uploads still use the existing synchronous path in this
+milestone. Background processing does not yet detect game closure, run after the
+payload stops, or guarantee operation in rest mode. These are not PSN-equivalent
+capabilities yet.
+
+Host regression and native build validation are pending; native background and
+large-backup upload behavior must still be tested on the console. No live saves
+were mounted or restored for this change.
 
 ## Version 0.11.4 — bounded large transfers and visible upload stages
 
@@ -12,7 +34,8 @@
 - Authenticated, memory-only transfer status remains readable during uploads.
   The dashboard shows upload and verification byte progress and the current
   stage. Transport/HTTP result codes are logged without credentials or URLs.
-- Host/native validation is pending. The observed large queued backup exceeded
+- All 102 host tests and native PS5 builds passed. Console validation is pending.
+  The observed large queued backup exceeded
   the older five-minute transfer window; that is a size/timeout hypothesis until
   a diagnosed native upload completes. No live save mounts/restores are added.
 - Garlic's newer upstream has background jobs, locally staged ZIPs and bounded

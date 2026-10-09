@@ -90,6 +90,59 @@ class DashboardTests(unittest.TestCase):
             self.assertLess(time.monotonic()-started,2)
         finally:idle.close()
 
+    def test_background_upload_returns_immediately_and_keeps_views_readable(self):
+        self.request('/api/preferences',{'auto_upload':'0','activity_refresh':'1'})
+        self.assertEqual(self.request('/api/backup',self.selected(closed='yes'))[0],200)
+        queued=self.request('/api/queue')[1]['items'][0]['file']
+        entered=threading.Event();release=threading.Event()
+        handler=self.fixture.server.RequestHandlerClass;original=handler.do_PUT
+        def slow(request):
+            if not request.path.endswith('.identity'):entered.set();release.wait(8)
+            original(request)
+        handler.do_PUT=slow
+        try:
+            started=time.monotonic();status,data=self.request('/api/sync-start',{'file':queued})
+            self.assertEqual(status,202,data);self.assertTrue(data['background'])
+            self.assertLess(time.monotonic()-started,2);self.assertTrue(entered.wait(4))
+            status,data=self.request('/api/transfer');self.assertEqual(status,200)
+            self.assertTrue(data['active']);self.assertEqual(data['file'],queued+'.ready')
+            self.assertEqual(self.request('/api/games')[0],200)
+            self.assertEqual(self.request('/api/queue')[1]['count'],1)
+            self.assertTrue(self.request('/api/health')[1]['background_upload'])
+            self.assertEqual(self.request('/api/sync-start',{})[0],503)
+            self.assertEqual(self.request('/api/backup',self.selected(closed='yes'))[0],503)
+        finally:release.set()
+        for _ in range(100):
+            data=self.request('/api/transfer')[1]
+            if not data['active']:break
+            time.sleep(.05)
+        self.assertFalse(data['active']);self.assertEqual(data['result'],0)
+        self.assertEqual(self.request('/api/queue')[1]['count'],0)
+
+    def test_background_cancel_retains_local_queue(self):
+        self.request('/api/preferences',{'auto_upload':'0','activity_refresh':'1'})
+        self.request('/api/backup',self.selected(closed='yes'))
+        entered=threading.Event();release=threading.Event()
+        handler=self.fixture.server.RequestHandlerClass;original=handler.do_PUT
+        def slow(request):
+            if not request.path.endswith('.identity'):entered.set();release.wait(8)
+            original(request)
+        handler.do_PUT=slow
+        try:
+            self.assertEqual(self.request('/api/sync-start',{})[0],202)
+            self.assertTrue(entered.wait(4))
+            self.assertEqual(self.request('/api/sync-cancel',{},token=False)[0],401)
+            self.assertEqual(self.request('/api/sync-cancel',{})[0],200)
+        finally:release.set()
+        for _ in range(100):
+            data=self.request('/api/transfer')[1]
+            if not data['active']:break
+            time.sleep(.05)
+        self.assertFalse(data['active']);self.assertTrue(data['cancelled'])
+        self.assertNotEqual(data['result'],0)
+        self.assertEqual(len(list((self.root/'spool').glob('*.ready'))),1)
+        self.assertFalse(list((self.root/'spool').glob('*.sent')))
+
     def test_transfer_progress_available_while_upload_waits_for_server(self):
         self.assertEqual(self.request('/api/transfer',token=False)[0],401)
         self.assertEqual(self.request('/api/transfer')[1]['phase'],0)

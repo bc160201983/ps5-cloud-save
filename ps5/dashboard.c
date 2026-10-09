@@ -46,6 +46,13 @@ static pthread_mutex_t operation_mutex=PTHREAD_MUTEX_INITIALIZER;
 static pthread_mutex_t clients_mutex=PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t clients_done=PTHREAD_COND_INITIALIZER;
 static unsigned clients;
+static _Atomic int background_active,background_result,background_cancelled;
+static pthread_mutex_t cache_mutex=PTHREAD_MUTEX_INITIALIZER;
+static char games_cache[131072],queue_cache[65536];
+static char background_name[256];
+static void cache_store(char *cache,size_t cap,const char *json) {
+    pthread_mutex_lock(&cache_mutex);snprintf(cache,cap,"%s",json);pthread_mutex_unlock(&cache_mutex);
+}
 static volatile sig_atomic_t stopped;
 static void stop_server(int sig) {(void)sig;stopped=1;}
 struct response {char *data;size_t size,limit;};
@@ -246,7 +253,7 @@ static void games(int sock) {
         closedir(titles);
     }
     }
-    closedir(users);close(dir);snprintf(json+pos,sizeof json-pos,"],\"truncated\":%s}",count>=256?"true":"false");respond(sock,200,"application/json",json,strlen(json));
+    closedir(users);close(dir);snprintf(json+pos,sizeof json-pos,"],\"truncated\":%s}",count>=256?"true":"false");cache_store(games_cache,sizeof games_cache,json);respond(sock,200,"application/json",json,strlen(json));
 }
 static void backups(int sock,const char *query) {
     struct pscloud_snapshot chosen;struct settings cloud={0};
@@ -313,7 +320,39 @@ static void queue_list(int sock) {
         }else if(scan>=0)close(scan);
         close(dir);
     }
-    snprintf(json+pos,sizeof json-pos,"],\"count\":%u,\"truncated\":%s}",count,truncated?"true":"false");respond(sock,200,"application/json",json,strlen(json));
+    snprintf(json+pos,sizeof json-pos,"],\"count\":%u,\"truncated\":%s}",count,truncated?"true":"false");cache_store(queue_cache,sizeof queue_cache,json);respond(sock,200,"application/json",json,strlen(json));
+}
+struct background_job {struct settings settings;char spool[1400],file[144];};
+static void *background_upload(void *arg) {
+    struct background_job *job=arg;pthread_mutex_lock(&operation_mutex);
+    int result=stopped||background_cancelled?1:pscloud_worker_upload(job->spool,*job->file?job->file:NULL,&job->settings);
+    background_result=result;
+    pscloud_log(result?"WARN":"EVENT",result?"Background upload stopped or failed; local backups retained":"Background upload verified and completed");
+    volatile unsigned char *secret=(volatile unsigned char *)&job->settings;for(size_t i=0;i<sizeof job->settings;i++)secret[i]=0;
+    free(job);pthread_mutex_unlock(&operation_mutex);background_active=0;
+    pthread_mutex_lock(&clients_mutex);clients--;pthread_cond_broadcast(&clients_done);pthread_mutex_unlock(&clients_mutex);return NULL;
+}
+static void start_background(int sock,const char *form) {
+    if(background_active) {message(sock,409,"A background upload is already running");return;}
+    struct background_job *job=calloc(1,sizeof *job);if(!job) {message(sock,500,"Not enough memory");return;}
+    if(pscloud_configure(cloudpath,&job->settings)) {free(job);message(sock,400,"Saved cloud connection is unavailable; queued backups are unchanged");return;}
+    char file[128]={0};struct pscloud_snapshot snapshot;
+    if(!parameter(form,"file",file,sizeof file) && *file) {
+        if(pending_archive(file,&snapshot,NULL,NULL)) {free(job);message(sock,400,"Selected pending backup unavailable");return;}
+        snprintf(job->file,sizeof job->file,"%s.ready",file);
+        pthread_mutex_lock(&cache_mutex);pscloud_app_name(appmeta,snapshot.title,background_name,sizeof background_name);pthread_mutex_unlock(&cache_mutex);
+    }else {pthread_mutex_lock(&cache_mutex);strcpy(background_name,"Queued backups");pthread_mutex_unlock(&cache_mutex);}
+    /* Capture read-only views before handing the operation lock to the worker.
+     * New tabs can display these views without touching changing spool entries. */
+    games(-1);queue_list(-1);
+    snprintf(job->spool,sizeof job->spool,"%s/spool",root);background_result=0;background_cancelled=0;pscloud_worker_prepare();background_active=1;
+    pthread_mutex_lock(&clients_mutex);clients++;pthread_mutex_unlock(&clients_mutex);
+    pthread_t thread;pthread_attr_t attr;pthread_attr_init(&attr);pthread_attr_setstacksize(&attr,4U*1024*1024);
+    int bad=pthread_create(&thread,&attr,background_upload,job);pthread_attr_destroy(&attr);
+    if(bad) {background_active=0;free(job);pthread_mutex_lock(&clients_mutex);clients--;pthread_mutex_unlock(&clients_mutex);message(sock,500,"Could not start background upload; local backups retained");return;}
+    pthread_detach(thread);
+    const char *json="{\"ok\":true,\"background\":true,\"message\":\"Background upload started; you can leave this page\"}";
+    respond(sock,202,"application/json",json,strlen(json));
 }
 static void attachment(int sock,const char *file,const unsigned char *data,size_t size) {
     char header[1024];int n=snprintf(header,sizeof header,"HTTP/1.1 200 OK\r\nContent-Type: application/zip\r\nContent-Disposition: attachment; filename=\"%s\"\r\nContent-Length: %zu\r\nConnection: close\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\n\r\n",file,size);
@@ -452,6 +491,7 @@ static void configure_cloud(int sock,const char *form) {
 static void action(int sock,const char *path,const char *form) {
     pscloud_log("EVENT","Dashboard action: %s",path);
     struct pscloud_snapshot chosen;char closed[8];
+    if(!strcmp(path,"/api/sync-start")) {start_background(sock,form);return;}
     if(!strcmp(path,"/api/sync")) {int result=upload_queue();message(sock,result?502:200,result?"Upload pending; local backups retained":"Queued backups uploaded");return;}
     if(!strcmp(path,"/api/sync-one")) {
         char file[128],ready[144];struct pscloud_snapshot s;
@@ -638,14 +678,24 @@ static void serve(int sock,int *locked) {
         }
     }
     if(!strcmp(method,"GET") && !strcmp(url,"/api/transfer")) {
-        struct pscloud_transfer_status s;pscloud_worker_status(&s);char json[512];
-        snprintf(json,sizeof json,"{\"sequence\":%u,\"phase\":%d,\"failed_phase\":%d,\"done\":%llu,\"total\":%llu,\"http\":%ld,\"transport\":%d,\"timeout_seconds\":%ld}",s.sequence,s.phase,s.failed_phase,s.done,s.total,s.http,s.transport,pscloud_transfer_timeout(s.total));
+        struct pscloud_transfer_status s;pscloud_worker_status(&s);char json[4096],name[1536],file[1536];
+        pthread_mutex_lock(&cache_mutex);escaped(name,sizeof name,background_name);pthread_mutex_unlock(&cache_mutex);escaped(file,sizeof file,s.file);
+        snprintf(json,sizeof json,"{\"sequence\":%u,\"phase\":%d,\"failed_phase\":%d,\"done\":%llu,\"total\":%llu,\"http\":%ld,\"transport\":%d,\"timeout_seconds\":%ld,\"active\":%s,\"result\":%d,\"cancelled\":%s,\"name\":\"%s\",\"file\":\"%s\"}",s.sequence,s.phase,s.failed_phase,s.done,s.total,s.http,s.transport,pscloud_transfer_timeout(s.total),background_active?"true":"false",background_result,background_cancelled?"true":"false",name,file);
         respond(sock,200,"application/json",json,strlen(json));return;
+    }
+    if(!strcmp(method,"POST") && !strcmp(url,"/api/sync-cancel")) {
+        if(background_active) {background_cancelled=1;pscloud_worker_cancel();}
+        message(sock,200,"Upload cancellation requested; local backups retained");return;
+    }
+    if(!strcmp(method,"GET") && background_active && (!strcmp(url,"/api/games") || !strcmp(url,"/api/queue"))) {
+        char *copy=malloc(sizeof games_cache);if(!copy) {message(sock,500,"Not enough memory");return;}
+        pthread_mutex_lock(&cache_mutex);snprintf(copy,sizeof games_cache,"%s",!strcmp(url,"/api/games")?games_cache:queue_cache);pthread_mutex_unlock(&cache_mutex);
+        respond(sock,200,"application/json",copy,strlen(copy));free(copy);return;
     }
     if(!strcmp(method,"GET") && !strcmp(url,"/api/health")) {
         int available=pthread_mutex_trylock(&operation_mutex)==0;
         if(available)pthread_mutex_unlock(&operation_mutex);
-        const char *json=available?"{\"busy\":false}":"{\"busy\":true}";
+        const char *json=background_active?"{\"busy\":true,\"background_upload\":true}":available?"{\"busy\":false}":"{\"busy\":true}";
         respond(sock,200,"application/json",json,strlen(json));return;
     }
     /* These read-only resources do not share mutable transfer buffers. */
@@ -667,7 +717,7 @@ static void serve(int sock,int *locked) {
      * get an immediate busy response, never wait behind a multi-minute upload.
      * Header/body reads occur on bounded client threads; idle browser sockets
      * no longer stall the accept loop or page/health requests. */
-    if(pthread_mutex_trylock(&operation_mutex)) {
+    if(background_active || pthread_mutex_trylock(&operation_mutex)) {
         const char *json="{\"ok\":false,\"busy\":true,\"message\":\"PSCloud is completing another operation. Your saves are safe; try again when it finishes\"}";
         respond(sock,503,"application/json",json,strlen(json));return;
     }
@@ -759,7 +809,7 @@ int main(int argc,char **argv) {
         struct timeval timeout={15,0};setsockopt(sock,SOL_SOCKET,SO_RCVTIMEO,&timeout,sizeof timeout);
         setsockopt(sock,SOL_SOCKET,SO_SNDTIMEO,&timeout,sizeof timeout);
         pthread_mutex_lock(&clients_mutex);
-        if(clients>=8) {pthread_mutex_unlock(&clients_mutex);close(sock);continue;}
+        if(clients>=12) {pthread_mutex_unlock(&clients_mutex);close(sock);continue;}
         clients++;pthread_mutex_unlock(&clients_mutex);
         int *arg=malloc(sizeof *arg);pthread_t thread;pthread_attr_t attr;
         pthread_attr_init(&attr);pthread_attr_setstacksize(&attr,4U*1024*1024);

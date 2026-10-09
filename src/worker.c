@@ -19,21 +19,28 @@
 #include "../ps5/common/transfer.h"
 #ifdef PSCLOUD_EMBEDDED
 #include "../ps5/common/log.h"
+#include "../ps5/common/cloud.h"
 #endif
 #include "../ps5/common/snapshot.h"
 
 /* Input contract: producer publishes an immutable archive by atomic rename
  * from *.part to a globally unique *.zip.ready in a private spool directory.
  * No live save directories are read or modified by this worker. */
-static volatile sig_atomic_t stopped;
+static _Atomic int stopped;
 static _Atomic unsigned transfer_sequence;
 static _Atomic int transfer_phase,transfer_failed_phase,transfer_transport;
 static _Atomic long transfer_http;
 static _Atomic unsigned long long transfer_done,transfer_total;
+static _Atomic unsigned char transfer_file[256];
+static _Atomic unsigned file_generation;
 void pscloud_worker_status(struct pscloud_transfer_status *s) {
     s->sequence=transfer_sequence;s->phase=transfer_phase;s->failed_phase=transfer_failed_phase;
     s->transport=transfer_transport;s->http=transfer_http;s->done=transfer_done;s->total=transfer_total;
+    unsigned generation;
+    do {generation=file_generation;if(generation&1)continue;for(unsigned i=0;i<256;i++)s->file[i]=(char)transfer_file[i];}while((generation&1) || generation!=file_generation);
 }
+void pscloud_worker_cancel(void) {stopped=1;}
+void pscloud_worker_prepare(void) {stopped=0;transfer_phase=PSCLOUD_IDLE;transfer_done=0;transfer_total=0;transfer_transport=0;transfer_http=0;transfer_failed_phase=0;}
 /* Bound active transfers by size, not a blanket five minutes. A separate
  * low-speed guard aborts stalls; a continuing large upload can take longer. */
 long pscloud_transfer_timeout(unsigned long long bytes) {
@@ -68,7 +75,9 @@ static int upload_progress(void *ctx,curl_off_t dt,curl_off_t dn,curl_off_t ut,c
     (void)ctx;(void)dt;(void)dn;(void)ut;transfer_done=un>0?(unsigned long long)un:0;
     return stopped?1:0;
 }
+#ifndef PSCLOUD_EMBEDDED
 static void stop(int sig) { (void)sig; stopped=1; }
+#endif
 static size_t discard(char *p,size_t a,size_t b,void *ctx) {
     (void)p; (void)ctx; return a*b;
 }
@@ -173,6 +182,7 @@ static int replace_requested(int dir,const char *object,const char *hash) {
 }
 static int upload(const char *base,const char *user,const char *pass,const char *ca,
                   const char *name,int dir) {
+    file_generation++;size_t name_length=strlen(name);for(unsigned i=0;i<256;i++)transfer_file[i]=i<name_length?(unsigned char)name[i]:0;file_generation++;
     transfer_sequence++;transfer_failed_phase=0;transfer_transport=0;transfer_http=0;transfer_total=0;phase(PSCLOUD_LOCAL_CHECK);
     char queue_name[256];snprintf(queue_name,sizeof queue_name,"%s",name);name=queue_name;
     int fd=openat(dir,name,O_RDONLY|O_NOFOLLOW);
@@ -276,18 +286,11 @@ static int upload(const char *base,const char *user,const char *pass,const char 
     phase(PSCLOUD_DONE);
     return 0;
 }
-#ifdef PSCLOUD_EMBEDDED
-int pscloud_worker_main(int argc,char **argv) {
-#else
-int main(int argc,char **argv) {
-#endif
-    stopped=0;
+static int worker_run(int argc,char **argv,const char *base,const char *user,const char *pass,const char *ca) {
     if((argc!=3 && argc!=4) || (strcmp(argv[2],"--once") && strcmp(argv[2],"--watch")) ||
        (argc==4 && (strcmp(argv[2],"--once") || !valid(argv[3])))) {
         fprintf(stderr,"Usage: %s SPOOL --once|--watch\n",argv[0]); return 2;
     }
-    const char *base=getenv("PSCLOUD_URL"),*user=getenv("PSCLOUD_USER"),
-        *pass=getenv("PSCLOUD_PASSWORD"),*ca=getenv("PSCLOUD_CA_BUNDLE");
     if(!base||strncmp(base,"https://",8)||strchr(base,'?')||strchr(base,'#')||
        !user||!pass||!*user||!*pass) {
         fprintf(stderr,"Set HTTPS PSCLOUD_URL (existing WebDAV folder), PSCLOUD_USER and PSCLOUD_PASSWORD.\n"); return 2;
@@ -295,9 +298,11 @@ int main(int argc,char **argv) {
     int dir=open(argv[1],O_RDONLY|O_DIRECTORY|O_NOFOLLOW);
     if(dir<0) {perror("spool"); return 2;}
     int lock=openat(dir,".worker.lock",O_CREAT|O_RDWR|O_NOFOLLOW,0600);
-    if(lock<0||flock(lock,LOCK_EX|LOCK_NB)) {fprintf(stderr,"Cannot lock spool\n"); close(dir); return 2;}
-    if(curl_global_init(CURL_GLOBAL_DEFAULT)) return 2;
+    if(lock<0||flock(lock,LOCK_EX|LOCK_NB)) {fprintf(stderr,"Cannot lock spool\n");if(lock>=0)close(lock);close(dir);return 2;}
+    if(curl_global_init(CURL_GLOBAL_DEFAULT)) {close(lock);close(dir);return 2;}
+#ifndef PSCLOUD_EMBEDDED
     signal(SIGTERM,stop); signal(SIGINT,stop);
+#endif
     unsigned delay=5; int failed=0;
     do {
         int scan=openat(dir,".",O_RDONLY|O_DIRECTORY);
@@ -314,6 +319,21 @@ int main(int argc,char **argv) {
         for(unsigned i=0;i<delay&&!stopped;i++) sleep(1);
         delay=failed?(delay<150?delay*2:300):5;
     } while(!stopped);
+    if(stopped)failed=1;
     curl_global_cleanup(); close(lock); close(dir);
     return failed?1:0;
+}
+#ifdef PSCLOUD_EMBEDDED
+int pscloud_worker_upload(const char *spool,const char *file,const struct settings *s) {
+    char *args[]={"worker",(char *)spool,"--once",(char *)file,NULL};
+    int result=worker_run(file?4:3,args,s->url,s->user,s->password,s->ca);
+    if(result && transfer_phase!=PSCLOUD_FAILED) {transfer_failed_phase=transfer_phase;transfer_phase=PSCLOUD_FAILED;}
+    return result;
+}
+int pscloud_worker_main(int argc,char **argv) {
+#else
+int main(int argc,char **argv) {
+#endif
+    pscloud_worker_prepare();
+    return worker_run(argc,argv,getenv("PSCLOUD_URL"),getenv("PSCLOUD_USER"),getenv("PSCLOUD_PASSWORD"),getenv("PSCLOUD_CA_BUNDLE"));
 }
