@@ -314,6 +314,10 @@ static void serve(int sock) {
     if(!body) {message(sock,400,"Request headers too large");return;}
     size_t headers=(size_t)(body-request)+4;body+=4;
     char method[8],url[2048];if(sscanf(request,"%7s %2047s",method,url)!=2) {message(sock,400,"Malformed request");return;}
+    struct sockaddr_in local={0};socklen_t local_size=sizeof local;char ip[INET_ADDRSTRLEN],host[256],expected_host[64];
+    if(getsockname(sock,(struct sockaddr *)&local,&local_size) || !inet_ntop(AF_INET,&local.sin_addr,ip,sizeof ip) || header_value(request,"Host",host,sizeof host)) {message(sock,400,"Invalid dashboard host");return;}
+    snprintf(expected_host,sizeof expected_host,"%s:%u",ip,ntohs(local.sin_port));
+    if(strcmp(host,expected_host) && !(ntohs(local.sin_port)==80 && !strcmp(host,ip))) {message(sock,403,"Open the dashboard using the console IP address");return;}
     if(!strcmp(method,"GET") && !strcmp(url,"/")) {respond(sock,200,"text/html; charset=utf-8",(const char *)pscloud_ui,pscloud_ui_size);return;}
     char supplied[64];
     int legacy=header_value(request,"X-PSCloud-Token",supplied,sizeof supplied)==0 && !strcmp(supplied,token);

@@ -81,6 +81,12 @@ class DashboardTests(unittest.TestCase):
         response=connection.getresponse();self.assertEqual(response.status,403);response.read();connection.close()
         self.assertIsNone(self.process.poll())
 
+    def test_unrelated_host_cannot_start_an_automatic_session(self):
+        connection=http.client.HTTPConnection('127.0.0.1',self.port,timeout=10)
+        connection.request('GET','/',headers={'Host':'untrusted.example'})
+        response=connection.getresponse();self.assertEqual(response.status,403)
+        self.assertIsNone(response.getheader('Set-Cookie'));response.read();connection.close()
+
     def test_installed_game_name_unicode_and_icon(self):
         folder=self.root/'appmeta/PPSA02433';folder.mkdir(parents=True)
         (folder/'param.json').write_text(json.dumps({'localizedParameters':{'defaultLanguage':'en-US','en-US':{'titleName':'Crash Bandicoot 4: It\'s About Time™'}}}))
