@@ -43,6 +43,7 @@ static char root[1024],home[1024],cloudpath[1200],logpath[1200],token[33],appmet
 static _Atomic int cloud_status;
 static _Atomic int auto_upload=1,activity_refresh=1;
 static _Atomic int local_keep_latest;
+static _Atomic int compact_backups;
 static void prune_local_history(void);
 static struct pscloud_google google,google_pending;
 static char googlepath[1200];
@@ -87,9 +88,9 @@ static int safe_word(const char *s,size_t max) {
     return 1;
 }
 static int valid_archive(const char *s) {
-    const char *prefix="ps5-11.40-";size_t n=20;
-    if(strlen(s)!=n+36 || strncmp(s,prefix,strlen(prefix)) || s[19]!='-' || strcmp(s+n+32,".zip"))return 0;
-    char title[10];memcpy(title,s+10,9);title[9]=0;if(!pscloud_title_valid(title))return 0;
+    int portable=!strncmp(s,"portable-",9);const char *prefix=portable?"portable-":"ps5-11.40-";size_t start=portable?9:10,n=start+10;
+    if(strlen(s)!=n+36 || strncmp(s,prefix,strlen(prefix)) || s[n-1]!='-' || strcmp(s+n+32,".zip"))return 0;
+    char title[10];memcpy(title,s+start,9);title[9]=0;if(!pscloud_title_valid(title))return 0;
     for(unsigned i=0;i<32;i++)if(!strchr("0123456789abcdef",s[n+i]))return 0;
     return 1;
 }
@@ -173,14 +174,16 @@ static void preferences(int sock,const char *form) {
         }
         char keep[8];int latest=local_keep_latest;
         if(!parameter(form,"local_keep_latest",keep,sizeof keep)) {if(strcmp(keep,"0")&&strcmp(keep,"1")) {message(sock,400,"Invalid local retention option");return;}latest=!strcmp(keep,"1");}
+        char compact[8];int data_only=compact_backups;
+        if(!parameter(form,"compact_backups",compact,sizeof compact)) {if(strcmp(compact,"0")&&strcmp(compact,"1")) {message(sock,400,"Invalid backup format option");return;}data_only=!strcmp(compact,"1");}
         char file[1200],text[128];snprintf(file,sizeof file,"%s/preferences.conf",root);
-        snprintf(text,sizeof text,"AUTO_UPLOAD=%s\nACTIVITY_REFRESH=%s\nLOCAL_KEEP_LATEST=%d\n",upload,refresh,latest);
+        snprintf(text,sizeof text,"AUTO_UPLOAD=%s\nACTIVITY_REFRESH=%s\nLOCAL_KEEP_LATEST=%d\nCOMPACT_BACKUPS=%d\n",upload,refresh,latest,data_only);
         if(atomic_config(file,text)) {message(sock,500,"Preferences could not be saved");return;}
         auto_upload=!strcmp(upload,"1");activity_refresh=!strcmp(refresh,"1");
-        local_keep_latest=latest;if(latest)prune_local_history();
+        local_keep_latest=latest;compact_backups=data_only;if(latest)prune_local_history();
         pscloud_log("EVENT","Preferences saved: automatic upload %s; activity refresh %s",auto_upload?"on":"off",activity_refresh?"on":"off");
     }
-    char json[512];snprintf(json,sizeof json,"{\"auto_upload\":%s,\"activity_refresh\":%s,\"local_keep_latest\":%s,\"game_close_backup\":false,\"game_close_available\":false,\"sharing_available\":true,\"message\":\"Preferences saved on this PS5\"}",auto_upload?"true":"false",activity_refresh?"true":"false",local_keep_latest?"true":"false");
+    char json[512];snprintf(json,sizeof json,"{\"auto_upload\":%s,\"activity_refresh\":%s,\"local_keep_latest\":%s,\"compact_backups\":%s,\"game_close_backup\":false,\"game_close_available\":false,\"sharing_available\":true,\"message\":\"Preferences saved on this PS5\"}",auto_upload?"true":"false",activity_refresh?"true":"false",local_keep_latest?"true":"false",compact_backups?"true":"false");
     respond(sock,200,"application/json",json,strlen(json));
 }
 static void load_preferences(void) {
@@ -195,8 +198,9 @@ static void load_preferences(void) {
     if(!fstat(fd,&st) && S_ISREG(st.st_mode) && st.st_size>0 && st.st_size<129) {
         ssize_t n=read(fd,data,128);
         if(n>0) {
-            int upload,refresh,keep,used=0;
-            if(sscanf(data,"AUTO_UPLOAD=%d\nACTIVITY_REFRESH=%d\nLOCAL_KEEP_LATEST=%d\n%n",&upload,&refresh,&keep,&used)==3 && used==(int)strlen(data) && upload>=0 && upload<=1 && refresh>=0 && refresh<=1 && keep>=0 && keep<=1) {auto_upload=upload;activity_refresh=refresh;local_keep_latest=keep;}
+            int upload,refresh,keep,compact,used=0;
+            if(sscanf(data,"AUTO_UPLOAD=%d\nACTIVITY_REFRESH=%d\nLOCAL_KEEP_LATEST=%d\nCOMPACT_BACKUPS=%d\n%n",&upload,&refresh,&keep,&compact,&used)==4&&used==(int)strlen(data)&&upload>=0&&upload<=1&&refresh>=0&&refresh<=1&&keep>=0&&keep<=1&&compact>=0&&compact<=1) {auto_upload=upload;activity_refresh=refresh;local_keep_latest=keep;compact_backups=compact;}
+            else if(sscanf(data,"AUTO_UPLOAD=%d\nACTIVITY_REFRESH=%d\nLOCAL_KEEP_LATEST=%d\n%n",&upload,&refresh,&keep,&used)==3 && used==(int)strlen(data) && upload>=0 && upload<=1 && refresh>=0 && refresh<=1 && keep>=0 && keep<=1) {auto_upload=upload;activity_refresh=refresh;local_keep_latest=keep;}
             else if(!strcmp(data,"AUTO_UPLOAD=0\nACTIVITY_REFRESH=0\n")) {auto_upload=0;activity_refresh=0;}
             else if(!strcmp(data,"AUTO_UPLOAD=0\nACTIVITY_REFRESH=1\n")) {auto_upload=0;activity_refresh=1;}
             else if(!strcmp(data,"AUTO_UPLOAD=1\nACTIVITY_REFRESH=0\n")) {auto_upload=1;activity_refresh=0;}
@@ -441,7 +445,41 @@ static int store_blob(int dir,const char *name,const unsigned char *data,size_t 
 }
 static int archive_valid(const unsigned char *data,size_t size,const struct pscloud_snapshot *s) {
     struct pscloud_bundle bundle;const unsigned char *payload;size_t length;
+    if(!strcmp(s->slot,"WholeGame")&&!pscloud_share_validate(data,size,s->title))return 0;
     return !strcmp(s->slot,"WholeGame")?pscloud_bundle_index(data,size,s,&bundle):pscloud_save_payload(data,size,&payload,&length);
+}
+static int restore_game_data(const struct pscloud_snapshot *s,const unsigned char *data,size_t size,int check,int smart) {
+    if(!pscloud_share_validate(data,size,s->title)) {
+        char published[128],hash[65];return pscloud_share_game(home,root,appmeta,s->user,s->title,check?1:2,data,size,published,hash)?6:0;
+    }
+    return check?pscloud_bundle_restore_check(home,root,s,data,size):smart?pscloud_bundle_restore_smart(home,root,s,data,size):pscloud_bundle_restore(home,root,s,data,size);
+}
+static int compact_backup(const struct pscloud_snapshot *chosen,char published[144]) {
+    char file[128],hash[65];published[0]=0;
+    if(pscloud_share_game(home,root,appmeta,chosen->user,chosen->title,0,NULL,0,file,hash))return -1;
+    char shared[1400],spool[1400];snprintf(shared,sizeof shared,"%s/share",root);snprintf(spool,sizeof spool,"%s/spool",root);
+    int share=pscloud_open_directory(shared),parent=pscloud_open_directory(root),dir=-1,lock=-1,result=-1;
+    unsigned char *data=NULL;size_t size=0;struct pscloud_snapshot s=*chosen;strcpy(s.sha256,hash);s.created=(long long)time(NULL);
+    if(parent>=0) {(void)mkdirat(parent,"spool",0700);close(parent);}dir=pscloud_open_directory(spool);
+    if(share<0||dir<0||pscloud_read_archive(share,file,&data,&size)||pscloud_verify_hash(data,size,hash)||archive_valid(data,size,&s))goto done;
+    struct pscloud_dedup_stats duplicate;int found=pscloud_snapshot_exists_checked(dir,&s,&duplicate);
+    if(found<0||(!found&&duplicate.hash_failed))goto done;
+    if(found) {
+        if(pscloud_snapshot_requeue(dir,duplicate.archive))goto done;
+        size_t length=strlen(duplicate.archive),suffix=!strcmp(duplicate.archive+length-6,".ready")?6:5;
+        snprintf(published,144,"%.*s.ready",(int)(length-suffix),duplicate.archive);result=0;goto done;
+    }
+    lock=openat(dir,".worker.lock",O_CREAT|O_RDWR|O_NOFOLLOW,0600);if(lock<0||flock(lock,LOCK_EX|LOCK_NB))goto done;
+    char part[144],ready[144],identity[144],metadata[512],path[1600];
+    snprintf(part,sizeof part,"%s.part",file);snprintf(ready,sizeof ready,"%s.ready",file);snprintf(identity,sizeof identity,"%s.identity",file);
+    if(store_blob(dir,part,data,size))goto done;
+    snprintf(metadata,sizeof metadata,"USER_ID=%s\nTITLE=%s\nSAVE_NAME=WholeGame\nSHA256=%s\nCREATED_UNIX=%lld\n",s.user,s.title,s.sha256,s.created);
+    snprintf(path,sizeof path,"%s/%s",spool,identity);
+    if(atomic_config(path,metadata)||renameat(dir,part,dir,ready)||fsync(dir))goto done;
+    snprintf(published,144,"%s",ready);result=0;
+done:
+    if(!result&&share>=0) {if(unlinkat(share,file,0)||fsync(share))pscloud_log("WARN","Compact backup queued; temporary export retained");}
+    free(data);if(lock>=0)close(lock);if(dir>=0)close(dir);if(share>=0)close(share);return result;
 }
 static int local_restore_copy(const char *file,const struct pscloud_snapshot *s,unsigned char **data,size_t *size) {
     char directory[1400],name[144];
@@ -481,8 +519,8 @@ static void download_pc(int sock,const char *query,int local) {
     free(data);
 }
 static void import_pc(int sock,const char *query,const unsigned char *data,size_t size) {
-    struct pscloud_snapshot s;struct pscloud_bundle bundle;
-    if(selection(query,&s) || strcmp(s.slot,"WholeGame") || pscloud_bundle_index(data,size,&s,&bundle)) {message(sock,400,"Select Whole game and upload an unmodified PSCloud ZIP for this game and PS5 user");return;}
+    struct pscloud_snapshot s;
+    if(selection(query,&s) || strcmp(s.slot,"WholeGame") || archive_valid(data,size,&s)) {message(sock,400,"Select Whole game and upload an unmodified PSCloud ZIP for this game and PS5 user");return;}
     unsigned char digest[32];unsigned digest_size=0;
     if(!EVP_Digest(data,size,digest,&digest_size,EVP_sha256(),NULL) || digest_size!=32) {message(sock,500,"Cannot verify ZIP checksum");return;}
     for(unsigned i=0;i<32;i++)snprintf(s.sha256+2*i,3,"%02x",digest[i]);
@@ -549,7 +587,7 @@ static void import_pc(int sock,const char *query,const unsigned char *data,size_
             }
             strcpy(file,matching);s.created=match.created;
         }
-    } else snprintf(file,sizeof file,"ps5-11.40-%s-%s.zip",s.title,id);
+    } else snprintf(file,sizeof file,!pscloud_share_validate(data,size,s.title)?"portable-%s-%s.zip":"ps5-11.40-%s-%s.zip",s.title,id);
     snprintf(part,sizeof part,"%s.part",file);snprintf(ready,sizeof ready,"%s.ready",file);snprintf(identity,sizeof identity,"%s.identity",file);
     int fd=openat(dir,part,O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW,0600),bad=fd<0;size_t have=0;
     while(!bad && have<size) {ssize_t n=write(fd,data+have,size-have);if(n<=0)bad=1;else have+=(size_t)n;}
@@ -631,6 +669,12 @@ static void action(int sock,const char *path,const char *form) {
         if(parameter(form,"closed",closed,sizeof closed) || strcmp(closed,"yes")) {message(sock,400,"Close the game and confirm before backup");return;}
         if(!strcmp(chosen.slot,"WholeGame")) {
             pscloud_log_open(logpath);
+            if(compact_backups) {
+                char published[144];
+                if(compact_backup(&chosen,published)) {message(sock,500,"Compact backup failed; live saves untouched. Check Activity for metadata, slot, version or mount errors");return;}
+                if(!auto_upload) {message(sock,200,"Compact game-data backup saved in local queue; automatic upload is off");return;}
+                upload_created(sock,published,background);return;
+            }
 #ifndef PSCLOUD_HOST_TEST
             if((kernel_get_fw_version()&0xffff0000U)!=0x11400000U) {message(sock,400,"Whole-game backup requires validated firmware 11.40");return;}
 #endif
@@ -660,7 +704,7 @@ static void action(int sock,const char *path,const char *form) {
            parameter(form,"file",file,sizeof file) || pending_archive(file,&snapshot,&data,&size)) {free(data);message(sock,400,"Select a valid queued backup and confirm the game is closed");return;}
         int bad=strcmp(snapshot.user,chosen.user) || strcmp(snapshot.title,chosen.title) || strcmp(snapshot.slot,chosen.slot) || strcmp(snapshot.slot,"WholeGame");
         char skip[8];int smart=!parameter(form,"skip_identical",skip,sizeof skip)&&!strcmp(skip,"yes");
-        if(!bad)bad=smart?pscloud_bundle_restore_smart(home,root,&snapshot,data,size):pscloud_bundle_restore(home,root,&snapshot,data,size);
+        if(!bad)bad=restore_game_data(&snapshot,data,size,0,smart);
         free(data);
         message(sock,bad&&bad!=5?500:200,bad==5?"Save already matches this backup; no save changes or mounts needed":bad==2?"This game's keys changed; recreated-save recovery is only available for the Crash UE4 format":bad==4?"Backup and current save slots differ. No saves changed; preserve the backup and do not delete other slots":bad==3?"Restore metadata could not confirm game, slot and account identity":bad?"Restore refused or failed. Keep game closed; inspect activity and rollback":"Whole-game restore complete; original images retained in rollback");return;
     }
@@ -687,7 +731,7 @@ static void action(int sock,const char *path,const char *form) {
         if(!bad && restoring) {
             char confirm[8];
             if(parameter(form,"closed",closed,sizeof closed) || strcmp(closed,"yes") || parameter(form,"confirm",confirm,sizeof confirm) || strcmp(confirm,"yes"))bad=1;
-            else {char skip[8];int smart=!parameter(form,"skip_identical",skip,sizeof skip)&&!strcmp(skip,"yes");bad=checking?pscloud_bundle_restore_check(home,root,&snapshot,data,size):smart?pscloud_bundle_restore_smart(home,root,&snapshot,data,size):pscloud_bundle_restore(home,root,&snapshot,data,size);}
+            else {char skip[8];int smart=!parameter(form,"skip_identical",skip,sizeof skip)&&!strcmp(skip,"yes");bad=restore_game_data(&snapshot,data,size,checking,smart);}
         }
         if(!restoring && !bad) {
             char path[1400],part[144];snprintf(path,sizeof path,"%s/downloads",root);int parent=pscloud_open_directory(root);if(parent>=0) {(void)mkdirat(parent,"downloads",0700);close(parent);}int dir=pscloud_open_directory(path);

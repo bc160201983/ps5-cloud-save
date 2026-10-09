@@ -94,6 +94,8 @@ static int package_parse(const unsigned char *a,size_t size,const char *title,st
     p->count=count;return 0;
 }
 int pscloud_share_validate(const unsigned char *a,size_t size,const char *title) {
+    /* Avoid hashing entire legacy encrypted images just to detect their type. */
+    if(size<42||u32(a)!=0x04034b50||u16(a+26)!=12||memcmp(a+30,"manifest.txt",12))return -1;
     struct package *p=calloc(1,sizeof *p);if(!p)return -1;
     int bad=!pscloud_title_valid(title)||package_parse(a,size,title,p);free(p);return bad?-1:0;
 }
@@ -187,12 +189,12 @@ static void discard_completed_stage(int parent,int stage,const char *name,unsign
     pscloud_log(clean?"INFO":"WARN",clean?"Completed sharing temporary copies removed; portable package retained":"Temporary cleanup incomplete; retained directory requires inspection");
 }
 static int metadata_read(int dir,const char *title,const char *slot,struct pscloud_save_meta *meta,char hash[65]) {
-    if(!pscloud_save_meta_read(dir,meta,hash))return pscloud_save_meta_matches(meta,title,slot)?0:-1;
-    if(strcmp(slot,"sce_sdmemory")||pscloud_save_meta_read_memory(dir,meta,hash))return -1;
-    /* Identity is the selected local user's existing PPSA directory, matching
-     * installed contentVersion, exact system slot and its original sealed key.
-     * The SFO is still required, bounded, structurally parsed and preserved. */
-    pscloud_log("INFO","Validated system-memory metadata; identity anchored to existing local game/user container");return 0;
+    if(pscloud_save_meta_local(dir,meta,hash))return -1;
+    if((*meta->title&&strcmp(meta->title,title))||(*meta->slot&&strcmp(meta->slot,slot)))return -1;
+    /* Never import metadata. Anchor ownership to existing local user/title/slot,
+     * original sealed key and installed version; check readable identity fields.
+     * Opaque metadata remains byte-exact, not rewritten or account-converted. */
+    pscloud_log("INFO","Local container identity anchored; full metadata namespace guarded");return 0;
 }
 static int inventory(int source,struct package *p) {
     int scan=openat(source,".",O_RDONLY|O_DIRECTORY|O_NOFOLLOW);DIR *d=scan<0?NULL:fdopendir(scan);if(!d) {if(scan>=0)close(scan);return -1;}

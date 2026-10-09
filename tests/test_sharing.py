@@ -128,21 +128,47 @@ class GenericSharingTests(unittest.TestCase):
             self.assertEqual(self.run_share(f,1,portable(slots=('sce_sdmemory',)))[0],0)
             self.assertEqual(sfo.read_bytes(),before)
 
-    def test_normal_slot_missing_identity_still_refused(self):
+    def test_valid_metadata_without_identity_uses_local_container_anchor(self):
         with tempfile.TemporaryDirectory() as tmp:
             f=self.fixture(Path(tmp),slots=('save1',));sfo=f[4]/'save1/sce_sys/param.sfo'
             sfo.write_bytes(struct.pack('<IIIII',0x46535000,0x101,20,20,0))
-            self.assertNotEqual(self.run_share(f,1,portable(slots=('save1',)))[0],0)
+            self.assertEqual(self.run_share(f,1,portable(slots=('save1',)))[0],0)
 
     def test_system_memory_zero_placeholder_and_corrupt_metadata(self):
         for corrupt in (False,True):
             with self.subTest(corrupt=corrupt),tempfile.TemporaryDirectory() as tmp:
                 f=self.fixture(Path(tmp),slots=('sce_sdmemory',));sfo=f[4]/'sce_sdmemory/sce_sys/param.sfo'
                 data=b'\0'*3072
-                if corrupt:data=data[:100]+b'\x01'+data[101:]
+                if corrupt:data=b'\0PSF'+data[4:]
                 sfo.write_bytes(data)
                 self.assertEqual(self.run_share(f,1,portable(slots=('sce_sdmemory',)))[0]!=0,corrupt)
                 self.assertEqual(sfo.read_bytes(),data)
+
+    def test_opaque_metadata_on_arbitrary_slots_is_preserved(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            f=self.fixture(Path(tmp),slots=('arbitrary_game_slot',));sfo=f[4]/'arbitrary_game_slot/sce_sys/param.sfo'
+            data=b'opaque layout'+b'\0'*400;sfo.write_bytes(data)
+            self.assertEqual(self.run_share(f,1,portable(slots=('arbitrary_game_slot',)))[0],0)
+            self.assertEqual(sfo.read_bytes(),data)
+
+    def test_readable_wrong_identity_and_metadata_symlink_are_rejected(self):
+        for link in (False,True):
+            with self.subTest(link=link),tempfile.TemporaryDirectory() as tmp:
+                f=self.fixture(Path(tmp),slots=('save1',));sys=f[4]/'save1/sce_sys'
+                if link:(sys/'external').symlink_to(f[3]/'sdimg_save1')
+                else:
+                    sfo=sys/'param.sfo';sfo.write_bytes(sfo.read_bytes().replace(b'PPSA10528',b'PPSA99999'))
+                self.assertNotEqual(self.run_share(f,1,portable(slots=('save1',)))[0],0)
+
+    def test_metadata_guard_covers_non_sfo_files_and_nested_names(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            f=self.fixture(Path(tmp),slots=('save1',));sys=f[4]/'save1/sce_sys';(sys/'nested').mkdir();extra=sys/'nested/account.bin';extra.write_bytes(b'local metadata')
+            self.lib.pscloud_save_meta_local.argtypes=[ctypes.c_int,ctypes.c_void_p,ctypes.c_void_p]
+            def guard():
+                fd=os.open(f[4]/'save1',os.O_RDONLY|os.O_DIRECTORY);meta=ctypes.create_string_buffer(256);hash=ctypes.create_string_buffer(65)
+                try:self.assertEqual(self.lib.pscloud_save_meta_local(fd,meta,hash),0);return hash.value
+                finally:os.close(fd)
+            before=guard();extra.write_bytes(b'changed metadata');self.assertNotEqual(guard(),before)
 
     def test_restore_and_partial_rollback_retain_recovery_copies(self):
         for failure in (False,True):

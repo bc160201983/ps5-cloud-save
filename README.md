@@ -1,4 +1,31 @@
-# PS5 Cloud Save — development milestone 0.12.0
+# PS5 Cloud Save — development milestone 0.12.1
+
+## Version 0.12.1 — metadata-independent sharing and compact cloud backups
+
+Generic sharing anchors ownership to the selected existing local user/game/slot,
+matching installed version, original container identity/hash and local sealed
+keys. It guards the entire sce_sys namespace before/after payload import rather
+than requiring one SFO schema. Readable title/slot/account fields must still agree;
+malformed recognized PSF, symlinks, changing metadata and unsafe packages are
+refused. Opaque or fieldless local metadata is retained byte-for-byte. No foreign
+metadata is imported. There are no per-game or system-slot exceptions in this path.
+
+The new **Compact cloud backups** preference uses actual game-data packages for
+whole-game queue/upload/download/PC import and local-first protected restore on
+7.00 or 11.40. Existing settings retain encrypted mode until explicitly switched;
+old encrypted snapshots remain readable. Compact backups use portable- filenames
+and can also be used in the sharing importer. Deduplication checks the complete
+package hash, and uploads retain HTTPS readback verification. No ZIP compression
+is added: savings come from omitting encrypted container allocation/unused space.
+Restore requires existing local containers: start the game, make an initial save,
+close it, then restore. This is not a full disaster-recovery image or save-database
+creation. Legacy encrypted restore stays firmware-gated to 11.40.
+
+Platform ownership is preserved using recipient containers; arbitrary internal
+game-account bindings/encryption are NOT converted. Blind ID replacement is never
+performed. Same-account operation is not proof of all-game compatibility. Generic
+live restore keeps rollback and still requires the user's in-game verification.
+This release is implemented but its new hardware behavior is not verified yet.
 
 ## Version 0.12.0 — generic portable sharing and dual-firmware dashboard
 

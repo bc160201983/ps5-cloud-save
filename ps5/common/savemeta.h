@@ -8,5 +8,8 @@ int pscloud_save_meta_read(int payload,struct pscloud_save_meta *meta,char hash[
  * zero placeholder. Caller must independently anchor local container identity.
  * Never relax normal save validation. */
 int pscloud_save_meta_read_memory(int payload,struct pscloud_save_meta *meta,char hash[65]);
+/* Generic sharing: hash all local metadata; decode identities when available.
+ * Caller anchors identity to an existing local user/title/slot and own keys. */
+int pscloud_save_meta_local(int payload,struct pscloud_save_meta *meta,char hash[65]);
 int pscloud_save_meta_matches(const struct pscloud_save_meta *meta,const char *title,const char *slot);
 #endif

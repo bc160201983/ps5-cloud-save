@@ -330,6 +330,21 @@ class DashboardTests(unittest.TestCase):
         self.assertEqual(self.request('/api/share-restore',self.selected(closed='yes',confirm='yes',file='portable-missing.zip',sha256='0'*64))[0],400)
         self.assertEqual(self.image.read_bytes(),self.original)
 
+    def test_compact_backup_queue_dedup_upload_and_staged_cloud_restore(self):
+        import test_portable
+        self.process.terminate();self.process.communicate(timeout=5)
+        fixture=self.fixture.root/'compact';test_portable.PortableTests.sfo(self,fixture/SLOT,SLOT,b'\x44'*8)
+        metadata=self.root/'appmeta/PPSA02433';metadata.mkdir(parents=True);(metadata/'param.json').write_text(json.dumps({'contentVersion':'01.000.002'}))
+        self.start_server(PSCLOUD_TEST_GENERIC_PAYLOADS=str(fixture))
+        self.assertEqual(self.request('/api/preferences',{'auto_upload':'0','activity_refresh':'1','compact_backups':'1'})[0],200)
+        selected=self.selected(slot='WholeGame',closed='yes')
+        status,backup=self.request('/api/backup',selected);self.assertEqual(status,200,backup)
+        queue=self.request('/api/queue')[1]['items'];self.assertEqual(len(queue),1);self.assertTrue(queue[0]['file'].startswith('portable-'))
+        self.assertEqual(self.request('/api/backup',selected)[0],200);self.assertEqual(len(self.request('/api/queue')[1]['items']),1)
+        status,result=self.request('/api/sync-one',{'file':queue[0]['file']});self.assertEqual(status,200,result)
+        status,result=self.request('/api/restore-check',dict(selected,file=queue[0]['file'],confirm='yes'));self.assertEqual(status,200,result)
+        self.assertEqual(self.image.read_bytes(),self.original)
+
     def test_generic_dashboard_import_check_and_download(self):
         import test_sharing
         import test_portable

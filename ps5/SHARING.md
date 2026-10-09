@@ -1,5 +1,24 @@
 # Manual Crash portable sharing
 
+## 0.12.1: local identity anchors and compact cloud snapshots
+
+The generic path no longer requires specific SFO fields or a named system slot.
+It preserves and hashes all local sce_sys metadata, decoding known identities
+when possible and refusing contradictions/malformed recognized PSF. Other opaque
+local metadata stays untouched. The selected existing user/title/slot, installed
+version, original image hash/identity and own sealed keys anchor the operation.
+No foreign metadata is imported and no arbitrary internal account IDs are patched.
+
+Enable **Cloud settings → Compact cloud backups** to use this same portable
+package for whole-game queue/cloud backups. Old encrypted backups remain readable.
+The worker retains verified HTTPS upload/readback and deduplication; normal restore
+recognizes both formats. On 7.00, only the compact whole-game path is enabled.
+If receiver containers are missing, first play/create an initial save and close
+the game. Compact files cannot recreate save registrations or recover lost local
+metadata by themselves. Savings omit unused allocation, not actual progress data.
+Cloud/internal account conversion and universal in-game compatibility are not
+claimed. New 0.12.1 hardware tests are pending.
+
 ## 0.12.0: generic dashboard sharing
 
 Open either firmware 7.00 or 11.40 dashboard, choose a game, and expand
