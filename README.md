@@ -11,9 +11,14 @@ does not replace live containers, add database entries or enable dashboard
 cross-console restore. Other games/extra slots are not supported by this format.
 
 A diagnostic-only payload ran successfully on firmware 7.00 and enumerated save
-folders; no saves were mounted or changed. Native staged export/import and
-cross-console game-load compatibility remain unverified. Host/native builds are
-pending. See [sharing pilot instructions](ps5/SHARING.md).
+folders. All 112 host tests and native PS5 builds passed. On 2026-10-09, native
+Crash export passed on firmware 11.40: both copies mounted/unmounted successfully,
+and a roughly 102 KiB portable package was produced. On firmware 7.00, importing
+it into copies of the receiving profile's containers passed on-console payload
+checksum, unchanged SFO, unchanged sealed-key and live-original hash checks. Both
+games had the same installed version. No live containers were replaced; actual
+recipient restore/game-load compatibility and dashboard integration remain
+unverified or unimplemented. See [sharing pilot instructions](ps5/SHARING.md).
 
 ## Version 0.11.7 — local-first restore and optional backup housekeeping
 

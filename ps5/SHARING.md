@@ -31,6 +31,10 @@ performed automatically. Sharing packages contain personal game data: share
 only deliberately and only with trusted recipients.
 
 The firmware 7.00 read-only diagnostic successfully enumerated save folders.
-That is not native mount/import or game-load validation. Host and native build
-validation for this pilot are pending. Dashboard sharing stays unavailable until
-staged compatibility and an explicitly authorized recipient restore are tested.
+All 112 host tests and native builds passed. Native source export on 11.40 and
+recipient staged import on 7.00 passed on 2026-10-09 with the same installed
+Crash version on both consoles. Live images stayed unchanged; recipient SFO and
+sealed keys were preserved and both mounts unmounted successfully. No live
+recipient restore or game-load test was performed. Dashboard sharing stays
+unavailable until its integration and an explicitly authorized recipient restore
+are implemented and tested.
