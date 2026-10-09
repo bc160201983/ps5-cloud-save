@@ -119,16 +119,34 @@ static int clear_payload(int dir,unsigned depth) {
     while((e=readdir(d))) {
         if(!strcmp(e->d_name,".")||!strcmp(e->d_name,"..")||(!depth&&!strcmp(e->d_name,"sce_sys")))continue;
         struct stat st;if(fstatat(dir,e->d_name,&st,AT_SYMLINK_NOFOLLOW)) {bad=1;break;}
-        if(S_ISDIR(st.st_mode)) {int child=openat(dir,e->d_name,O_RDONLY|O_DIRECTORY|O_NOFOLLOW);bad=child<0||clear_payload(child,depth+1);if(child>=0)close(child);if(!bad)bad=unlinkat(dir,e->d_name,AT_REMOVEDIR);}
+        /* Preserve existing directory ownership/permissions; empty old folders
+         * are harmless and are not imported from the source package. */
+        if(S_ISDIR(st.st_mode)) {int child=openat(dir,e->d_name,O_RDONLY|O_DIRECTORY|O_NOFOLLOW);bad=child<0||clear_payload(child,depth+1);if(child>=0)close(child);}
         else if(S_ISREG(st.st_mode)&&st.st_nlink==1)bad=unlinkat(dir,e->d_name,0);
         else bad=1;
         if(bad)break;
     }
     closedir(d);return bad?-1:fsync(dir);
 }
+static int existing_attributes(int dir,const char *path,struct stat *st) {
+    char copy[1024];strcpy(copy,path);char *save=NULL,*part=strtok_r(copy,"/",&save);int current=dup(dir);
+    if(current<0)return -1;
+    while(part) {
+        char *next=strtok_r(NULL,"/",&save);
+        if(fstatat(current,part,st,AT_SYMLINK_NOFOLLOW)) {close(current);return -1;}
+        if(!next) {close(current);return S_ISREG(st->st_mode)&&st->st_nlink==1?0:-1;}
+        if(!S_ISDIR(st->st_mode)) {close(current);return -1;}
+        int child=openat(current,part,O_RDONLY|O_DIRECTORY|O_NOFOLLOW);close(current);if(child<0)return -1;current=child;part=next;
+    }
+    close(current);return -1;
+}
 static int extract_payload(int dir,const struct entry *archive) {
     struct entry *files=calloc(FILES,sizeof *files);unsigned count=0;struct stat owner;
     int bad=!files||fstat(dir,&owner)||zip_index(archive->data,archive->size,files,FILES,&count);
+    struct stat *attributes=bad?NULL:calloc(count,sizeof *attributes);if(!attributes)bad=1;
+    for(unsigned i=0;!bad&&i<count;i++) {
+        if(existing_attributes(dir,files[i].name,&attributes[i])) {attributes[i]=owner;attributes[i].st_mode=0600;}
+    }
     if(!bad)bad=clear_payload(dir,0);
     for(unsigned i=0;!bad&&i<count;i++) {
         char name[1024];strcpy(name,files[i].name);char *last=strrchr(name,'/');int target=dup(dir);
@@ -136,19 +154,20 @@ static int extract_payload(int dir,const struct entry *archive) {
         if(last) {*last++=0;char *save=NULL;for(char *part=strtok_r(name,"/",&save);part;part=strtok_r(NULL,"/",&save)) {
             /* Console mkdir may report an existing directory without errno.
              * The no-follow directory open below is the authoritative check. */
+            struct stat previous;int existed=!fstatat(target,part,&previous,AT_SYMLINK_NOFOLLOW)&&S_ISDIR(previous.st_mode);
             (void)mkdirat(target,part,0700);
             int next=openat(target,part,O_RDONLY|O_DIRECTORY|O_NOFOLLOW);if(next<0) {bad=1;break;}
-            if(fchown(next,owner.st_uid,owner.st_gid)||fsync(target))bad=1;
+            if((!existed&&fchown(next,owner.st_uid,owner.st_gid))||fsync(target))bad=1;
             close(target);target=next;if(bad)break;
         }} else last=name;
         if(!bad)bad=write_bytes(target,last,files[i].data,files[i].size);
         int fd=bad?-1:openat(target,last,O_RDONLY|O_NOFOLLOW);char hash[65],expected[65];
         if(fd<0)bad=1;
-        if(fd>=0) {if(fchown(fd,owner.st_uid,owner.st_gid)||fsync(fd)||pscloud_file_hash(fd,hash)||digest(files[i].data,files[i].size,expected)||strcmp(hash,expected))bad=1;close(fd);}
+        if(fd>=0) {if(fchown(fd,attributes[i].st_uid,attributes[i].st_gid)||fchmod(fd,attributes[i].st_mode&0777)||fsync(fd)||pscloud_file_hash(fd,hash)||digest(files[i].data,files[i].size,expected)||strcmp(hash,expected))bad=1;close(fd);}
         if(fsync(target))bad=1;
         close(target);
     }
-    free(files);return bad?-1:fsync(dir);
+    free(attributes);free(files);return bad?-1:fsync(dir);
 }
 static int order(const void *a,const void *b) {return strcmp(a,b);}
 /* Known files only, after a successful no-live-change operation and clean

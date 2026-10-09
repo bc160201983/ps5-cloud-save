@@ -82,11 +82,15 @@ class GenericSharingTests(unittest.TestCase):
 
     def test_stage_check_preserves_live_keys_metadata_and_imports_all_files(self):
         with tempfile.TemporaryDirectory() as tmp:
-            f=self.fixture(Path(tmp));self.assertEqual(self.run_share(f,1,portable())[0],0)
+            f=self.fixture(Path(tmp))
+            for slot in ('save1','profile'):
+                (f[4]/slot/'folder').mkdir();(f[4]/slot/'folder/progress.bin').write_bytes(b'old');(f[4]/slot/'folder/progress.bin').chmod(0o640)
+            self.assertEqual(self.run_share(f,1,portable())[0],0)
             for i,slot in enumerate(('save1','profile')):
                 self.assertEqual((f[3]/('sdimg_'+slot)).read_bytes(),b'\x02'+b'\0'*8191)
                 self.assertEqual((f[4]/slot/'sce_sys/param.sfo').read_bytes(),f[5][i])
                 self.assertEqual((f[4]/slot/'folder/progress.bin').read_bytes(),b'shared')
+                self.assertEqual((f[4]/slot/'folder/progress.bin').stat().st_mode&0o777,0o640)
                 self.assertFalse((f[4]/slot/'stale-file').exists())
             self.assertFalse((f[1]/'.mount-active').exists())
             self.assertFalse(list(f[1].glob('portable-stage-*')))
