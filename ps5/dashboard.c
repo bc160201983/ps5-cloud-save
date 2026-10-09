@@ -35,6 +35,7 @@ extern int pscloud_worker_main(int,char **);
 extern int pscloud_download_main(int,char **);
 static char root[1024],home[1024],cloudpath[1200],logpath[1200],token[33],appmeta[1200];
 static int cloud_status;
+static int auto_upload=1,activity_refresh=1;
 static volatile sig_atomic_t stopped;
 static void stop_server(int sig) {(void)sig;stopped=1;}
 struct response {char *data;size_t size,limit;};
@@ -127,6 +128,45 @@ static void respond(int sock,int status,const char *type,const char *data,size_t
 static void message(int sock,int status,const char *text) {
     char json[1024];snprintf(json,sizeof json,"{\"ok\":%s,\"message\":\"%s\"}",status==200?"true":"false",text);
     respond(sock,status,"application/json",json,strlen(json));
+}
+static void preferences(int sock,const char *form) {
+    if(form) {
+        char upload[8],refresh[8];
+        if(parameter(form,"auto_upload",upload,sizeof upload) || parameter(form,"activity_refresh",refresh,sizeof refresh) ||
+           (strcmp(upload,"0") && strcmp(upload,"1")) || (strcmp(refresh,"0") && strcmp(refresh,"1"))) {
+            message(sock,400,"Preferences require explicit on/off values");return;
+        }
+        char unavailable[8];
+        if(!parameter(form,"game_close_backup",unavailable,sizeof unavailable) && strcmp(unavailable,"0")) {
+            message(sock,400,"Automatic game-close backup is not available yet");return;
+        }
+        char file[1200],text[128];snprintf(file,sizeof file,"%s/preferences.conf",root);
+        snprintf(text,sizeof text,"AUTO_UPLOAD=%s\nACTIVITY_REFRESH=%s\n",upload,refresh);
+        if(atomic_config(file,text)) {message(sock,500,"Preferences could not be saved");return;}
+        auto_upload=!strcmp(upload,"1");activity_refresh=!strcmp(refresh,"1");
+        pscloud_log("EVENT","Preferences saved: automatic upload %s; activity refresh %s",auto_upload?"on":"off",activity_refresh?"on":"off");
+    }
+    char json[512];snprintf(json,sizeof json,"{\"auto_upload\":%s,\"activity_refresh\":%s,\"game_close_backup\":false,\"game_close_available\":false,\"sharing_available\":false,\"message\":\"Preferences saved on this PS5\"}",auto_upload?"true":"false",activity_refresh?"true":"false");
+    respond(sock,200,"application/json",json,strlen(json));
+}
+static void load_preferences(void) {
+    /* Inventory first: the console SDK can return unusual descriptors for missing files. */
+    DIR *dir=opendir(root);if(!dir)return;int exists=0;struct dirent *e;
+    while((e=readdir(dir)))if(!strcmp(e->d_name,"preferences.conf"))exists=1;
+    closedir(dir);if(!exists)return;
+    char path[1200];snprintf(path,sizeof path,"%s/preferences.conf",root);
+    int fd=open(path,O_RDONLY | O_NOFOLLOW | O_NONBLOCK);struct stat st;char data[129]={0};
+    if(fd<0)return;
+    if(!fstat(fd,&st) && S_ISREG(st.st_mode) && st.st_size>0 && st.st_size<129) {
+        ssize_t n=read(fd,data,128);
+        if(n>0) {
+            if(!strcmp(data,"AUTO_UPLOAD=0\nACTIVITY_REFRESH=0\n")) {auto_upload=0;activity_refresh=0;}
+            else if(!strcmp(data,"AUTO_UPLOAD=0\nACTIVITY_REFRESH=1\n")) {auto_upload=0;activity_refresh=1;}
+            else if(!strcmp(data,"AUTO_UPLOAD=1\nACTIVITY_REFRESH=0\n")) {auto_upload=1;activity_refresh=0;}
+            else if(strcmp(data,"AUTO_UPLOAD=1\nACTIVITY_REFRESH=1\n")) {auto_upload=0;pscloud_log("WARN","Invalid preferences; automatic upload paused");}
+        }
+    } else {auto_upload=0;pscloud_log("WARN","Unreadable preferences; automatic upload paused");}
+    close(fd);
 }
 static void escaped(char *out,size_t max,const char *input) {
     size_t n=0;
@@ -389,6 +429,7 @@ static void configure_cloud(int sock,const char *form) {
     memset(config,0,sizeof config);memset(s.password,0,sizeof s.password);message(sock,200,"Nextcloud connected and settings saved");
 }
 static void action(int sock,const char *path,const char *form) {
+    pscloud_log("EVENT","Dashboard action: %s",path);
     struct pscloud_snapshot chosen;char closed[8];
     if(!strcmp(path,"/api/sync")) {int result=upload_queue();message(sock,result?502:200,result?"Upload pending; local backups retained":"Queued backups uploaded");return;}
     if(!strcmp(path,"/api/sync-one")) {
@@ -406,6 +447,7 @@ static void action(int sock,const char *path,const char *form) {
             if((kernel_get_fw_version()&0xffff0000U)!=0x11400000U) {message(sock,400,"Whole-game backup requires validated firmware 11.40");return;}
 #endif
             if(pscloud_game_backup(home,root,chosen.user,chosen.title)) {message(sock,500,"Whole-game backup failed; originals untouched. Both progress and profile saves must exist");return;}
+            if(!auto_upload) {message(sock,200,"Whole-game backup saved in local queue; automatic upload is off");return;}
             int result=upload_queue();message(sock,result?502:200,result?"Whole-game backup retained locally; upload pending":"Whole-game backup checked and uploaded");return;
         }
         char config[512],file[1200];snprintf(file,sizeof file,"%s/dashboard-backup.conf",root);
@@ -420,6 +462,7 @@ static void action(int sock,const char *path,const char *form) {
 #endif
         pscloud_log_open(logpath);
         if(result) {message(sock,500,"Backup failed; inspect log. Original save was not replaced");return;}
+        if(!auto_upload) {message(sock,200,"Backup saved in local queue; automatic upload is off");return;}
         result=upload_queue();message(sock,result?502:200,result?"Backup retained locally; cloud upload pending":"Backup checked and cloud queue uploaded");return;
     }
     if(!strcmp(path,"/api/restore-local")) {
@@ -558,6 +601,7 @@ static void serve(int sock) {
         snprintf(json,sizeof json,"{\"version\":\"%s\",\"pid\":%ld,\"cloud_http\":%d,\"configured\":%s,\"connected\":%s,\"url\":\"%s\",\"username\":\"%s\"}",PSCLOUD_VERSION,(long)getpid(),cloud_status,configured?"true":"false",cloud_status==200 || cloud_status==207?"true":"false",address,username);
         respond(sock,200,"application/json",json,strlen(json));return;
     }
+    if(!strcmp(url,"/api/preferences") && (!strcmp(method,"GET") || !strcmp(method,"POST"))) {preferences(sock,!strcmp(method,"POST")?body:NULL);return;}
     if(!strcmp(method,"GET") && !strcmp(url,"/api/games")) {games(sock);return;}
     if(!strcmp(method,"GET") && !strcmp(url,"/api/icon")) {game_icon(sock,query);return;}
     if(!strcmp(method,"GET") && !strcmp(url,"/api/backups")) {backups(sock,query);return;}
@@ -606,7 +650,7 @@ int main(int argc,char **argv) {
         "/data/pscloud.log"
 #endif
     );
-    pscloud_log_open(logpath);signal(SIGPIPE,SIG_IGN);signal(SIGTERM,stop_server);signal(SIGINT,stop_server);
+    pscloud_log_open(logpath);load_preferences();signal(SIGPIPE,SIG_IGN);signal(SIGTERM,stop_server);signal(SIGINT,stop_server);
     if(curl_global_init(CURL_GLOBAL_DEFAULT))return 2;
     int server=socket(AF_INET,SOCK_STREAM,0);if(server<0)return 2;
     int yes=1;setsockopt(server,SOL_SOCKET,SO_REUSEADDR,&yes,sizeof yes);

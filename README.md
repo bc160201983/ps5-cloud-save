@@ -1,4 +1,20 @@
-# PS5 Cloud Save — development milestone 0.8.0
+# PS5 Cloud Save — development milestone 0.9.0
+
+## Version 0.9.0 — cloud settings, activity and user preferences
+
+- Provider-neutral Koofr/Nextcloud HTTPS WebDAV settings and saved-connection test.
+  Saved passwords are never returned to the browser.
+- PS5-persisted automatic-upload preference: on preserves immediate upload after
+  manual backups; off keeps both whole-game and per-slot backups in the local
+  queue. Explicit Upload / Upload all remain available. PC imports stay queued.
+- Optional activity auto-refresh while the page is visible, newest-first log
+  entries, warnings/errors and event filters, search and recent-log download.
+  Activity is the latest 8 KiB of the console log, not a permanent cloud audit.
+- Game-close automation and portable cross-console/profile sharing are visibly
+  unavailable, not functional switches. No automatic save deletion is added;
+  closure, identity, checksum and rollback safeguards cannot be disabled.
+- Implemented with new host fixtures; build/test and console UI validation pending.
+  Firmware 11.40 Crash restore confirmation belongs to v0.8.0 below.
 
 ## Version 0.8.0 — recreated-container recovery
 

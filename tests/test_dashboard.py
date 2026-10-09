@@ -72,6 +72,34 @@ class DashboardTests(unittest.TestCase):
 
     def selected(self,**extra):return dict(user='1eb70483',title='PPSA02433',slot=SLOT,**extra)
 
+    def test_preferences_persist_and_unavailable_automation_rejected(self):
+        self.assertTrue(self.request('/api/preferences')[1]['auto_upload'])
+        self.assertEqual(self.request('/api/preferences',{'auto_upload':'0','activity_refresh':'0'})[0],200)
+        self.assertEqual(self.request('/api/preferences',{'auto_upload':'yes','activity_refresh':'0'})[0],400)
+        self.assertEqual(self.request('/api/preferences',{'auto_upload':'1','activity_refresh':'1','game_close_backup':'1'})[0],400)
+        self.process.terminate();self.process.communicate(timeout=5);self.start_server()
+        prefs=self.request('/api/preferences')[1]
+        self.assertFalse(prefs['auto_upload']);self.assertFalse(prefs['activity_refresh'])
+        self.assertFalse(prefs['game_close_available']);self.assertFalse(prefs['sharing_available'])
+
+    def test_local_only_backup_then_explicit_upload(self):
+        self.assertEqual(self.request('/api/preferences',{'auto_upload':'0','activity_refresh':'1'})[0],200)
+        chosen=self.selected(closed='yes')
+        self.assertEqual(self.request('/api/backup',chosen)[0],200)
+        self.assertEqual(self.fixture.puts,[])
+        queue=self.request('/api/queue')[1];self.assertEqual(queue['count'],1)
+        self.assertEqual(self.request('/api/sync-one',{'file':queue['items'][0]['file']})[0],200)
+        self.assertEqual(self.request('/api/queue')[1]['count'],0)
+
+    def test_whole_game_local_only_and_preference_authentication(self):
+        self.assertEqual(self.request('/api/preferences',{'auto_upload':'0','activity_refresh':'1'},token=False)[0],401)
+        self.assertEqual(self.request('/api/preferences',{'auto_upload':'0','activity_refresh':'1'})[0],200)
+        self.image.with_name('sdimg_PlayerSaveProfileSaveData').write_bytes(self.original)
+        chosen=self.selected(closed='yes',slot='WholeGame')
+        self.assertEqual(self.request('/api/backup',chosen)[0],200)
+        self.assertEqual(self.fixture.puts,[])
+        self.assertEqual(self.request('/api/queue')[1]['count'],1)
+
     def binary(self,path,data=None):
         c=http.client.HTTPConnection('127.0.0.1',self.port,timeout=15)
         c.request('POST' if data is not None else 'GET',path,data,{'Cookie':self.cookie,'X-PSCloud-Request':'1'})
