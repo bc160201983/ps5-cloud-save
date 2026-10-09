@@ -1,4 +1,20 @@
-# PS5 Cloud Save — development milestone 0.5.3
+# PS5 Cloud Save — development milestone 0.6.0
+
+## Version 0.6.0
+
+- Whole-game backup for Crash Bandicoot 4 on firmware 11.40: one ZIP holds both
+  encrypted progress and profile images, plus an identity/hash manifest. Neither
+  original is mounted or modified. Missing slots or changing sources abort.
+- Whole-game snapshots use `User-<id>/WholeGame/`; older per-slot backups remain
+  selectable and unchanged. The ZIP is same-console encrypted data, not a portable
+  decrypted save. Whole-game restore/import is deliberately disabled pending
+  recovery validation; download these archives through your cloud provider.
+- Snapshot dates include local date, time and timezone, sorted newest first.
+  Legacy snapshots without dates display “Date unavailable”. Dates reflect the
+  console clock, not proof of when game progress changed.
+- Koofr WebDAV connection and dashboard uploads are console-confirmed. Per-slot
+  console-managed export and unchanged-save skipping are also console-tested.
+  The new whole-game path is implemented; live validation is pending.
 
 This is the first tested component of a proposed standalone PS5 cloud-save app.
 It is NOT an installable PS5 application or a complete save-sync implementation.

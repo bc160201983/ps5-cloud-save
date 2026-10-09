@@ -123,14 +123,20 @@ static int walk(struct writer *w,int root,const char *prefix,unsigned depth) {
        before.st_mtim.tv_nsec!=after.st_mtim.tv_nsec)) {errno=EBUSY; failed=1;}
     return failed ? -1 : 0;
 }
-int pscloud_zip_export(int source_fd,const char *destination,unsigned *files,unsigned long long *bytes) {
+static int export_zip(int source_fd,const char *destination,const char *const *names,unsigned count,unsigned *files,unsigned long long *bytes) {
     *files=0; *bytes=0;
     int fd=open(destination,O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW,0600);
     if(fd<0) return -1;
     struct writer w={0};
     w.out=fdopen(fd,"wb"); w.entries=calloc(MAX_FILES,sizeof *w.entries);
     if(!w.out || !w.entries) {if(w.out)fclose(w.out); else close(fd); free(w.entries); return -1;}
-    int failed=walk(&w,source_fd,"",0)!=0;
+    int failed=0;
+    if(names) {
+        for(unsigned i=0;i<count && !failed;i++) {
+            if(!names[i][0] || strchr(names[i],'/') || strchr(names[i],'\\') || !strcmp(names[i],".") || !strcmp(names[i],".."))failed=1;
+            else failed=add_file(&w,source_fd,names[i],names[i])!=0;
+        }
+    } else failed=walk(&w,source_fd,"",0)!=0;
     if(!failed && !w.count) {errno=ENOENT; failed=1;}
     off_t start=ftello(w.out);
     if(start<0) failed=1;
@@ -155,4 +161,11 @@ int pscloud_zip_export(int source_fd,const char *destination,unsigned *files,uns
     for(unsigned i=0;i<w.count;i++) free(w.entries[i].name);
     free(w.entries); errno=saved;
     return failed ? -1 : 0;
+}
+int pscloud_zip_export(int source_fd,const char *destination,unsigned *files,unsigned long long *bytes) {
+    return export_zip(source_fd,destination,NULL,0,files,bytes);
+}
+int pscloud_zip_export_named(int source_fd,const char *destination,const char *const *names,unsigned count,unsigned *files,unsigned long long *bytes) {
+    if(!names || count>MAX_FILES)return -1;
+    return export_zip(source_fd,destination,names,count,files,bytes);
 }

@@ -52,3 +52,21 @@ The dashboard handles one operation at a time. It does not automatically start
 after reboot or detect game closure. Avoid running other save mounters while
 using it. Startup still requires an ELF loader; normal dashboard operations run
 on the PS5 and can be triggered from a phone without a PC.
+# Whole-game ZIP snapshots (0.6.0)
+
+For the validated Crash Bandicoot 4 game/user with both progress and profile
+saves, “Whole game” is the default backup selection. One stored ZIP contains
+`sdimg_PlayerSaveSlot0Save`, `sdimg_PlayerSaveProfileSaveData` and `manifest.txt`
+with hashes and identity. The encrypted images retain their console-specific
+metadata. No original save is mounted, changed or deleted. Both must remain
+unchanged throughout copying; a missing/unsafe image aborts the entire snapshot.
+Unchanged whole-game ZIPs are skipped. Cloud storage uses a `WholeGame` folder
+under the existing game/user folder. Existing per-slot snapshots remain usable.
+
+These encrypted whole-game archives can be downloaded from Koofr/WebDAV. They
+cannot yet be imported or restored through PSCloud. Do not replace console files
+manually or delete your original saves as a test. The single-slot restorer is
+explicitly blocked for this format.
+
+Cloud version cards show the console-recorded creation date in the browser's
+local timezone, newest first. Undated older commits show “Date unavailable”.

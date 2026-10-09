@@ -24,7 +24,7 @@ class DashboardTests(unittest.TestCase):
         subprocess.run(['cc','-O2','-std=c11','-Wall','-Wextra','-Werror',
                         '-DPSCLOUD_HOST_TEST','-DPSCLOUD_BACKUP_EMBEDDED','-DPSCLOUD_DOWNLOAD_EMBEDDED','-DPSCLOUD_EMBEDDED',
                         *[str(ROOT/p) for p in ['ps5/dashboard.c','ps5/backup.c','ps5/download.c','src/worker.c']],
-                        *[str(ROOT/'ps5/common'/n) for n in ['managed.c','mount.c','restore.c','zip.c','log.c','cloud.c','snapshot.c','appmeta.c']],
+                        *[str(ROOT/'ps5/common'/n) for n in ['managed.c','mount.c','restore.c','zip.c','log.c','cloud.c','snapshot.c','appmeta.c','bundle.c']],
                         '-o',str(ROOT/'dashboard-host'),'-lcurl','-lcrypto'],check=True)
 
     def setUp(self):
@@ -138,6 +138,34 @@ class DashboardTests(unittest.TestCase):
         self.assertEqual(len(list((self.root/'spool').glob('*.sent'))),1)
         self.assertEqual(self.image.read_bytes(),self.original)
         self.assertTrue(any(k.startswith(PREFIX) and k.endswith('.zip') for k in self.fixture.objects))
+
+    def test_whole_game_zip_contains_both_images_and_skips_unchanged(self):
+        profile=self.image.with_name('sdimg_PlayerSaveProfileSaveData')
+        profile.write_bytes(b'\x02'+b'P'*8191)
+        chosen=self.selected(closed='yes');chosen['slot']='WholeGame'
+        self.assertEqual(self.request('/api/backup',chosen)[0],200)
+        archives=list((self.root/'spool').glob('*.sent'));self.assertEqual(len(archives),1)
+        with zipfile.ZipFile(archives[0]) as z:
+            self.assertIsNone(z.testzip())
+            self.assertEqual(set(z.namelist()),{'sdimg_PlayerSaveSlot0Save','sdimg_PlayerSaveProfileSaveData','manifest.txt'})
+            self.assertEqual(z.read('sdimg_PlayerSaveSlot0Save'),self.original)
+            self.assertEqual(z.read('sdimg_PlayerSaveProfileSaveData'),profile.read_bytes())
+        self.assertEqual(self.request('/api/backup',chosen)[0],200)
+        self.assertEqual(len(list((self.root/'spool').glob('*.sent'))),1)
+        self.assertEqual(self.image.read_bytes(),self.original)
+        self.assertEqual(self.request('/api/restore',chosen)[0],400)
+        chosen.pop('closed')
+        status,listing=self.request('/api/backups?'+urllib.parse.urlencode(chosen))
+        self.assertEqual(status,200);self.assertEqual(len(listing['backups']),1)
+        self.assertGreater(listing['backups'][0]['created'],0)
+
+    def test_whole_game_missing_or_symlinked_profile_is_not_published(self):
+        chosen=self.selected(closed='yes');chosen['slot']='WholeGame'
+        self.assertEqual(self.request('/api/backup',chosen)[0],500)
+        profile=self.image.with_name('sdimg_PlayerSaveProfileSaveData');profile.symlink_to(self.image)
+        self.assertEqual(self.request('/api/backup',chosen)[0],500)
+        self.assertFalse(list((self.root/'spool').glob('*.ready')))
+        self.assertEqual(self.image.read_bytes(),self.original)
 
     def test_restore_rejects_unconfirmed_and_wrong_identity(self):
         self.assertEqual(self.request('/api/restore',self.selected(file=FILE,closed='no',confirm='yes'))[0],400)

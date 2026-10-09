@@ -7,6 +7,7 @@
 #include "common/managed.h"
 #include "common/log.h"
 #include "common/appmeta.h"
+#include "common/bundle.h"
 #include "ui.h"
 #include <curl/curl.h>
 #include <sys/socket.h>
@@ -98,7 +99,7 @@ static int selection(const char *form,struct pscloud_snapshot *s) {
     if(parameter(form,"user",s->user,sizeof s->user) || parameter(form,"title",s->title,sizeof s->title) || parameter(form,"slot",s->slot,sizeof s->slot))return -1;
     memset(s->sha256,'0',64);s->sha256[64]=0;
     return !pscloud_snapshot_valid(s) || strcmp(s->title,"PPSA02433") ||
-        (strcmp(s->slot,"PlayerSaveSlot0Save") && strcmp(s->slot,"PlayerSaveProfileSaveData"))?-1:0;
+        (strcmp(s->slot,"PlayerSaveSlot0Save") && strcmp(s->slot,"PlayerSaveProfileSaveData") && strcmp(s->slot,"WholeGame"))?-1:0;
 }
 static int atomic_config(const char *path,const char *text) {
     char part[1400];snprintf(part,sizeof part,"%s.new",path);
@@ -235,6 +236,13 @@ static void action(int sock,const char *path,const char *form) {
     if(selection(form,&chosen)) {message(sock,400,"Unsupported save selection");return;}
     if(!strcmp(path,"/api/backup")) {
         if(parameter(form,"closed",closed,sizeof closed) || strcmp(closed,"yes")) {message(sock,400,"Close the game and confirm before backup");return;}
+        if(!strcmp(chosen.slot,"WholeGame")) {
+#ifndef PSCLOUD_HOST_TEST
+            if((kernel_get_fw_version()&0xffff0000U)!=0x11400000U) {message(sock,400,"Whole-game backup requires validated firmware 11.40");return;}
+#endif
+            if(pscloud_game_backup(home,root,chosen.user,chosen.title)) {message(sock,500,"Whole-game backup failed; originals untouched. Both progress and profile saves must exist");return;}
+            int result=upload_queue();message(sock,result?502:200,result?"Whole-game backup retained locally; upload pending":"Whole-game backup checked and uploaded");return;
+        }
         char config[512],file[1200];snprintf(file,sizeof file,"%s/dashboard-backup.conf",root);
         snprintf(config,sizeof config,"USER_ID=%s\nTITLE=%s\nSAVE_NAME=%s\nCONFIRM_GAME_CLOSED=yes\n",chosen.user,chosen.title,chosen.slot);
         if(atomic_config(file,config)) {message(sock,500,"Backup selection could not be saved");return;}
@@ -249,9 +257,11 @@ static void action(int sock,const char *path,const char *form) {
         if(result) {message(sock,500,"Backup failed; inspect log. Original save was not replaced");return;}
         result=upload_queue();message(sock,result?502:200,result?"Backup retained locally; cloud upload pending":"Backup checked and cloud queue uploaded");return;
     }
+    if(!strcmp(chosen.slot,"WholeGame") && !strcmp(path,"/api/restore")) {message(sock,400,"Whole-game restore is not enabled; encrypted archives require same-console recovery validation");return;}
     char file[128];struct settings cloud={0};struct pscloud_snapshot snapshot;
     if(parameter(form,"file",file,sizeof file) || pscloud_configure(cloudpath,&cloud) || remote_snapshot(&cloud,&chosen,file,&snapshot)) {message(sock,400,"Cloud backup identity could not be verified");return;}
     int restoring=!strcmp(path,"/api/restore");
+    if(!strcmp(chosen.slot,"WholeGame")) {message(sock,400,"Whole-game ZIP download is available from your cloud provider; PS5 import is not enabled yet");return;}
     if(restoring) {
         char confirm[8];
         if(parameter(form,"closed",closed,sizeof closed) || strcmp(closed,"yes") || parameter(form,"confirm",confirm,sizeof confirm) || strcmp(confirm,"yes")) {message(sock,400,"Restore requires game-closed and replacement confirmation");return;}
