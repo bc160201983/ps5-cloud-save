@@ -13,7 +13,14 @@
 - Game-close automation and portable cross-console/profile sharing are visibly
   unavailable, not functional switches. No automatic save deletion is added;
   closure, identity, checksum and rollback safeguards cannot be disabled.
-- Implemented with new host fixtures; build/test and console UI validation pending.
+- Fixed Settings/Activity navigation: SVG icons no longer duplicate page IDs.
+- All 85 host tests and native PS5 builds passed. Deployed on firmware 11.40:
+  preferences save/read and original-choice restoration, unavailable-feature
+  flags, saved Koofr connection test and activity events passed. Browser checks
+  verified both pages, preference controls, and activity search in a safe preview;
+  the real PS5 settings page also displayed the saved choices correctly.
+  Local-only backup and explicit-upload behavior passed host fixtures, not a new
+  live save backup test. No game saves were changed by the settings smoke check.
   Firmware 11.40 Crash restore confirmation belongs to v0.8.0 below.
 
 ## Version 0.8.0 — recreated-container recovery
