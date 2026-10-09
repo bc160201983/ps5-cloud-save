@@ -9,7 +9,10 @@ without creating a new version. Authentication/network/server errors retain the
 retry job and report pending upload rather than pretending the cloud copy exists.
 Only the selected matching snapshot is reconsidered; deleted historical versions
 are not all resurrected. This applies to whole-game and per-slot dashboard backups.
-Host and live console validation of this release are pending.
+All 72 host tests and PS5 builds passed. On firmware 11.40 with Koofr, an empty
+whole-game cloud folder was repopulated from the existing verified local archive.
+A repeated unchanged backup kept one cloud version. Cloud ZIP CRC/SHA-256 checks
+passed and both original console images matched before and after testing.
 
 ### 0.6.2 uploaded-archive deduplication
 
