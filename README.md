@@ -18,9 +18,12 @@ milestone. Background processing does not yet detect game closure, run after the
 payload stops, or guarantee operation in rest mode. These are not PSN-equivalent
 capabilities yet.
 
-Host regression and native build validation are pending; native background and
-large-backup upload behavior must still be tested on the console. No live saves
-were mounted or restored for this change.
+All 104 host regression tests and native PS5 builds passed. Fixtures verified
+immediate job acceptance, readable library/queue/progress during a blocked upload,
+competing-write rejection, verified completion and cancellation retaining the
+local archive. Native background and large-backup upload behavior must still be
+tested on the console, whose dashboard/loader/FTP ports were unreachable during
+the deployment check. No live saves were mounted or restored for this change.
 
 ## Version 0.11.4 — bounded large transfers and visible upload stages
 

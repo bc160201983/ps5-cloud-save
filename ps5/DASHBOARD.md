@@ -1,13 +1,24 @@
 # PSCloud dashboard
 
-## Current behavior — 0.11.1
+## Current behavior — 0.11.5
 
 Dashboard HTML and authenticated `/api/health` remain available while a slow
 operation runs. Save/cloud operations are still serialized: competing API calls
-return a busy response immediately. Up to eight bounded client threads are used;
+return a busy response immediately. Up to twelve bounded client/job threads are used;
 idle browser sockets no longer block all requests. Cloud lists have a 60-second
 browser cache; Refresh bypasses it. WebDAV upload completion requires SHA-256
 readback of the remote archive before committing the queue entry.
+
+Upload this / Upload all start a background worker. The bottom-right panel shows
+the game, transfer stage, uploaded/verified bytes and result, with Cancel upload
+available. Navigation, saved state, activity and captured library/queue views stay
+available; backup/restore/import and cloud configuration changes wait for the job
+to finish. Queue views refresh on completion. Closing the tab does not stop the
+console worker; reopening it reconnects to progress. Keep the payload and console
+running. Rest-mode operation and automatic game-close detection are not validated.
+Cancellation leaves local queue archives intact for retry. Only one job runs at a
+time; failure never marks an unverified remote copy as successfully uploaded.
+Automatic upload after a manual backup still uses the synchronous path for now.
 
 Cloud Settings includes a Google device-sign-in developer preview. This is NOT
 an active Google transfer provider yet: a registered TV/device OAuth client and
