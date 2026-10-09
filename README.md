@@ -12,7 +12,12 @@ A `/api/restore-check` staged validation does not replace live save images.
 This still requires existing, properly registered destination saves: if both
 were deleted, launch the game to create fresh saves, close it, then recover.
 Creation of PS5 save-database records from scratch is not implemented.
-This release is implemented; host and console staged validation are pending.
+All 81 host tests and native PS5 builds passed. Firmware 11.40 staged recovery
+successfully prepared both recreated Crash Bandicoot 4 saves, preserving their
+new keys and metadata; both live image hashes remained unchanged during that check.
+The user subsequently confirmed that restoring the game files worked in-game.
+This is one same-console Crash test, not validation of every game or firmware.
+Power-loss interruption recovery remains manual; retain rollback copies.
 
 ## Version 0.7.1 — explicit duplicate choices for PC imports
 
@@ -23,12 +28,13 @@ or Upload separate version. Replace retains the existing filename/date and queue
 an explicit overwrite; it does not silently create another version. Separate
 always creates a new version. Different progress is never automatically replaced.
 Direct duplicate imports without a policy require a choice rather than defaulting
-to a new file. This release is implemented; host and console checks are pending.
+to a new file. All 78 host tests and native builds passed for this release;
+the duplicate-choice interface still needs a dedicated console interaction test.
 
 Console investigation confirmed that deletion/recreation changes both encrypted
 save keys. The raw-image restore intentionally refuses those destinations; it
-cannot yet recover into a deleted/recreated save. A clear rejection is shown.
-Decrypted payload migration into fresh, properly registered saves is still needed.
+could not recover into a deleted/recreated save in version 0.7.1.
+Version 0.8.0 adds the staged payload migration described above.
 The console log also recorded a user-run successful same-key whole-game restore;
 changed-progress game-load validation is not confirmed. Rollback copies remain.
 
@@ -52,8 +58,8 @@ changed-progress game-load validation is not confirmed. Rollback copies remain.
   rejection and partial-commit rollback fixtures. Live firmware 11.40 testing
   verified PC ZIP download/import, local queue download, queue counts, individual
   upload and upload-all. These checks did not restore or modify console saves.
-  Real console overwrite/game-load validation has NOT been performed for
-  whole-game restore; that remains experimental until a controlled hardware test.
+  At release time, console overwrite/game-load validation was pending.
+  See version 0.8.0 above for the subsequent user-confirmed restore result.
 
 ### 0.6.3 cloud-aware unchanged backups
 
