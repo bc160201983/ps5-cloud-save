@@ -588,7 +588,7 @@ static void serve(int sock) {
         if(header_value(request,"Content-Length",length,sizeof length)) {message(sock,400,"Content length missing");return;}
         char *end=NULL;unsigned long n=strtoul(length,&end,10);
         if(!strncmp(url,"/api/import?",12)) {
-            if(!*length || *end || !n || n>PSCLOUD_RESTORE_MAX) {message(sock,400,"ZIP upload limit is 256 MiB");return;}
+            if(!*length || *end || !n || n>PSCLOUD_RESTORE_MAX) {message(sock,400,"ZIP upload limit is 512 MiB");return;}
             unsigned char *data=malloc(n);if(!data) {message(sock,500,"Not enough memory");return;}
             size_t have=size-headers;if(have>n)have=n;memcpy(data,body,have);time_t deadline=time(NULL)+120;
             while(have<n && time(NULL)<deadline) {ssize_t got=recv(sock,data+have,n-have,0);if(got<=0)break;have+=(size_t)got;}

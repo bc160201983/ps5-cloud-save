@@ -157,8 +157,8 @@ int pscloud_game_backup(const char *home,const char *root,const char *user,const
         unsigned char magic=0;
         if(sources[i]<0 || fstat(sources[i],&before[i]) || !S_ISREG(before[i].st_mode) || before[i].st_nlink!=1 || before[i].st_size<0x860 ||
            pread(sources[i],&magic,1,0)!=1 || magic!=2 || pscloud_file_hash(sources[i],hashes[i]))goto done;
-        total+=(unsigned long long)before[i].st_size+210;
-        if(total+18000>PSCLOUD_RESTORE_MAX) {pscloud_log("ERROR","Whole-game archive exceeds 256 MiB safety limit");goto done;}
+        total+=(unsigned long long)before[i].st_size+256;
+        if(total+18000>PSCLOUD_RESTORE_MAX) {pscloud_log("ERROR","Whole-game archive exceeds 512 MiB safety limit");goto done;}
     }
     if(pscloud_random_id(id))goto done;
     snprintf(stage_name,sizeof stage_name,"bundle-%s",id);

@@ -4,7 +4,7 @@
 
 Choose any discovered PS5/PPSA game and user, select Whole game, close the game
 and confirm, then Back up now. All active save containers are included, not only
-Slot 0/profile. Up to 128 slots and a 256 MiB ZIP are supported; larger or unsafe
+Slot 0/profile. Up to 128 slots and a 512 MiB ZIP are supported; larger or unsafe
 inventories fail without publishing a partial snapshot. PS4/CUSA is not supported.
 V2 ZIPs store sorted encrypted containers and a per-file checksum manifest.
 Legacy Crash two-slot V1 archives remain readable and unchanged backups deduplicate.
@@ -35,7 +35,7 @@ bounded while the total count is retained.
 Open Crash Bandicoot 4, choose Whole game, select an original PSCloud ZIP from
 your PC, and click Add to queue. Imported ZIPs are validated and kept locally;
 they do not upload or restore automatically. ZIPs must be unmodified, stored
-PSCloud whole-game exports under the current 256 MiB limit for the selected game and PS5 user.
+PSCloud whole-game exports under the current 512 MiB limit for the selected game and PS5 user.
 Do not extract/repack the archive. Per-slot ZIPs remain downloadable but PC
 import initially supports only identity-bearing whole-game ZIPs.
 

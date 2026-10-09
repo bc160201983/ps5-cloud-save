@@ -1,4 +1,14 @@
-# PS5 Cloud Save — development milestone 0.10.0
+# PS5 Cloud Save — development milestone 0.10.1
+
+## Version 0.10.1 — larger complete-game archives
+
+Larger multi-slot games can exceed the initial 256 MiB cap. The bounded archive
+and PC-import/download limit is now 512 MiB. Archives above that limit still fail
+closed; no slots are silently omitted. The 128-slot count limit is unchanged.
+Larger images can consume significant disk space and transfer time; no automatic
+retention/deletion is enabled. v0.10.0 passed all 90 host tests and native builds;
+Crash's three-slot cloud upload succeeded, with final integrity checks in progress.
+v0.10.1 build and larger-game hardware checks are pending.
 
 ## Version 0.10.0 — dynamic PS5 save-slot backups
 
@@ -177,7 +187,7 @@ on the console. Automatic game-close detection and startup are still pending.
 ```text
 PS5Backups/
   Crash Bandicoot 4 - PPSA02433/
-    User-1eb70483/
+    User-USER_ID/
       PlayerSaveSlot0Save/
       PlayerSaveProfileSaveData/
 ```

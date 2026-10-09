@@ -4,6 +4,7 @@ Pass only a game confirmed closed by the user. No credentials or real saves
 are written to disk. All original active images are hashed before and after.
 """
 import ftplib
+import argparse
 import hashlib
 import http.cookiejar
 import io
@@ -14,10 +15,17 @@ import urllib.parse
 import urllib.request
 import zipfile
 
-title = sys.argv[1]
-assert title in ('PPSA02433', 'PPSA10595')
-user = '1eb70483'
-base = 'http://192.168.0.193:8082'
+parser=argparse.ArgumentParser()
+parser.add_argument('--host',required=True)
+parser.add_argument('--user',required=True)
+parser.add_argument('--title',required=True)
+parser.add_argument('--confirmed-closed',action='store_true',required=True)
+args=parser.parse_args()
+title,user=args.title,args.user
+assert re.fullmatch(r'PPSA[0-9]{5}',title)
+assert re.fullmatch(r'[0-9a-f]{1,16}',user)
+assert re.fullmatch(r'[0-9.]+',args.host)
+base = 'http://'+args.host+':8082'
 folder = f'/user/home/{user}/savedata_prospero/{title}'
 client = urllib.request.build_opener(urllib.request.ProxyHandler({}),
     urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
@@ -31,7 +39,7 @@ def api(path, data=None):
 
 def originals():
     ftp = ftplib.FTP()
-    ftp.connect('192.168.0.193', 2121, timeout=60)
+    ftp.connect(args.host, 2121, timeout=60)
     ftp.login();ftp.cwd(folder)
     rows=[];ftp.retrlines('LIST', rows.append)
     names=sorted(row.split()[-1] for row in rows if row.split()[-1].startswith('sdimg_')
@@ -43,7 +51,7 @@ def originals():
         hashes[name]=digest.hexdigest()
     ftp.quit();return hashes
 
-assert api('/api/state')['version']=='0.10.0'
+assert api('/api/state')['version']=='0.10.1'
 automatic=api('/api/preferences')['auto_upload']
 chosen={'user':user,'title':title,'slot':'WholeGame'}
 query=urllib.parse.urlencode(chosen)
@@ -66,8 +74,8 @@ for attempt in range(2):
             first=keys;snapshot=max(snapshots,key=lambda s:s['created'])
             url='/api/queue-download?'+urllib.parse.urlencode({'file':snapshot['file']})
     if attempt==1:assert first==keys, 'Unexpected duplicate version'
-with client.open(base+url, timeout=600) as response:archive=response.read(256*1024*1024+1)
-assert len(archive)<=256*1024*1024
+with client.open(base+url, timeout=600) as response:archive=response.read(512*1024*1024+1)
+assert len(archive)<=512*1024*1024
 with zipfile.ZipFile(io.BytesIO(archive)) as z:
     assert z.testzip() is None
     assert set(z.namelist())==set(before)|{'manifest.txt'}
