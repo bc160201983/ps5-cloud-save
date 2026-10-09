@@ -26,3 +26,4 @@ pscloud-export.conf
 *.part
 *.sent
 *.log
+*.zip

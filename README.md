@@ -1,4 +1,23 @@
-# PS5 Cloud Save — development milestone 0.6.3
+# PS5 Cloud Save — development milestone 0.7.0
+
+## Version 0.7.0 — PC transfers, queue management and experimental whole-game restore
+
+- Verified cloud ZIP downloads to PC or PS5; local queue downloads to PC.
+- Import original, unmodified PSCloud whole-game ZIPs from PC into the private
+  PS5 queue (16 MiB limit). Game/user/format, CRC and manifest hashes are checked;
+  arbitrary, compressed, repacked or mismatched ZIPs are rejected.
+- Queue count/list with individual upload, upload-all, PC download and restore.
+- Experimental whole-game restore from cloud or imported local queue backups:
+  requires explicit game-closed/overwrite confirmation, matching existing
+  per-slot sealed keys and image sizes, checked filesystem preflight for both
+  incoming images, unchanged destination checks and full encrypted rollback.
+- Ordinary partial commit failures roll back replaced images. Interrupted
+  restores retain a persistent marker and rollback files, blocking subsequent
+  save operations. Keep the game closed after a failed/interrupted restore;
+  do not restart it until recovery is inspected. Multi-image restore is not
+  atomic across power loss; automatic interruption recovery is not implemented.
+- This release is implemented; host and live validation are pending. Real console
+  save overwrite/game-load validation has NOT been performed for whole-game restore.
 
 ### 0.6.3 cloud-aware unchanged backups
 

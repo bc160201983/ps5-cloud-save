@@ -171,7 +171,8 @@ int pscloud_worker_main(int argc,char **argv) {
 int main(int argc,char **argv) {
 #endif
     stopped=0;
-    if(argc!=3 || (strcmp(argv[2],"--once") && strcmp(argv[2],"--watch"))) {
+    if((argc!=3 && argc!=4) || (strcmp(argv[2],"--once") && strcmp(argv[2],"--watch")) ||
+       (argc==4 && (strcmp(argv[2],"--once") || !valid(argv[3])))) {
         fprintf(stderr,"Usage: %s SPOOL --once|--watch\n",argv[0]); return 2;
     }
     const char *base=getenv("PSCLOUD_URL"),*user=getenv("PSCLOUD_USER"),
@@ -193,7 +194,7 @@ int main(int argc,char **argv) {
         if(!d) {if(scan>=0)close(scan); failed=1; break;}
         struct dirent *e; failed=0;
         while(!stopped && (e=readdir(d)))
-            if(valid(e->d_name)) failed |= upload(base,user,pass,ca,e->d_name,dir);
+            if(valid(e->d_name) && (argc==3 || !strcmp(e->d_name,argv[3]))) failed |= upload(base,user,pass,ca,e->d_name,dir);
         closedir(d);
         if(!strcmp(argv[2],"--once")) break;
         for(unsigned i=0;i<delay&&!stopped;i++) sleep(1);

@@ -102,7 +102,7 @@ int pscloud_active_marker(int parent) {
     while(1) {
         errno=0;entry=readdir(d);
         if(!entry) {if(errno)found=-1;break;}
-        if(!strcmp(entry->d_name,".mount-active")) {found=1;break;}
+        if(!strcmp(entry->d_name,".mount-active") || !strcmp(entry->d_name,".restore-active")) {found=1;break;}
     }
     closedir(d);return found;
 }

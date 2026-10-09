@@ -43,8 +43,11 @@ class DashboardTests(unittest.TestCase):
         self.archive=b.getvalue();self.sha=hashlib.sha256(self.archive).hexdigest()
         self.fixture.objects[PREFIX+FILE]=self.archive
         self.fixture.objects[PREFIX+'.pscloud/'+FILE+'.identity']=('USER_ID=1eb70483\nTITLE=PPSA02433\nSAVE_NAME='+SLOT+'\nSHA256='+self.sha+'\nCREATED_UNIX=1700000000\n').encode()
+        self.start_server()
+
+    def start_server(self,**extra):
         self.process=subprocess.Popen([str(ROOT/'dashboard-host'),str(self.root),str(self.home),'0'],
-                                      env=dict(os.environ,PSCLOUD_TEST_PAYLOAD=str(self.payload)),
+                                      env=dict(os.environ,PSCLOUD_TEST_PAYLOAD=str(self.payload),**extra),
                                       stdout=subprocess.PIPE,stderr=subprocess.STDOUT,text=True)
         self.port=int(self.process.stdout.readline().strip().split('=',1)[1])
         self.process.stdout.readline()
@@ -67,6 +70,76 @@ class DashboardTests(unittest.TestCase):
         return status,text if raw else json.loads(text)
 
     def selected(self,**extra):return dict(user='1eb70483',title='PPSA02433',slot=SLOT,**extra)
+
+    def binary(self,path,data=None):
+        c=http.client.HTTPConnection('127.0.0.1',self.port,timeout=15)
+        c.request('POST' if data is not None else 'GET',path,data,{'Cookie':self.cookie,'X-PSCloud-Request':'1'})
+        r=c.getresponse();status=r.status;headers=dict(r.getheaders());body=r.read();c.close();return status,headers,body
+
+    def game_fixture(self):
+        self.profile=self.image.with_name('sdimg_PlayerSaveProfileSaveData');self.profile.write_bytes(self.original)
+        chosen=self.selected(closed='yes');chosen['slot']='WholeGame'
+        self.assertEqual(self.request('/api/backup',chosen)[0],200)
+        file=next((self.root/'spool').glob('*.sent'))
+        return chosen,file.name[:-5],file.read_bytes()
+
+    def import_fixture(self,chosen,data):
+        return self.binary('/api/import?'+urllib.parse.urlencode(chosen),data)
+
+    def test_pc_download_import_queue_and_individual_upload(self):
+        chosen,file,data=self.game_fixture()
+        status,headers,download=self.binary('/api/download-pc?'+urllib.parse.urlencode(dict(chosen,file=file)))
+        self.assertEqual(status,200);self.assertIn('attachment',headers['Content-Disposition']);self.assertEqual(download,data)
+        self.assertEqual(self.import_fixture(chosen,data)[0],200)
+        self.assertEqual(self.import_fixture(chosen,data)[0],200)
+        queue=self.request('/api/queue')[1];self.assertEqual(queue['count'],2)
+        selected=queue['items'][0]['file']
+        self.assertEqual(self.binary('/api/queue-download?'+urllib.parse.urlencode({'file':selected}))[2],data)
+        self.assertEqual(self.request('/api/sync-one',{'file':selected})[0],200)
+        self.assertEqual(self.request('/api/queue')[1]['count'],1)
+        self.assertEqual(self.request('/api/sync',{})[0],200)
+        self.assertEqual(self.request('/api/queue')[1]['count'],0)
+        self.assertEqual(self.image.read_bytes(),self.original)
+
+    def test_pc_import_rejects_wrong_identity_compressed_and_corrupt_zip(self):
+        chosen,_,data=self.game_fixture();wrong=dict(chosen,user='deadbeef')
+        self.assertEqual(self.import_fixture(wrong,data)[0],400)
+        corrupt=bytearray(data);corrupt[60]^=1
+        self.assertEqual(self.import_fixture(chosen,corrupt)[0],400)
+        b=io.BytesIO()
+        with zipfile.ZipFile(io.BytesIO(data)) as source,zipfile.ZipFile(b,'w',compression=zipfile.ZIP_DEFLATED) as z:
+            for name in source.namelist():z.writestr(name,source.read(name))
+        self.assertEqual(self.import_fixture(chosen,b.getvalue())[0],400)
+        self.assertEqual(self.request('/api/queue')[1]['count'],0)
+
+    def test_pc_import_restore_pair_requires_confirmation_and_preserves_rollback(self):
+        chosen,_,data=self.game_fixture();self.assertEqual(self.import_fixture(chosen,data)[0],200)
+        item=self.request('/api/queue')[1]['items'][0]
+        changed=b'\x02'+b'\0'*4095+b'changed'+b'\0'*(8192-4103)
+        self.image.write_bytes(changed);self.profile.write_bytes(changed)
+        request=dict(chosen,file=item['file'],confirm='no')
+        self.assertEqual(self.request('/api/restore-local',request)[0],400)
+        self.assertEqual(self.image.read_bytes(),changed)
+        request['confirm']='yes'
+        status,result=self.request('/api/restore-local',request);self.assertEqual(status,200,result)
+        self.assertEqual(self.image.read_bytes(),self.original);self.assertEqual(self.profile.read_bytes(),self.original)
+        rollback=next((self.root/'rollback').glob('whole-restore-*'))
+        self.assertEqual((rollback/'before-0.img').read_bytes(),changed)
+        self.assertEqual((rollback/'before-1.img').read_bytes(),changed)
+        self.assertFalse((self.root/'.restore-active').exists())
+
+    def test_whole_restore_wrong_keys_and_partial_commit_failure(self):
+        chosen,_,data=self.game_fixture();self.assertEqual(self.import_fixture(chosen,data)[0],200)
+        item=self.request('/api/queue')[1]['items'][0];request=dict(chosen,file=item['file'],confirm='yes')
+        wrong=bytearray(self.original);wrong[0x800]=1;self.image.write_bytes(wrong)
+        self.assertEqual(self.request('/api/restore-local',request)[0],500)
+        self.assertEqual(self.image.read_bytes(),wrong)
+        changed=bytearray(self.original);changed[4096]=1;self.image.write_bytes(changed);self.profile.write_bytes(changed)
+        self.process.terminate();self.process.communicate(timeout=5)
+        self.start_server(PSCLOUD_TEST_BUNDLE_COMMIT_FAIL='1')
+        self.assertEqual(self.request('/api/restore-local',request)[0],500)
+        self.assertEqual(self.image.read_bytes(),changed);self.assertEqual(self.profile.read_bytes(),changed)
+        self.assertFalse((self.root/'.restore-active').exists())
 
     def test_automatic_session_protects_apis_and_state_never_returns_password(self):
         status,page=self.request('/',token=False,raw=True);self.assertEqual(status,200);self.assertIn('PSCloud',page)
