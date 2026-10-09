@@ -1,4 +1,15 @@
-# PS5 Cloud Save — development milestone 0.11.2
+# PS5 Cloud Save — development milestone 0.11.3
+
+## Version 0.11.3 — avoid false busy errors from read-only requests
+
+The first console UI test exposed read-only cover/connection requests claiming
+the same lock as save operations. Covers, saved cloud state, preference reads and
+activity reads now remain available outside that lock, with atomic shared status
+scalars and no concurrent access to a helper's shared log FILE. Save/transfer
+operations remain serialized. Read-only API calls retry transient busy responses
+with bounded backoff. Write calls are never replayed after busy/network failure.
+While cloud versions are loading, write buttons are disabled and a progress bar
+is shown; navigation remains available. Validation and deployment are pending.
 
 ## Version 0.11.2 — optional startup health check
 

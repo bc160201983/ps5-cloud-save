@@ -92,6 +92,8 @@ class DashboardTests(unittest.TestCase):
 
     def test_slow_cloud_operation_keeps_page_and_health_responsive(self):
         entered=threading.Event();release=threading.Event();results=[]
+        icons=self.root/'appmeta/PPSA02433';icons.mkdir(parents=True)
+        png=b'\x89PNG\r\n\x1a\nfixture';(icons/'icon0.png').write_bytes(png)
         handler=self.fixture.server.RequestHandlerClass
         original=handler.do_PROPFIND
         def slow(request):
@@ -102,9 +104,16 @@ class DashboardTests(unittest.TestCase):
         try:
             self.assertTrue(entered.wait(3));started=time.monotonic()
             self.assertEqual(self.request('/api/health')[1],{'busy':True})
-            status,reply=self.request('/api/state');self.assertEqual(status,503);self.assertTrue(reply['busy'])
+            self.assertEqual(self.request('/api/state')[0],200)
+            self.assertEqual(self.request('/api/preferences')[0],200)
+            self.assertEqual(self.request('/api/log')[0],200)
+            self.assertEqual(self.binary('/api/icon?title=PPSA02433'),(200,png))
             self.assertEqual(self.request('/',raw=True)[0],200)
             self.assertLess(time.monotonic()-started,2)
+            c=http.client.HTTPConnection('127.0.0.1',self.port,timeout=5)
+            c.request('POST','/api/backup',urllib.parse.urlencode(self.selected(closed='yes')),{'Cookie':self.cookie,'X-PSCloud-Request':'1'})
+            self.assertEqual(c.getresponse().status,503);c.close()
+            self.assertEqual(self.image.read_bytes(),self.original)
         finally:release.set();task.join(10)
         self.assertEqual(results[0][0],200)
         self.assertEqual(self.request('/api/health')[1],{'busy':False})

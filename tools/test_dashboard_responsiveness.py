@@ -34,7 +34,7 @@ def main():
     _,elapsed=get('/')
     state=json.loads(get('/api/state')[0])
     print('Version:',state['version'],'page seconds:',elapsed,flush=True)
-    if state['version'] not in ('0.11.1','0.11.2'):raise RuntimeError('Unexpected payload version')
+    if state['version'] not in ('0.11.1','0.11.2','0.11.3'):raise RuntimeError('Unexpected payload version')
     print('Cloud configured:',state['configured'],flush=True)
     timings=[get('/api/health')[1] for _ in range(3)]
     print('Health median/max seconds:',round(statistics.median(timings),3),max(timings),flush=True)

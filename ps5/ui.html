@@ -15,7 +15,7 @@
 <script>
 'use strict';
 const $=id=>document.getElementById(id);let selected=null,items=[],busy=false,restoreFile=null,restoreSelection=null,restoreLocal=false;
-let preferences={auto_upload:true,activity_refresh:true},activeView='library',recentLog='',logLoading=false;
+let preferences={auto_upload:true,activity_refresh:true},activeView='library',recentLog='',logLoading=false,versionLoading=false;
 const versionCache=new Map();
 const googlePanel=document.createElement('form');googlePanel.className='settingspage';googlePanel.style.marginBottom='24px';
 googlePanel.innerHTML='<h3>Google Drive · sign-in preview</h3><p class="subtitle">Connect on your phone. Google backup transfers are not enabled in this development milestone; WebDAV stays active.</p><p id="googleStatus" role="status" class="subtitle">Not checked yet</p><details><summary>Developer setup · registered PSCloud Google application</summary><label for="googleClient">TV / Limited Input device client ID</label><input id="googleClient" autocomplete="off" placeholder="Registered Google OAuth client ID"><label for="googleSecret">Client secret, if supplied by Google</label><input id="googleSecret" type="password" autocomplete="off"><p class="subtitle">This is an application credential, not your Google password. Normal users will not need these fields once PSCloud has a registered public application.</p></details><button id="googleConnect" class="primary" style="margin-top:18px">Connect Google Drive</button><div id="googleApproval" class="info hidden"><a href="https://www.google.com/device" target="_blank" rel="noopener noreferrer">Open Google approval on your phone ↗</a><p>Enter this one-time Google approval code: <strong id="googleCode"></strong></p><button id="googleCheck" type="button">Check approval</button><p class="subtitle">This code authorizes Google access; it is not PSCloud dashboard pairing. Never share it.</p></div>';
@@ -33,8 +33,21 @@ async function finishPCImport(policy){if(!duplicateImport)return;const choice=du
 $('duplicateKeep').addEventListener('click',()=>finishPCImport('skip'));$('duplicateReplace').addEventListener('click',()=>finishPCImport('replace'));$('duplicateNew').addEventListener('click',()=>finishPCImport('new'));$('duplicateCancel').addEventListener('click',()=>{duplicateImport=null;duplicateModal.classList.add('hidden');});
 if(location.hash)history.replaceState(null,'',location.pathname);
 function notify(text,error=false){$('toast').textContent=text;$('toast').classList.toggle('error',error);$('toast').classList.remove('hidden');if(!busy)setTimeout(()=>$('toast').classList.add('hidden'),9000);}
-async function api(path,data){const options={headers:{'X-PSCloud-Request':'1'},credentials:'same-origin'};if(data){options.method='POST';options.body=new URLSearchParams(data);}let r=await fetch(path,options);if(r.status===401){await fetch('/',{cache:'no-store',credentials:'same-origin'});r=await fetch(path,options);}const body=await r.json();if(!r.ok)throw Error(body.message||'Request failed');return body;}
-async function operation(text,fn){if(busy)return;busy=true;$('busybar').classList.remove('hidden');notify(text);document.querySelectorAll('button').forEach(b=>b.disabled=!b.classList.contains('nav')&&b.id!=='back'&&b.id!=='cloudbadge');try{const r=await fn();versionCache.clear();notify(r.message||'Complete.');return r;}catch(e){notify(e.message,true);}finally{busy=false;$('busybar').classList.add('hidden');document.querySelectorAll('button').forEach(b=>b.disabled=b.dataset.unsupported==='true');$('confirmRestore').disabled=!$('restoreconfirm').checked;setTimeout(()=>$('toast').classList.add('hidden'),11000);}}
+async function api(path,data){
+ const options={headers:{'X-PSCloud-Request':'1'},credentials:'same-origin'};
+ if(data){options.method='POST';options.body=new URLSearchParams(data);}
+ const safeRead=!data&&['/api/state','/api/preferences','/api/games','/api/queue','/api/backups','/api/log','/api/google/status'].includes(path.split('?')[0]);
+ const delay=ms=>new Promise(resolve=>setTimeout(resolve,ms));
+ for(let attempt=0;;attempt++){
+  let r;try{r=await fetch(path,options);}catch(e){if(safeRead&&attempt<3){await delay(250*2**attempt);continue;}throw e;}
+  if(r.status===401&&!data){await fetch('/',{cache:'no-store',credentials:'same-origin'});r=await fetch(path,options);}
+  const body=await r.json();
+  if(r.status===503&&body.busy&&safeRead&&attempt<9){await delay(Math.min(250*2**attempt,2000));continue;}
+  if(!r.ok)throw Error(body.message||'Request failed');return body;
+ }
+}
+function setControls(){const active=busy||versionLoading;$('busybar').classList.toggle('hidden',!active);document.querySelectorAll('button').forEach(b=>b.disabled=(active&&!b.classList.contains('nav')&&b.id!=='back'&&b.id!=='cloudbadge')||b.dataset.unsupported==='true');$('confirmRestore').disabled=active||!$('restoreconfirm').checked;}
+async function operation(text,fn){if(busy||versionLoading)return;busy=true;setControls();notify(text);try{const r=await fn();versionCache.clear();notify(r.message||'Complete.');return r;}catch(e){notify(e.message,true);}finally{busy=false;setControls();setTimeout(()=>$('toast').classList.add('hidden'),11000);}}
 function view(name){activeView=name;['library','detail','settings','activity'].forEach(id=>$(id).classList.toggle('hidden',id!==name));document.querySelectorAll('.nav').forEach(b=>b.classList.toggle('active',b.dataset.view===name));if(name==='activity'&&!busy)loadLog();if(name==='settings'&&!busy)googleStatus().catch(e=>notify(e.message,true));}
 async function state(){const s=await api('/api/state');$('url').value=s.url;$('username').value=s.username;$('password').value='';$('cloudbadge').textContent=s.connected?'● Cloud connected':s.configured?'Cloud · settings saved':'Connect cloud';$('cloudbadge').classList.toggle('connected',s.connected);$('connectionStatus').textContent=s.connected?'Connected · latest WebDAV check passed':s.configured?'Credentials saved · test the connection to check access':'Not configured';$('testCloud').dataset.unsupported=String(!s.configured);$('testCloud').disabled=!s.configured;}
 function slotName(slot){return slot==='WholeGame'?'Whole game · all save slots':slot==='PlayerSaveProfileSaveData'?'Profile & settings':slot==='PlayerSaveSlot0Save'?'Save slot 0':slot;}
@@ -42,7 +55,7 @@ function snapshotDate(created){const n=Number(created);if(!Number.isFinite(n)||n
 function requestRestore(context,file,local,name,date){restoreFile=file;restoreSelection=context;restoreLocal=local;$('restoreconfirm').checked=false;$('confirmRestore').disabled=true;$('restoretext').textContent=name+' · '+slotName(context.slot)+' · '+snapshotDate(date)+' · PS5 user '+context.user+'. This replaces the selected save data. Whole-game restore is experimental: never interrupt power; if it fails, keep the game closed and preserve rollback files.';$('restoremodal').classList.remove('hidden');}
 async function downloadPC(context,file,local=false){return operation('Checking and downloading the ZIP to your PC…',async()=>{const path=(local?'/api/queue-download?':'/api/download-pc?')+new URLSearchParams({...context,file});const r=await fetch(path,{credentials:'same-origin'});if(!r.ok)throw Error((await r.json()).message||'Download failed');const blob=await r.blob();const url=URL.createObjectURL(blob);const link=document.createElement('a');link.href=url;link.download=file;link.click();setTimeout(()=>URL.revokeObjectURL(url),1000);return {message:'ZIP sent to your browser Downloads.'};});}
 async function loadQueue(){
- try {const result=await api('/api/queue');$('queuecount').textContent=result.count+' pending';$('sync').textContent='Upload all queued backups ('+result.count+') ↗';$('sync').dataset.unsupported=String(result.count===0);$('sync').disabled=busy||result.count===0;$('queueitems').replaceChildren();
+ try {const result=await api('/api/queue');$('queuecount').textContent=result.count+' pending';$('sync').textContent='Upload all queued backups ('+result.count+') ↗';$('sync').dataset.unsupported=String(result.count===0);$('sync').disabled=busy||versionLoading||result.count===0;$('queueitems').replaceChildren();
   if(!result.count){const empty=document.createElement('div');empty.className='empty';empty.textContent='Nothing waiting to upload.';$('queueitems').append(empty);}
   for(const item of result.items){const row=document.createElement('div');row.className='version';const info=document.createElement('div');const title=document.createElement('strong');title.textContent=item.name;const detail=document.createElement('small');detail.textContent=snapshotDate(item.created)+' · '+slotName(item.slot)+' · '+(item.valid?'Ready to upload':'Identity missing or invalid');info.append(title,detail);const actions=document.createElement('div');actions.className='actions';actions.style.flexWrap='wrap';
    const upload=document.createElement('button');upload.textContent='Upload this ↑';upload.disabled=!item.valid;upload.dataset.unsupported=String(!item.valid);upload.addEventListener('click',async()=>{const r=await operation('Uploading selected backup…',()=>api('/api/sync-one',{file:item.file}));await loadQueue();if(r&&selected)await loadBackups();});actions.append(upload);
@@ -78,6 +91,7 @@ async function loadBackups(force=false){
  try{
   const key=new URLSearchParams(params()).toString(),cached=versionCache.get(key);
   const fromCache=!force&&cached&&Date.now()-cached.time<60000;
+  if(!fromCache){versionLoading=true;setControls();}
   const result=fromCache?cached.result:await api('/api/backups?'+key);
   if(key!==new URLSearchParams(params()).toString())return;
   if(!fromCache){if(versionCache.size>=16)versionCache.delete(versionCache.keys().next().value);versionCache.set(key,{time:Date.now(),result});}
@@ -95,7 +109,7 @@ async function loadBackups(force=false){
    }
    row.append(info,actions);$('versions').append(row);
   }
- }catch(e){loading.textContent=e.message;notify(e.message,true);}
+ }catch(e){loading.textContent=e.message;notify(e.message,true);}finally{versionLoading=false;setControls();}
 }
 function renderActivity(){const filter=$('activityFilter').value,search=$('activitySearch').value.toLowerCase();const lines=recentLog.split('\n').filter(Boolean).reverse();$('activityRows').replaceChildren();let count=0;for(const line of lines){const match=line.match(/^(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d) (INFO|WARN|ERROR|EVENT) (.*)$/);const level=match?match[2]:'INFO';if(filter==='problem'&&!['WARN','ERROR'].includes(level)||filter==='EVENT'&&level!=='EVENT'||!line.toLowerCase().includes(search))continue;const row=document.createElement('div');row.className='version';const text=document.createElement('div');const title=document.createElement('strong');title.textContent=match?match[3]:line;const meta=document.createElement('small');meta.textContent=(match?match[1]+' · ':'')+level;if(['WARN','ERROR'].includes(level))title.style.color='var(--red)';text.append(title,meta);row.append(text);$('activityRows').append(row);count++;}if(!count){const empty=document.createElement('div');empty.className='empty';empty.textContent=recentLog?'No matching activity.':'No recent operations.';$('activityRows').append(empty);}}
 async function loadLog(){if(logLoading||busy)return;logLoading=true;try{recentLog=(await api('/api/log')).log||'';$('log').textContent=recentLog||'No recent operations.';renderActivity();$('activityStatus').textContent='Updated '+new Date().toLocaleTimeString();}catch(e){$('activityStatus').textContent='Refresh failed';notify(e.message,true);}finally{logLoading=false;}}

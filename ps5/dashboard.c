@@ -10,6 +10,7 @@
 #include "common/bundle.h"
 #include "common/google.h"
 #include <pthread.h>
+#include <stdatomic.h>
 #include "ui.h"
 #include <curl/curl.h>
 #include <sys/socket.h>
@@ -36,8 +37,8 @@ extern int pscloud_backup_main(int,char **);
 extern int pscloud_worker_main(int,char **);
 extern int pscloud_download_main(int,char **);
 static char root[1024],home[1024],cloudpath[1200],logpath[1200],token[33],appmeta[1200];
-static int cloud_status;
-static int auto_upload=1,activity_refresh=1;
+static _Atomic int cloud_status;
+static _Atomic int auto_upload=1,activity_refresh=1;
 static struct pscloud_google google,google_pending;
 static char googlepath[1200];
 static pthread_mutex_t operation_mutex=PTHREAD_MUTEX_INITIALIZER;
@@ -559,14 +560,14 @@ static int session(const char *request) {
 }
 static void game_icon(int sock,const char *query) {
     char title[10],path[1400];
-    if(parameter(query,"title",title,sizeof title) || !pscloud_title_valid(title)) {message(sock,400,"Invalid game ID");return;}
+    if(parameter(query,"title",title,sizeof title) || !pscloud_title_valid(title)) {reject(sock,400,"Invalid game ID");return;}
     snprintf(path,sizeof path,"%s/%s",appmeta,title);int dir=pscloud_open_directory(path);
     int fd=dir>=0?openat(dir,"icon0.png",O_RDONLY | O_NOFOLLOW | O_NONBLOCK):-1;if(dir>=0)close(dir);
-    struct stat st;if(fd<0 || fstat(fd,&st) || !S_ISREG(st.st_mode) || st.st_size<8 || st.st_size>4*1024*1024) {if(fd>=0)close(fd);message(sock,404,"Installed game icon unavailable");return;}
-    unsigned char *data=malloc((size_t)st.st_size);if(!data) {close(fd);message(sock,500,"Out of memory");return;}
+    struct stat st;if(fd<0 || fstat(fd,&st) || !S_ISREG(st.st_mode) || st.st_size<8 || st.st_size>4*1024*1024) {if(fd>=0)close(fd);reject(sock,404,"Installed game icon unavailable");return;}
+    unsigned char *data=malloc((size_t)st.st_size);if(!data) {close(fd);reject(sock,500,"Out of memory");return;}
     size_t have=0;while(have<(size_t)st.st_size) {ssize_t n=read(fd,data+have,(size_t)st.st_size-have);if(n<=0)break;have+=(size_t)n;}
     close(fd);
-    if(have!=(size_t)st.st_size || memcmp(data,"\x89PNG\r\n\x1a\n",8))message(sock,404,"Invalid installed icon");
+    if(have!=(size_t)st.st_size || memcmp(data,"\x89PNG\r\n\x1a\n",8))reject(sock,404,"Invalid installed icon");
     else respond(sock,200,"image/png",(const char *)data,have);
     free(data);
 }
@@ -641,6 +642,21 @@ static void serve(int sock,int *locked) {
         const char *json=available?"{\"busy\":false}":"{\"busy\":true}";
         respond(sock,200,"application/json",json,strlen(json));return;
     }
+    /* These read-only resources do not share mutable transfer buffers. */
+    if(!strcmp(method,"GET") && !strncmp(url,"/api/icon?",10)) {game_icon(sock,url+10);return;}
+    if(!strcmp(method,"GET") && !strcmp(url,"/api/preferences")) {preferences(sock,NULL);return;}
+    if(!strcmp(method,"GET") && !strcmp(url,"/api/state")) {
+        struct settings s={0};int configured=pscloud_configure(cloudpath,&s)==0;
+        char address[6144],username[512],json[8192];escaped(address,sizeof address,s.url);escaped(username,sizeof username,s.user);
+        int status=cloud_status;
+        snprintf(json,sizeof json,"{\"version\":\"%s\",\"pid\":%ld,\"cloud_http\":%d,\"configured\":%s,\"connected\":%s,\"url\":\"%s\",\"username\":\"%s\"}",PSCLOUD_VERSION,(long)getpid(),status,configured?"true":"false",status==200 || status==207?"true":"false",address,username);
+        respond(sock,200,"application/json",json,strlen(json));return;
+    }
+    if(!strcmp(method,"GET") && !strcmp(url,"/api/log")) {
+        int fd=open(logpath,O_RDONLY | O_NOFOLLOW | O_NONBLOCK);struct stat st;char data[8193]={0};
+        if(fd>=0) {if(!fstat(fd,&st) && S_ISREG(st.st_mode)) {off_t offset=st.st_size>8192?st.st_size-8192:0;ssize_t got=pread(fd,data,8192,offset);if(got>=0)data[got]=0;}close(fd);}
+        char text[50000],json[50100];escaped(text,sizeof text,data);snprintf(json,sizeof json,"{\"log\":\"%s\"}",text);respond(sock,200,"application/json",json,strlen(json));return;
+    }
     /* Slow cloud/save operations remain serialized for safety. Other clients
      * get an immediate busy response, never wait behind a multi-minute upload.
      * Header/body reads occur on bounded client threads; idle browser sockets
@@ -670,12 +686,6 @@ static void serve(int sock,int *locked) {
     char *query=strchr(url,'?');if(query)*query++=0;else query="";
     if((!strcmp(method,"GET") && !strcmp(url,"/api/google/status")) ||
        (!strcmp(method,"POST") && (!strcmp(url,"/api/google/begin") || !strcmp(url,"/api/google/poll")))) {google_action(sock,url,body);return;}
-    if(!strcmp(method,"GET") && !strcmp(url,"/api/state")) {
-        struct settings s={0};int configured=pscloud_configure(cloudpath,&s)==0;
-        char address[6144],username[512],json[8192];escaped(address,sizeof address,s.url);escaped(username,sizeof username,s.user);
-        snprintf(json,sizeof json,"{\"version\":\"%s\",\"pid\":%ld,\"cloud_http\":%d,\"configured\":%s,\"connected\":%s,\"url\":\"%s\",\"username\":\"%s\"}",PSCLOUD_VERSION,(long)getpid(),cloud_status,configured?"true":"false",cloud_status==200 || cloud_status==207?"true":"false",address,username);
-        respond(sock,200,"application/json",json,strlen(json));return;
-    }
     if(!strcmp(url,"/api/preferences") && (!strcmp(method,"GET") || !strcmp(method,"POST"))) {preferences(sock,!strcmp(method,"POST")?body:NULL);return;}
     if(!strcmp(method,"GET") && !strcmp(url,"/api/games")) {games(sock);return;}
     if(!strcmp(method,"GET") && !strcmp(url,"/api/icon")) {game_icon(sock,query);return;}
@@ -683,11 +693,6 @@ static void serve(int sock,int *locked) {
     if(!strcmp(method,"GET") && !strcmp(url,"/api/queue")) {queue_list(sock);return;}
     if(!strcmp(method,"GET") && !strcmp(url,"/api/download-pc")) {download_pc(sock,query,0);return;}
     if(!strcmp(method,"GET") && !strcmp(url,"/api/queue-download")) {download_pc(sock,query,1);return;}
-    if(!strcmp(method,"GET") && !strcmp(url,"/api/log")) {
-        int fd=open(logpath,O_RDONLY | O_NOFOLLOW | O_NONBLOCK);struct stat st;char data[8193]={0};
-        if(fd>=0) {if(!fstat(fd,&st) && S_ISREG(st.st_mode)) {off_t offset=st.st_size>8192?st.st_size-8192:0;ssize_t got=pread(fd,data,8192,offset);if(got>=0)data[got]=0;}close(fd);}
-        char text[50000],json[50100];escaped(text,sizeof text,data);snprintf(json,sizeof json,"{\"log\":\"%s\"}",text);respond(sock,200,"application/json",json,strlen(json));return;
-    }
     if(!strcmp(method,"POST") && !strcmp(url,"/api/stop")) {message(sock,200,"Dashboard stopping");stopped=1;return;}
     if(!strcmp(method,"POST") && !strcmp(url,"/api/connect")) {configure_cloud(sock,body);return;}
     if(!strcmp(method,"POST")) {action(sock,url,body);return;}
