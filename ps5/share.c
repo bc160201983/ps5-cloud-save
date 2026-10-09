@@ -1,5 +1,5 @@
-/* Portable Crash sharing pilot. Export/check staged copies only; never commit
- * containers to live save paths. Recipient profile metadata and keys stay local. */
+/* Portable Crash sharing. Live replacement requires explicit restore config.
+ * Recipient profile metadata and keys stay local; rollback copies are retained. */
 #ifndef __FreeBSD__
 #define _POSIX_C_SOURCE 200809L
 #endif
@@ -25,22 +25,26 @@
 #endif
 static const char *slots[]={"PlayerSaveSlot0Save","PlayerSaveProfileSaveData"};
 static const char *payload_names[]={"progress.dat","profile.dat"};
-struct share_config {char mode[16],user[17],package[128],closed[8];};
+struct share_config {char mode[16],user[17],package[128],closed[8],confirm[8],sha[65];};
 static int config_read(const char *path,struct share_config *s) {
     int fd=open(path,O_RDONLY|O_NOFOLLOW|O_NONBLOCK);struct stat st;
     if(fd<0)return -1;
     if(fstat(fd,&st)||!S_ISREG(st.st_mode)||st.st_size<=0||st.st_size>1024) {close(fd);return -1;}
     FILE *f=fdopen(fd,"r");if(!f) {close(fd);return -1;}char line[256];unsigned seen=0;int bad=0;
-    const char *keys[]={"MODE","USER_ID","PACKAGE","CONFIRM_GAME_CLOSED"};char *out[]={s->mode,s->user,s->package,s->closed};size_t caps[]={sizeof s->mode,sizeof s->user,sizeof s->package,sizeof s->closed};
+    const char *keys[]={"MODE","USER_ID","PACKAGE","CONFIRM_GAME_CLOSED","CONFIRM_RESTORE","PACKAGE_SHA256"};char *out[]={s->mode,s->user,s->package,s->closed,s->confirm,s->sha};size_t caps[]={sizeof s->mode,sizeof s->user,sizeof s->package,sizeof s->closed,sizeof s->confirm,sizeof s->sha};
     while(fgets(line,sizeof line,f)) {size_t n=strlen(line);if(n==sizeof line-1&&line[n-1]!='\n') {bad=1;break;}while(n&&(line[n-1]=='\n'||line[n-1]=='\r'))line[--n]=0;if(!n||line[0]=='#')continue;
-        char *eq=strchr(line,'=');if(!eq) {bad=1;break;}*eq++=0;unsigned i;for(i=0;i<4;i++)if(!strcmp(line,keys[i]))break;
-        if(i==4||seen&(1U<<i)||!*eq||strlen(eq)>=caps[i]) {bad=1;break;}strcpy(out[i],eq);seen|=1U<<i;
+        char *eq=strchr(line,'=');if(!eq) {bad=1;break;}*eq++=0;unsigned i;for(i=0;i<6;i++)if(!strcmp(line,keys[i]))break;
+        if(i==6||seen&(1U<<i)||!*eq||strlen(eq)>=caps[i]) {bad=1;break;}strcpy(out[i],eq);seen|=1U<<i;
     }
     if(ferror(f))bad=1;
-    fclose(f);if(bad||(seen&11U)!=11U||strcmp(s->closed,"yes")||(strcmp(s->mode,"export")&&strcmp(s->mode,"check")))return -1;
+    fclose(f);if(bad||(seen&11U)!=11U||strcmp(s->closed,"yes")||(strcmp(s->mode,"export")&&strcmp(s->mode,"check")&&strcmp(s->mode,"restore")))return -1;
+    if(!strcmp(s->mode,"restore")) {
+        if(strcmp(s->confirm,"yes")||strlen(s->sha)!=64)return -1;
+        for(const char *p=s->sha;*p;p++)if(!strchr("0123456789abcdef",*p))return -1;
+    } else if(seen&48U)return -1;
     if(!*s->user)return -1;
     for(const char *p=s->user;*p;p++)if(!strchr("0123456789abcdef",*p))return -1;
-    if(!strcmp(s->mode,"check")) {size_t n=strlen(s->package);if(!(seen&4U)||n<5||strcmp(s->package+n-4,".zip"))return -1;
+    if(strcmp(s->mode,"export")) {size_t n=strlen(s->package);if(!(seen&4U)||n<5||strcmp(s->package+n-4,".zip"))return -1;
         for(const char *p=s->package;*p;p++)if(!strchr("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_.",*p))return -1;
         if(s->package[0]=='.')return -1;}
     return 0;
@@ -66,6 +70,79 @@ static int payload_verify(int dir,const unsigned char *data,size_t size) {
     int fd=openat(dir,"ue4savegame.dpx.sav",O_RDONLY|O_NOFOLLOW|O_NONBLOCK);struct stat st;
     int bad=fd<0||fstat(fd,&st)||st.st_size!=(off_t)size||pscloud_file_hash(fd,actual)||strcmp(actual,expected);if(fd>=0)close(fd);return bad?-1:0;
 }
+/* Prepare both replacement and rollback files in the destination filesystem.
+ * Persist a recovery journal before the first rename. Never discard rollback. */
+static int commit_images(int parent,int source,int stage,int original[2],struct stat before[2],char baseline[2][65],const char *id,const char *stage_path,const struct share_config *s) {
+    char live[2][96],part[2][96],rollback[2][96],prepared[2][65];
+    for(unsigned i=0;i<2;i++) {
+        snprintf(live[i],sizeof live[i],"sdimg_%s",slots[i]);
+        snprintf(part[i],sizeof part[i],".pscloud-%s-%u.new",id,i);
+        snprintf(rollback[i],sizeof rollback[i],".pscloud-%s-%u.rollback",id,i);
+        char image[32];snprintf(image,sizeof image,"image-%u.img",i);
+#ifdef PSCLOUD_HOST_TEST
+        /* Host mount fixture does not encrypt payload changes into its image. */
+        if(getenv("PSCLOUD_TEST_SHARE_CHANGED_IMAGE")) {
+            int fixture=openat(stage,image,O_WRONLY|O_NOFOLLOW);unsigned char changed=0x77;
+            int failed=fixture<0||pwrite(fixture,&changed,1,0x900)!=1||fsync(fixture);
+            if(fixture>=0)close(fixture);
+            if(failed)return -1;
+        }
+#endif
+        int input=openat(stage,image,O_RDONLY|O_NOFOLLOW|O_NONBLOCK);
+        int out=openat(source,part[i],O_WRONLY|O_CREAT|O_EXCL|O_NOFOLLOW,0600);
+        int bad=input<0||out<0||pscloud_file_hash(input,prepared[i])||lseek(input,0,SEEK_SET)<0||pscloud_copy_image(input,out);
+        if(out>=0) {if(fchown(out,before[i].st_uid,before[i].st_gid)||fchmod(out,before[i].st_mode&0777)||fsync(out))bad=1;close(out);}
+        if(input>=0)close(input);
+        if(bad)return -1;
+        out=openat(source,rollback[i],O_WRONLY|O_CREAT|O_EXCL|O_NOFOLLOW,0600);
+        bad=out<0||lseek(original[i],0,SEEK_SET)<0||pscloud_copy_image(original[i],out);
+        if(out>=0) {if(fchown(out,before[i].st_uid,before[i].st_gid)||fchmod(out,before[i].st_mode&0777)||fsync(out))bad=1;close(out);}
+        if(bad)return -1;
+        int verify=openat(source,rollback[i],O_RDONLY|O_NOFOLLOW|O_NONBLOCK);char hash[65];
+        bad=verify<0||pscloud_file_hash(verify,hash)||strcmp(hash,baseline[i]);if(verify>=0)close(verify);
+        if(bad)return -1;
+    }
+    if(fsync(source))return -1;
+    for(unsigned i=0;i<2;i++) {
+        int fd=openat(source,live[i],O_RDONLY|O_NOFOLLOW|O_NONBLOCK);struct stat current;char hash[65];
+        int bad=fd<0||fstat(fd,&current)||current.st_ino!=before[i].st_ino||current.st_dev!=before[i].st_dev||pscloud_file_hash(fd,hash)||strcmp(hash,baseline[i]);
+        if(fd>=0)close(fd);
+        if(bad)return -1;
+    }
+    char journal[2048];int length=snprintf(journal,sizeof journal,"FORMAT=PSCLOUD_SHARE_RESTORE_V1\nUSER_ID=%s\nTITLE=PPSA02433\nPACKAGE_SHA256=%s\nSTAGE=%s\nROLLBACK0=%s\nROLLBACK1=%s\nORIGINAL0_SHA256=%s\nORIGINAL1_SHA256=%s\n",s->user,s->sha,stage_path,rollback[0],rollback[1],baseline[0],baseline[1]);
+    if(length<0||(size_t)length>=sizeof journal||bytes_write(parent,".restore-active",(const unsigned char *)journal,(size_t)length)||fsync(parent))return -1;
+    unsigned committed=0;int bad=0;
+    for(unsigned i=0;i<2;i++) {
+#ifdef PSCLOUD_HOST_TEST
+        if(i==1&&getenv("PSCLOUD_TEST_SHARE_COMMIT_FAIL")) {bad=1;break;}
+#endif
+        if(renameat(source,part[i],source,live[i])) {bad=1;break;}
+        committed++;
+        if(fsync(source)) {bad=1;break;}
+        int verify=openat(source,live[i],O_RDONLY|O_NOFOLLOW|O_NONBLOCK);char hash[65];
+        bad=verify<0||pscloud_file_hash(verify,hash)||strcmp(hash,prepared[i]);if(verify>=0)close(verify);
+        if(bad)break;
+    }
+    if(bad) {
+        int recovered=1;
+        for(unsigned i=0;i<committed;i++) {
+            int input=openat(source,rollback[i],O_RDONLY|O_NOFOLLOW|O_NONBLOCK);
+            int out=openat(source,part[i],O_WRONLY|O_CREAT|O_EXCL|O_NOFOLLOW,0600);
+            int failed=input<0||out<0||pscloud_copy_image(input,out);
+            if(out>=0) {if(fchown(out,before[i].st_uid,before[i].st_gid)||fchmod(out,before[i].st_mode&0777)||fsync(out))failed=1;close(out);}
+            if(input>=0)close(input);
+            if(!failed)failed=renameat(source,part[i],source,live[i])||fsync(source);
+            if(!failed) {
+                int verify=openat(source,live[i],O_RDONLY|O_NOFOLLOW|O_NONBLOCK);char hash[65];
+                failed=verify<0||pscloud_file_hash(verify,hash)||strcmp(hash,baseline[i]);if(verify>=0)close(verify);
+            }
+            if(failed)recovered=0;
+        }
+        if(!recovered)return -1;
+    }
+    if(unlinkat(parent,".restore-active",0)||fsync(parent))return -1;
+    return bad?-1:0;
+}
 int main(int argc,char **argv) {
 #ifdef PSCLOUD_HOST_TEST
     if(argc!=4)return 2;
@@ -74,9 +151,11 @@ int main(int argc,char **argv) {
     (void)argc;(void)argv;const char *config="/data/pscloud-share.conf",*home="/user/home",*root="/data/pscloud";unsigned fw=kernel_get_fw_version()&0xffff0000U;
 #endif
     struct share_config s={0};if(config_read(config,&s))return 2;
-    int check=!strcmp(s.mode,"check");if((!check&&fw!=0x11400000U)||(check&&fw!=0x11400000U&&fw!=0x07000000U))return 2;
+    int restoring=!strcmp(s.mode,"restore"),check=strcmp(s.mode,"export")!=0;
+    if(fw!=0x11400000U&&fw!=0x07000000U)return 2;
+    if(restoring&&fw!=0x11400000U)return 2;
     (void)mkdir(root,0700);char logpath[1400];snprintf(logpath,sizeof logpath,"%s/share.log",root);pscloud_log_open(logpath);
-    pscloud_notify("Crash portable sharing %s - staged copies only; live saves will not be replaced",s.mode);
+    pscloud_notify("Crash portable sharing %s - %s",s.mode,restoring?"explicit live replacement requested":"staged copies only");
     int result=1,parent=-1,lock=-1,source=-1,stage=-1,shared=-1,original[2]={-1,-1},marker=0,attempted=0,unmounted=0;
     struct pscloud_mount_state state={0};struct stat before[2];char baseline[2][65],id[33],stage_name[64],stage_path[1600],mount[1800]={0},source_path[1400],package_path[1600];
     unsigned char *package=NULL;size_t package_size=0;struct pscloud_portable portable={0};struct pscloud_save_meta first_meta={0};
@@ -84,6 +163,7 @@ int main(int argc,char **argv) {
     lock=openat(parent,".mount.lock",O_CREAT|O_RDWR|O_NOFOLLOW,0600);if(lock<0||flock(lock,LOCK_EX|LOCK_NB)||pscloud_active_marker(parent)||pscloud_no_foreign_mount())goto done;
     (void)mkdirat(parent,"share",0700);shared=openat(parent,"share",O_RDONLY|O_DIRECTORY|O_NOFOLLOW);if(shared<0)goto done;
     if(check&&(pscloud_read_archive(shared,s.package,&package,&package_size)||pscloud_portable_parse(package,package_size,&portable))) {pscloud_log("ERROR","Portable package rejected before mounting");goto done;}
+    if(restoring&&pscloud_verify_hash(package,package_size,s.sha))goto done;
     snprintf(source_path,sizeof source_path,"%s/%s/savedata_prospero/PPSA02433",home,s.user);source=pscloud_open_directory(source_path);if(source<0)goto done;
     for(unsigned i=0;i<2;i++) {char name[96];snprintf(name,sizeof name,"sdimg_%s",slots[i]);original[i]=openat(source,name,O_RDONLY|O_NOFOLLOW|O_NONBLOCK);
         if(original[i]<0||fstat(original[i],&before[i])||!S_ISREG(before[i].st_mode)||before[i].st_nlink!=1||before[i].st_size<0x860||before[i].st_size>128*1024*1024||pscloud_file_hash(original[i],baseline[i]))goto done;}
@@ -106,7 +186,7 @@ int main(int argc,char **argv) {
 #endif
         int dir=pscloud_open_directory(payload);struct pscloud_save_meta meta;char metadata_hash[65],after_hash[65];
         bad=dir<0||pscloud_save_meta_read(dir,&meta,metadata_hash)||!pscloud_save_meta_matches(&meta,"PPSA02433",slots[i]);
-        if(!bad&&i&&!check)bad=meta.account_size!=first_meta.account_size||memcmp(meta.account,first_meta.account,meta.account_size);
+        if(!bad&&i)bad=meta.account_size!=first_meta.account_size||memcmp(meta.account,first_meta.account,meta.account_size);
         if(!bad&&!i)first_meta=meta;
         int file=bad?-1:openat(dir,"ue4savegame.dpx.sav",O_RDONLY|O_NOFOLLOW|O_NONBLOCK);struct stat owner;
         if(file<0||fstat(file,&owner)||!S_ISREG(owner.st_mode)||owner.st_nlink!=1||owner.st_size<=0||owner.st_size>32*1024*1024)bad=1;
@@ -129,12 +209,16 @@ int main(int argc,char **argv) {
     if(!check) {snprintf(package_path,sizeof package_path,"%s/share/crash-portable-%s.zip",root,id);
         if(pscloud_portable_export(stage,package_path,fw,(long long)time(NULL)))goto done;
         pscloud_log("EVENT","PORTABLE_PACKAGE=%s",package_path);}
-    pscloud_log("EVENT","LIVE_SAVES_UNCHANGED=yes; staged sharing %s passed; stage=%s",s.mode,stage_path);result=0;
+    if(restoring) {
+        if(commit_images(parent,source,stage,original,before,baseline,id,stage_path,&s))goto done;
+        pscloud_log("EVENT","PORTABLE_RESTORE_COMMITTED=yes; rollback retained; stage=%s",stage_path);
+    } else pscloud_log("EVENT","LIVE_SAVES_UNCHANGED=yes; staged sharing %s passed; stage=%s",s.mode,stage_path);
+    result=0;
 done:
     if(state.mounted) {if(pscloud_mount_end(&state,mount))result=1;else unmounted=1;}
     if(pscloud_mount_leave(&state))result=1;
     if(marker&&(!attempted||unmounted)&&!state.mounted&&!state.credentials_saved&&parent>=0) {if(unlinkat(parent,".mount-active",0)||fsync(parent))result=1;}
     for(unsigned i=0;i<2;i++)if(original[i]>=0)close(original[i]);
     free(package);if(shared>=0)close(shared);if(stage>=0)close(stage);if(source>=0)close(source);if(lock>=0)close(lock);if(parent>=0)close(parent);
-    pscloud_notify(result?"Portable sharing pilot failed - originals not committed; inspect share.log and staging marker":"Portable sharing pilot passed - live saves unchanged; recipient restore is not enabled yet");pscloud_log_close();return result;
+    pscloud_notify(result?"Portable sharing failed - inspect share.log and safety journals before retrying":restoring?"Portable restore completed - rollback retained":"Portable sharing passed - live saves unchanged");pscloud_log_close();return result;
 }

@@ -49,6 +49,36 @@ class PortableTests(unittest.TestCase):
     def test_valid_payload_only_package(self):
         self.assertEqual(self.parse(package()),(0,(b'progress',b'profile')))
 
+    def test_manual_restore_and_partial_failure_rollback(self):
+        for failure in (False,True):
+            with self.subTest(failure=failure),tempfile.TemporaryDirectory() as tmp:
+                base=Path(tmp);home=base/'home';root=base/'root';(root/'share').mkdir(parents=True)
+                live=home/'1eb70483/savedata_prospero/PPSA02433';live.mkdir(parents=True)
+                original=b'\x02'+b'\0'*8191;target=base/'target'
+                for i,slot in enumerate(SLOTS):
+                    (live/('sdimg_'+slot)).write_bytes(original)
+                    self.sfo(target/str(i),slot,b'\x02'*8)
+                data=package();(root/'share/test.zip').write_bytes(data)
+                config=base/'config';config.write_text('MODE=restore\nUSER_ID=1eb70483\nPACKAGE=test.zip\nCONFIRM_GAME_CLOSED=yes\nCONFIRM_RESTORE=yes\nPACKAGE_SHA256='+hashlib.sha256(data).hexdigest()+'\n')
+                env=dict(os.environ,PSCLOUD_TEST_SHARE_PAYLOADS=str(target),PSCLOUD_TEST_SHARE_CHANGED_IMAGE='1')
+                if failure:env['PSCLOUD_TEST_SHARE_COMMIT_FAIL']='1'
+                r=subprocess.run([str(ROOT/'share-host'),str(config),str(home),str(root)],env=env,capture_output=True,timeout=10)
+                self.assertEqual(r.returncode!=0,failure,r.stdout+r.stderr)
+                self.assertFalse((root/'.restore-active').exists())
+                self.assertEqual(len(list(live.glob('*.rollback'))),2)
+                expected=original if failure else original[:0x900]+b'\x77'+original[0x901:]
+                for slot in SLOTS:self.assertEqual((live/('sdimg_'+slot)).read_bytes(),expected)
+
+    def test_restore_requires_confirmation_and_exact_package_hash(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base=Path(tmp);home=base/'home';root=base/'root';(root/'share').mkdir(parents=True)
+            (root/'share/test.zip').write_bytes(package());config=base/'config'
+            for extra in ('','CONFIRM_RESTORE=yes\nPACKAGE_SHA256='+'0'*64+'\n'):
+                config.write_text('MODE=restore\nUSER_ID=1eb70483\nPACKAGE=test.zip\nCONFIRM_GAME_CLOSED=yes\n'+extra)
+                r=subprocess.run([str(ROOT/'share-host'),str(config),str(home),str(root)],capture_output=True,timeout=10)
+                self.assertNotEqual(r.returncode,0)
+                self.assertFalse(list(root.glob('share-stage-*')))
+
     def test_rejects_unsafe_and_corrupt_packages(self):
         for data in (package(extra='sce_sys/param.sfo'),package(extra='../bad'),package(compression=zipfile.ZIP_DEFLATED),package()[:-1],package().replace(b'PPSA02433',b'PPSA99999')):
             self.assertNotEqual(self.parse(data)[0],0)

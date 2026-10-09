@@ -1,7 +1,10 @@
-# Stage-only Crash sharing pilot. No live save replacement is implemented.
-# Export on source FW 11.40. Check on recipient FW 7.00 or 11.40.
+# Crash sharing: export/check on 7.00 or 11.40; explicit restore on 11.40.
 MODE=export
 USER_ID=REPLACE_WITH_HEX_USER_ID
 CONFIRM_GAME_CLOSED=no
 # For MODE=check, copy a verified portable ZIP into /data/pscloud/share/.
 # PACKAGE=portable-crash.zip
+# Only for an intentional live restore on the receiving 11.40 console:
+# MODE=restore
+# PACKAGE_SHA256=REPLACE_WITH_EXACT_64_CHARACTER_LOWERCASE_SHA256
+# CONFIRM_RESTORE=yes

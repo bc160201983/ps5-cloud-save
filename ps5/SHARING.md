@@ -1,4 +1,42 @@
-# Crash portable sharing pilot
+# Manual Crash portable sharing
+
+## 0.11.9: requested direction, 7.00 to 11.40
+
+Export and check modes accept both 7.00 and 11.40. Restore is deliberately gated
+to 11.40. This release adds a manual live restore path, not dashboard sharing.
+The new live path has not been console/game-load verified. Do not treat the
+older staged reverse-direction test below as proof that it works in-game.
+
+1. Close Crash on both consoles. On the 7.00 source, use MODE=export with its
+   own USER_ID. Send the sharing ELF and require success in share.log.
+2. Copy the resulting portable ZIP (not encrypted containers) into the 11.40
+   receiver's /data/pscloud/share/. Calculate the entire ZIP's SHA-256 and verify
+   the transferred file matches. Keep an independent backup of both consoles.
+3. On 11.40, use MODE=check with its own USER_ID and PACKAGE filename first.
+   Check must succeed, unmount cleanly and report LIVE_SAVES_UNCHANGED=yes.
+4. Only when YOU intend to replace the live primary progress/profile, set
+   MODE=restore, the same recipient USER_ID and PACKAGE, PACKAGE_SHA256=<exact
+   lowercase 64-character digest>, CONFIRM_GAME_CLOSED=yes and CONFIRM_RESTORE=yes.
+   Sending the sharing ELF with this configuration performs live replacement.
+   Never deploy that configuration casually or leave it enabled for later runs.
+
+The receiver must already have both primary containers for PPSA02433. Extra
+slots remain untouched. This does not register deleted saves or migrate other
+games. Confirm installed game versions match before transfer. Account metadata
+and sealed keys stay with the receiving console/profile.
+
+Both replacements and verified rollback images are prepared before commit.
+The tool checks original file identity/checksums again, writes .restore-active,
+then atomically replaces each container individually and checks its checksum.
+The pair is not power-loss atomic: interruption between renames requires recovery.
+On a detected partial failure, it attempts rollback and verifies restored hashes.
+An uncertain recovery leaves .restore-active in place and blocks further work.
+Do not clear safety markers or retry blindly. Rollback files are retained in the
+recipient title directory as .pscloud-<id>-<slot>.rollback; the journal records
+their names and original hashes. Automatic crash recovery and a rollback UI
+are not implemented. Never delete these copies until the game-load check passes.
+
+## Historical 0.11.8 staged pilot
 
 This is a staged compatibility pilot, NOT live cross-console restore yet. It
 supports Crash Bandicoot 4 (PPSA02433), primary progress slot PlayerSaveSlot0Save

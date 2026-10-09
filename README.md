@@ -1,4 +1,17 @@
-# PS5 Cloud Save — development milestone 0.11.8
+# PS5 Cloud Save — development milestone 0.11.9
+
+## Version 0.11.9 — manual Crash sharing from 7.00 to 11.40
+
+The standalone sharing tool now permits export on 7.00 as well as 11.40.
+An explicit `MODE=restore` on 11.40 prepares both primary Crash containers using
+the recipient's metadata/keys, requires the selected package SHA-256 and restore
+confirmation, retains rollback copies, journals replacement and attempts verified
+rollback on a partial failure. Extra slots remain untouched. No automatic live
+replacement is performed by deployment, export or check modes.
+
+This new restore path is implemented but not yet console/game-load verified.
+The previous reverse-direction staged test is not evidence for a live restore.
+Dashboard sharing is still unavailable. See [manual sharing](ps5/SHARING.md).
 
 ## Version 0.11.8 — Crash portable sharing staged pilot
 
