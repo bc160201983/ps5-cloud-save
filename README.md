@@ -9,7 +9,16 @@ scalars and no concurrent access to a helper's shared log FILE. Save/transfer
 operations remain serialized. Read-only API calls retry transient busy responses
 with bounded backoff. Write calls are never replayed after busy/network failure.
 While cloud versions are loading, write buttons are disabled and a progress bar
-is shown; navigation remains available. Validation and deployment are pending.
+is shown; navigation remains available. All 100 host tests and native PS5 builds
+passed. Fixtures verified metadata/icons remain available during a blocked cloud
+request, while a competing backup is refused without changing saves. Browser
+fixtures verified safe GET retry and non-replay of busy/failed write calls.
+
+Deployment of v0.11.3 could not start: dashboard, FTP and ELF-loader connections
+all timed out before any new payload bytes were sent. This does not establish why
+the console became unreachable. v0.11.3 is not deployed or hardware-verified;
+v0.11.2 was the last confirmed running version. Confirm console connectivity
+before retrying; never interrupt an active save operation or blindly resend.
 
 ## Version 0.11.2 — optional startup health check
 
