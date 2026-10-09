@@ -81,8 +81,20 @@ static int put_identity(const char *url,const char *user,const char *pass,const 
     CURLcode rc=curl_easy_perform(c);long status=0;curl_easy_getinfo(c,CURLINFO_RESPONSE_CODE,&status);curl_easy_cleanup(c);
     return rc!=CURLE_OK || status<200 || status>=300;
 }
+static int replace_requested(int dir,const char *object,const char *hash) {
+    char flag[272];snprintf(flag,sizeof flag,"%s.replace",object);
+    int scan=openat(dir,".",O_RDONLY | O_DIRECTORY | O_NOFOLLOW);if(scan<0)return -1;
+    DIR *d=fdopendir(scan);if(!d) {close(scan);return -1;}
+    struct dirent *entry;int found=0;while((entry=readdir(d)))if(!strcmp(entry->d_name,flag)) {found=1;break;}
+    closedir(d);if(!found)return 0;
+    int fd=openat(dir,flag,O_RDONLY | O_NOFOLLOW | O_NONBLOCK);struct stat st;char text[65]={0};
+    int bad=fd<0 || fstat(fd,&st) || !S_ISREG(st.st_mode) || st.st_size!=64 || read(fd,text,64)!=64 || strcmp(text,hash);
+    if(fd>=0)close(fd);
+    return bad?-1:1;
+}
 static int upload(const char *base,const char *user,const char *pass,const char *ca,
                   const char *name,int dir) {
+    char queue_name[256];snprintf(queue_name,sizeof queue_name,"%s",name);name=queue_name;
     int fd=openat(dir,name,O_RDONLY|O_NOFOLLOW);
     struct stat st;
     if(fd<0) return 1;
@@ -103,11 +115,14 @@ static int upload(const char *base,const char *user,const char *pass,const char 
     if(snprintf(destination,sizeof destination,"%s",base)>=(int)sizeof destination) {
         curl_easy_cleanup(c);fclose(f);return 1;
     }
+    int replace=0;
     if(structured) {
         char folder[256],hash[65];
         if(pscloud_snapshot_folder(&snapshot,folder,sizeof folder) || pscloud_file_hash(fd,hash) || strcmp(hash,snapshot.sha256)) {
             curl_easy_cleanup(c);fclose(f);return 1;
         }
+        replace=replace_requested(dir,object,snapshot.sha256);
+        if(replace<0) {curl_easy_cleanup(c);fclose(f);return 1;}
         char *state=NULL,*component=strtok_r(folder,"/",&state);
         while(component) {
             size_t have=strlen(destination),length=strlen(component);
@@ -125,7 +140,7 @@ static int upload(const char *base,const char *user,const char *pass,const char 
         if(snprintf(manifest,sizeof manifest,"%s/.pscloud/%s.identity",destination,object)>=(int)sizeof manifest) {curl_easy_cleanup(c);fclose(f);return 1;}
         int present=cloud_copy(url,manifest,user,pass,ca,&snapshot,(curl_off_t)st.st_size);
         if(present<0) {fprintf(stderr,"Cloud presence check failed; backup retained: %s\n",object);curl_easy_cleanup(c);fclose(f);return 1;}
-        if(present) {
+        if(present && !replace) {
             curl_easy_cleanup(c);fclose(f);char done[272];snprintf(done,sizeof done,"%s.sent",object);
             if(renameat(dir,name,dir,done) || fsync(dir))return 1;
             printf("Already in cloud; upload skipped: %s\n",object);fflush(stdout);return 0;
@@ -162,6 +177,7 @@ static int upload(const char *base,const char *user,const char *pass,const char 
     }
     char done[272]; snprintf(done,sizeof done,"%s.sent",object);
     if(renameat(dir,name,dir,done)||fsync(dir)) {perror("queue commit"); return 1;}
+    if(replace) {char flag[272];snprintf(flag,sizeof flag,"%s.replace",object);if(unlinkat(dir,flag,0) || fsync(dir))return 1;}
     printf("Uploaded: %s\n",object); fflush(stdout);
     return 0;
 }

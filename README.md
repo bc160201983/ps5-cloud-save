@@ -1,4 +1,22 @@
-# PS5 Cloud Save — development milestone 0.7.0
+# PS5 Cloud Save — development milestone 0.7.1
+
+## Version 0.7.1 — explicit duplicate choices for PC imports
+
+PC import preflight checks the selected game/user and full ZIP SHA-256 against
+verified local snapshots, with a cloud identity lookup if the local archive is
+absent. An identical match offers Keep existing (skip), Replace existing copy,
+or Upload separate version. Replace retains the existing filename/date and queues
+an explicit overwrite; it does not silently create another version. Separate
+always creates a new version. Different progress is never automatically replaced.
+Direct duplicate imports without a policy require a choice rather than defaulting
+to a new file. This release is implemented; host and console checks are pending.
+
+Console investigation confirmed that deletion/recreation changes both encrypted
+save keys. The raw-image restore intentionally refuses those destinations; it
+cannot yet recover into a deleted/recreated save. A clear rejection is shown.
+Decrypted payload migration into fresh, properly registered saves is still needed.
+The console log also recorded a user-run successful same-key whole-game restore;
+changed-progress game-load validation is not confirmed. Rollback copies remain.
 
 ## Version 0.7.0 — PC transfers, queue management and experimental whole-game restore
 

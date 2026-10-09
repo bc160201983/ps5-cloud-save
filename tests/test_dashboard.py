@@ -84,7 +84,33 @@ class DashboardTests(unittest.TestCase):
         return chosen,file.name[:-5],file.read_bytes()
 
     def import_fixture(self,chosen,data):
-        return self.binary('/api/import?'+urllib.parse.urlencode(chosen),data)
+        return self.binary('/api/import?'+urllib.parse.urlencode(dict(chosen,policy='new')),data)
+
+    def test_pc_duplicate_choices_keep_replace_or_new(self):
+        chosen,file,data=self.game_fixture()
+        def choice(policy):
+            status,_,body=self.binary('/api/import?'+urllib.parse.urlencode(dict(chosen,policy=policy)),data)
+            return status,json.loads(body)
+        status,check=choice('check');self.assertEqual(status,200);self.assertTrue(check['duplicate']);self.assertEqual(check['file'],file)
+        self.assertEqual(self.request('/api/queue')[1]['count'],0)
+        self.assertEqual(choice('skip')[0],200);self.assertEqual(self.request('/api/queue')[1]['count'],0)
+        self.assertEqual(self.binary('/api/import?'+urllib.parse.urlencode(chosen),data)[0],409)
+        self.assertEqual(choice('replace')[0],200);self.assertEqual(self.request('/api/queue')[1]['count'],1)
+        self.fixture.puts.clear();self.assertEqual(self.request('/api/sync-one',{'file':file})[0],200)
+        prefix='/backups/Crash%20Bandicoot%204%20-%20PPSA02433/User-1eb70483/WholeGame/'
+        self.assertIn(prefix+file,self.fixture.puts);self.assertFalse((self.root/'spool'/(file+'.replace')).exists())
+        self.assertEqual(len(list((self.root/'spool').glob('*.sent'))),1)
+        self.assertEqual(choice('new')[0],200);self.assertEqual(self.request('/api/queue')[1]['count'],1)
+        self.assertEqual(len(list((self.root/'spool').glob('*.identity'))),2)
+
+    def test_duplicate_check_detects_cloud_copy_without_local_archive(self):
+        chosen,file,data=self.game_fixture()
+        for p in (self.root/'spool').glob('*.sent'):p.unlink()
+        status,_,body=self.binary('/api/import?'+urllib.parse.urlencode(dict(chosen,policy='check')),data)
+        self.assertEqual(status,200);self.assertTrue(json.loads(body)['duplicate'])
+        self.assertEqual(self.binary('/api/import?'+urllib.parse.urlencode(dict(chosen,policy='replace')),data)[0],200)
+        self.fixture.puts.clear();self.assertEqual(self.request('/api/sync',{})[0],200)
+        self.assertTrue(self.fixture.puts);self.assertEqual(len(list((self.root/'spool').glob('*.sent'))),1)
 
     def test_pc_download_import_queue_and_individual_upload(self):
         chosen,file,data=self.game_fixture()

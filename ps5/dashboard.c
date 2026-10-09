@@ -12,6 +12,7 @@
 #include <curl/curl.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
+#include <sys/file.h>
 #include <sys/time.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
@@ -25,6 +26,7 @@
 #include <signal.h>
 #include <errno.h>
 #include <time.h>
+#include <openssl/evp.h>
 #ifndef PSCLOUD_HOST_TEST
 #include <ps5/kernel.h>
 #endif
@@ -288,22 +290,86 @@ static void download_pc(int sock,const char *query,int local) {
 static void import_pc(int sock,const char *query,const unsigned char *data,size_t size) {
     struct pscloud_snapshot s;const unsigned char *images[2];size_t sizes[2];
     if(selection(query,&s) || strcmp(s.slot,"WholeGame") || pscloud_bundle_parse(data,size,&s,images,sizes)) {message(sock,400,"Select Whole game and upload an unmodified PSCloud ZIP for this game and PS5 user");return;}
+    unsigned char digest[32];unsigned digest_size=0;
+    if(!EVP_Digest(data,size,digest,&digest_size,EVP_sha256(),NULL) || digest_size!=32) {message(sock,500,"Cannot verify ZIP checksum");return;}
+    for(unsigned i=0;i<32;i++)snprintf(s.sha256+2*i,3,"%02x",digest[i]);
+    char policy[16]="ask";
+    (void)parameter(query,"policy",policy,sizeof policy);
+    if(strcmp(policy,"ask") && strcmp(policy,"check") && strcmp(policy,"skip") && strcmp(policy,"replace") && strcmp(policy,"new")) {message(sock,400,"Invalid duplicate policy");return;}
+    char catalog[1400],matching[128]={0};struct pscloud_snapshot match={0};struct pscloud_dedup_stats stats;
+    snprintf(catalog,sizeof catalog,"%s/spool",root);int catalog_fd=pscloud_open_directory(catalog);
+    int duplicate=catalog_fd>=0?pscloud_snapshot_exists_checked(catalog_fd,&s,&stats):0;
+    if(duplicate<0) {if(catalog_fd>=0)close(catalog_fd);message(sock,500,"Cannot safely check existing backups");return;}
+    if(duplicate) {
+        size_t n=strlen(stats.archive),suffix=!strcmp(stats.archive+n-6,".ready")?6:5;
+        snprintf(matching,sizeof matching,"%.*s",(int)(n-suffix),stats.archive);
+        char meta[144];snprintf(meta,sizeof meta,"%s.identity",matching);
+        if(!valid_archive(matching) || pscloud_snapshot_read(catalog_fd,meta,&match))duplicate=0;
+    }
+    if(catalog_fd>=0)close(catalog_fd);
+    if(!duplicate && strcmp(policy,"new")) {
+        struct settings cloud={0};char folder[256],url[4096];
+        if(!pscloud_configure(cloudpath,&cloud) && !pscloud_snapshot_folder(&s,folder,sizeof folder)) {
+            snprintf(url,sizeof url,"%s/%s/.pscloud/",cloud.url,folder);
+            char *xml=malloc(1024*1024+1);if(!xml) {message(sock,500,"Not enough memory");return;}
+            struct response r={xml,0,1024*1024};long status=webdav(&cloud,url,"PROPFIND",&r);
+            if(status!=404 && status!=200 && status!=207) {free(xml);message(sock,502,"Cloud duplicate check unavailable; retry later");return;}
+            char *cursor=xml;unsigned checked=0;
+            while((status==200 || status==207) && (cursor=strstr(cursor,"href>")) && checked<128) {
+                cursor+=5;char *end=strchr(cursor,'<');if(!end)break;char *begin=cursor;
+                for(char *p=cursor;p<end;p++)if(*p=='/')begin=p+1;
+                size_t n=(size_t)(end-begin);if(n<10 || n-9>=128 || strncmp(end-9,".identity",9))continue;
+                char candidate[128];memcpy(candidate,begin,n-9);candidate[n-9]=0;
+                struct pscloud_snapshot remote;checked++;
+                if(!remote_snapshot(&cloud,&s,candidate,&remote) && !strcmp(remote.sha256,s.sha256) && (!duplicate || remote.created>match.created)) {duplicate=1;match=remote;strcpy(matching,candidate);}
+            }
+            free(xml);
+        }
+    }
+    if(!strcmp(policy,"check") || (duplicate && !strcmp(policy,"ask"))) {
+        char json[512];snprintf(json,sizeof json,"{\"ok\":true,\"duplicate\":%s,\"file\":\"%s\",\"created\":%lld,\"sha256\":\"%s\",\"message\":\"%s\"}",duplicate?"true":"false",matching,match.created,s.sha256,duplicate?"An identical backup exists. Choose keep, replace existing, or upload separately":"No identical backup found");
+        respond(sock,!strcmp(policy,"check")?200:409,"application/json",json,strlen(json));return;
+    }
+    if(!strcmp(policy,"skip")) {message(sock,duplicate?200:409,duplicate?"Existing backup kept; no new copy or upload queued":"Matching backup changed; check again");return;}
+    if(!strcmp(policy,"replace") && !duplicate) {message(sock,409,"Matching backup changed; check again");return;}
+    char expected_file[128];
+    if(!parameter(query,"existing",expected_file,sizeof expected_file) && strcmp(expected_file,matching)) {message(sock,409,"Matching version changed; check again");return;}
+    char expected_hash[65];
+    if(!parameter(query,"expected",expected_hash,sizeof expected_hash) && strcmp(expected_hash,s.sha256)) {message(sock,409,"Selected ZIP changed; check it again");return;}
     char path[1400],id[33],file[128],part[144],ready[144],identity[144];
     snprintf(path,sizeof path,"%s/spool",root);int parent=pscloud_open_directory(root);
     if(parent>=0) {(void)mkdirat(parent,"spool",0700);close(parent);}int dir=pscloud_open_directory(path);
     if(dir<0 || pscloud_random_id(id)) {if(dir>=0)close(dir);message(sock,500,"Cannot open private backup queue");return;}
-    snprintf(file,sizeof file,"ps5-11.40-PPSA02433-%s.zip",id);snprintf(part,sizeof part,"%s.part",file);snprintf(ready,sizeof ready,"%s.ready",file);snprintf(identity,sizeof identity,"%s.identity",file);
+    int queue_lock=openat(dir,".worker.lock",O_CREAT | O_RDWR | O_NOFOLLOW,0600);
+    if(queue_lock<0 || flock(queue_lock,LOCK_EX | LOCK_NB)) {if(queue_lock>=0)close(queue_lock);close(dir);message(sock,409,"Uploader busy; try import again shortly");return;}
+    if(!strcmp(policy,"replace")) {
+        if(duplicate && *matching) {
+            struct pscloud_dedup_stats local;
+            if(pscloud_snapshot_exists_checked(dir,&s,&local)>0) {
+                int bad=pscloud_snapshot_requeue(dir,local.archive);char flag[144],name[128];size_t n=strlen(local.archive),suffix=!strcmp(local.archive+n-6,".ready")?6:5;
+                snprintf(name,sizeof name,"%.*s",(int)(n-suffix),local.archive);snprintf(flag,sizeof flag,"%s.replace",name);
+                if(!bad) {
+                    char full[1600];snprintf(full,sizeof full,"%s/%s",path,flag);bad=atomic_config(full,s.sha256);
+                }
+                close(queue_lock);close(dir);message(sock,bad?500:200,bad?"Could not queue existing version":"Existing version queued for replacement; filename and date preserved");return;
+            }
+            strcpy(file,matching);s.created=match.created;
+        }
+    } else snprintf(file,sizeof file,"ps5-11.40-PPSA02433-%s.zip",id);
+    snprintf(part,sizeof part,"%s.part",file);snprintf(ready,sizeof ready,"%s.ready",file);snprintf(identity,sizeof identity,"%s.identity",file);
     int fd=openat(dir,part,O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW,0600),bad=fd<0;size_t have=0;
     while(!bad && have<size) {ssize_t n=write(fd,data+have,size-have);if(n<=0)bad=1;else have+=(size_t)n;}
     if(fd>=0) {if(fsync(fd))bad=1;if(close(fd))bad=1;}
     if(!bad) {fd=openat(dir,part,O_RDONLY | O_NOFOLLOW | O_NONBLOCK);bad=fd<0 || pscloud_file_hash(fd,s.sha256);if(fd>=0)close(fd);}
     if(!bad) {
-        fd=openat(dir,identity,O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW,0600);FILE *f=fd>=0?fdopen(fd,"w"):NULL;
-        if(!f) {if(fd>=0)close(fd);bad=1;}
-        else {s.created=(long long)time(NULL);if(s.created<0)s.created=0;bad=fprintf(f,"USER_ID=%s\nTITLE=%s\nSAVE_NAME=WholeGame\nSHA256=%s\nCREATED_UNIX=%lld\n",s.user,s.title,s.sha256,s.created)<0;if(fflush(f) || fsync(fd))bad=1;if(fclose(f))bad=1;}
+        if(strcmp(policy,"replace"))s.created=(long long)time(NULL);
+        if(s.created<0)s.created=0;
+        char metadata[512],full[1600];snprintf(metadata,sizeof metadata,"USER_ID=%s\nTITLE=%s\nSAVE_NAME=WholeGame\nSHA256=%s\nCREATED_UNIX=%lld\n",s.user,s.title,s.sha256,s.created);snprintf(full,sizeof full,"%s/%s",path,identity);bad=atomic_config(full,metadata);
+        if(!bad && !strcmp(policy,"replace")) {char flag[144];snprintf(flag,sizeof flag,"%s.replace",file);snprintf(full,sizeof full,"%s/%s",path,flag);bad=atomic_config(full,s.sha256);}
     }
     if(!bad)bad=renameat(dir,part,dir,ready) || fsync(dir);
     if(bad)unlinkat(dir,part,0);
+    close(queue_lock);
     close(dir);
     message(sock,bad?500:200,bad?"Import failed; no console save was changed":"PC backup validated and queued. Upload or restore it from the queue");
 }
@@ -363,7 +429,7 @@ static void action(int sock,const char *path,const char *form) {
         int bad=strcmp(snapshot.user,chosen.user) || strcmp(snapshot.title,chosen.title) || strcmp(snapshot.slot,chosen.slot) || strcmp(snapshot.slot,"WholeGame");
         if(!bad)bad=pscloud_bundle_restore(home,root,&snapshot,data,size);
         free(data);
-        message(sock,bad?500:200,bad?"Restore refused or failed. Keep game closed; inspect activity and rollback":"Whole-game restore complete; original images retained in rollback");return;
+        message(sock,bad?500:200,bad==2?"Save was recreated and encryption keys changed. Raw-image restore cannot recover it; preserve this backup":bad?"Restore refused or failed. Keep game closed; inspect activity and rollback":"Whole-game restore complete; original images retained in rollback");return;
     }
     char file[128];struct settings cloud={0};struct pscloud_snapshot snapshot;
     if(parameter(form,"file",file,sizeof file) || pscloud_configure(cloudpath,&cloud) || remote_snapshot(&cloud,&chosen,file,&snapshot)) {message(sock,400,"Cloud backup identity could not be verified");return;}
@@ -385,7 +451,7 @@ static void action(int sock,const char *path,const char *form) {
             if(!bad)bad=renameat(dir,part,dir,file) || fsync(dir);
             if(dir>=0) {if(bad)unlinkat(dir,part,0);close(dir);}
         }
-        free(data);message(sock,bad?500:200,bad?"Whole-game operation failed; keep game closed if restoring and inspect activity":restoring?"Whole-game restore complete; rollback retained":"Whole-game ZIP downloaded and verified on PS5");return;
+        free(data);message(sock,bad?500:200,bad==2?"Save was recreated and encryption keys changed. Raw-image restore cannot recover it; preserve this backup":bad?"Whole-game operation failed; keep game closed if restoring and inspect activity":restoring?"Whole-game restore complete; rollback retained":"Whole-game ZIP downloaded and verified on PS5");return;
     }
     if(restoring) {
         char confirm[8];

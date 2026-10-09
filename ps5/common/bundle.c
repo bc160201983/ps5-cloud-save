@@ -198,8 +198,11 @@ int pscloud_bundle_restore(const char *home,const char *root,const struct psclou
     for(unsigned i=0;i<2;i++) {
         original[i]=openat(target,bundle_names[i],O_RDONLY | O_NOFOLLOW | O_NONBLOCK);unsigned char key[0x60];
         if(original[i]<0 || fstat(original[i],&before[i]) || !S_ISREG(before[i].st_mode) || before[i].st_nlink!=1 ||
-           before[i].st_size!=(off_t)sizes[i] || pread(original[i],key,sizeof key,0x800)!=(ssize_t)sizeof key ||
-           memcmp(key,images[i]+0x800,sizeof key) || pscloud_file_hash(original[i],baseline[i]))goto done;
+           before[i].st_size!=(off_t)sizes[i] || pread(original[i],key,sizeof key,0x800)!=(ssize_t)sizeof key)goto done;
+        if(memcmp(key,images[i]+0x800,sizeof key)) {
+            result=2;pscloud_log("ERROR","Restore rejected: %s encryption key differs. Deleted/recreated saves require decrypted-data migration, not raw-image replacement",bundle_names[i]);goto done;
+        }
+        if(pscloud_file_hash(original[i],baseline[i]))goto done;
     }
     if(pscloud_random_id(id))goto done;
     snprintf(stage_name,sizeof stage_name,"whole-restore-%s",id);
