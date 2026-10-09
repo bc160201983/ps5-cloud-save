@@ -16,11 +16,15 @@ listed in about 15.19 seconds. Two idle sockets did not block health. These are
 single-run timings, not performance guarantees. No save/cloud writes or credential
 changes were performed by these checks.
 
-The embedded browser also blocked `/api/state`, so the optional-health patch is
-not a fix for its broader API restriction. Console APIs work via direct checks;
-end-to-end UI testing in a normal user browser is still needed. Do not bypass
-browser security settings. Koofr remains configured; Google development is on hold.
-Native remote-upload checksum verification still needs a hardware upload test.
+The embedded browser blocked direct top-level API navigation as well; this must
+not be confused with all in-page requests failing. After deployment, the patched
+in-page startup displayed the real game library. Overlapping read-only requests
+can still receive busy responses; refresh after other requests finish. No browser
+security settings were changed. Koofr remains configured; Google development is
+on hold. Native remote-upload checksum verification still needs a hardware upload
+test, and broader interactive backup/restore regression testing is pending.
+The live queue displayed one pending backup after refresh; direct queue read took
+about 0.40 seconds. No queued archive was uploaded or altered by the smoke checks.
 
 ## Version 0.11.1 — verify cloud contents before queue completion
 
