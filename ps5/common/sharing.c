@@ -1,7 +1,9 @@
 /* Generic sharing operates on copies of existing local containers. No foreign
  * metadata or keys are imported. Unknown game-level ownership bindings remain
  * possible: passing container checks is not a promise of in-game compatibility. */
+#ifndef __FreeBSD__
 #define _POSIX_C_SOURCE 200809L
+#endif
 #include "sharing.h"
 #include "restore.h"
 #include "snapshot.h"
@@ -267,7 +269,8 @@ int pscloud_share_game(const char *home,const char *root,const char *appmeta,con
         int fd=open(path,O_RDONLY|O_NOFOLLOW);struct stat st;int bad=fd<0||fstat(fd,&st)||st.st_size>PSCLOUD_SHARE_LIMIT||pscloud_file_hash(fd,checksum);if(fd>=0)close(fd);if(bad) {published[0]=0;goto done;}
         unsigned char *verified=NULL;size_t verified_size=0;char directory[1400];snprintf(directory,sizeof directory,"%s/share",root);
         int share=pscloud_open_directory(directory);bad=share<0||pscloud_read_archive(share,published,&verified,&verified_size)||pscloud_share_validate(verified,verified_size,title);
-        if(share>=0)close(share);free(verified);if(bad) {published[0]=0;goto done;}
+        if(share>=0)close(share);
+        free(verified);if(bad) {published[0]=0;goto done;}
     }
     if(mode==2&&commit(parent,source,stage,p,before,baseline,id,stage_path,user,title,checksum))goto done;
     pscloud_log("EVENT",mode==2?"GENERIC_RESTORE_COMMITTED=yes; rollback=%s":"LIVE_SAVES_UNCHANGED=yes; generic sharing passed; stage=%s",stage_path);result=0;
