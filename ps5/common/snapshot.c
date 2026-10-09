@@ -72,6 +72,24 @@ int pscloud_file_hash_checked(int fd,char hex[65],unsigned *phase) {
 int pscloud_file_hash(int fd,char hex[65]) {
     unsigned phase;return pscloud_file_hash_checked(fd,hex,&phase);
 }
+/* Some console SDK builds do not reliably expose a missing openat target as
+ * a negative descriptor. Select an existing queue entry first, rather than
+ * probing a nonexistent .ready before its existing .sent sibling. */
+static int existing_archive(int dir,const char *identity,size_t length) {
+    char ready[256],sent[256],found[256]={0};
+    snprintf(ready,sizeof ready,"%.*s.ready",(int)length-9,identity);
+    snprintf(sent,sizeof sent,"%.*s.sent",(int)length-9,identity);
+    int scan=openat(dir,".",O_RDONLY | O_DIRECTORY | O_NOFOLLOW);if(scan<0)return -1;
+    DIR *d=fdopendir(scan);if(!d) {close(scan);return -1;}
+    struct dirent *entry;
+    while((entry=readdir(d))) {
+        if(!strcmp(entry->d_name,ready) || !strcmp(entry->d_name,sent)) {
+            snprintf(found,sizeof found,"%s",entry->d_name);break;
+        }
+    }
+    closedir(d);
+    return *found?openat(dir,found,O_RDONLY | O_NOFOLLOW | O_NONBLOCK):-1;
+}
 int pscloud_snapshot_exists_checked(int dir,const struct pscloud_snapshot *wanted,struct pscloud_dedup_stats *stats) {
     memset(stats,0,sizeof *stats);
     int scan=openat(dir,".",O_RDONLY | O_DIRECTORY | O_NOFOLLOW);if(scan<0)return -1;
@@ -81,16 +99,13 @@ int pscloud_snapshot_exists_checked(int dir,const struct pscloud_snapshot *wante
         size_t n=strlen(e->d_name);
         if(n<10 || n>200 || strcmp(e->d_name+n-9,".identity"))continue;
         stats->scanned++;
+        char identity[256];memcpy(identity,e->d_name,n+1);
         struct pscloud_snapshot s={0};
-        if(pscloud_snapshot_read(dir,e->d_name,&s)) {stats->invalid++;continue;}
+        if(pscloud_snapshot_read(dir,identity,&s)) {stats->invalid++;continue;}
         if(strcmp(s.user,wanted->user) || strcmp(s.title,wanted->title) ||
            strcmp(s.slot,wanted->slot) || strcmp(s.sha256,wanted->sha256))continue;
         stats->matched++;
-        char file[256];int fd=-1;
-        for(unsigned i=0;i<2 && fd<0;i++) {
-            snprintf(file,sizeof file,"%.*s.%s",(int)n-9,e->d_name,i?"sent":"ready");
-            fd=openat(dir,file,O_RDONLY | O_NOFOLLOW | O_NONBLOCK);
-        }
+        int fd=existing_archive(dir,identity,n);
         char hash[65];if(fd>=0) {if(pscloud_file_hash_checked(fd,hash,&stats->hash_phase))stats->hash_failed++;else if(!strcmp(hash,wanted->sha256))same=1;else stats->different++;close(fd);}else stats->missing++;
         if(same)break;
     }

@@ -1,4 +1,12 @@
-# PS5 Cloud Save — development milestone 0.6.1
+# PS5 Cloud Save — development milestone 0.6.2
+
+### 0.6.2 uploaded-archive deduplication
+
+Queue validation selects an existing `.ready` or `.sent` file by directory
+inventory before opening it. This avoids the console's missing-target descriptor
+behavior when checking an uploaded archive. Whole-game backup fails closed on
+an archive verification error rather than publishing a duplicate. Console
+retesting of this fix is pending.
 
 ### 0.6.1 validation follow-up
 
