@@ -8,16 +8,21 @@
 #include <unistd.h>
 #include <signal.h>
 #include <errno.h>
+#include <stdatomic.h>
 
 static FILE *log_file;
+static atomic_flag log_lock=ATOMIC_FLAG_INIT;
+static void lock_log(void) {while(atomic_flag_test_and_set(&log_lock)) {}}
+static void unlock_log(void) {atomic_flag_clear(&log_lock);}
+static void close_log(void) {if(log_file) {fflush(log_file);fsync(fileno(log_file));fclose(log_file);log_file=NULL;}}
 int pscloud_log_open(const char *path) {
-    if(log_file)pscloud_log_close();
+    lock_log();close_log();
     signal(SIGPIPE, SIG_IGN); /* The sending PC can disconnect; keep local logging. */
     int fd = open(path, O_WRONLY | O_CREAT | O_APPEND | O_NOFOLLOW, 0600);
-    if(fd < 0) return -1;
+    if(fd < 0) {unlock_log();return -1;}
     log_file = fdopen(fd, "a");
-    if(!log_file) {close(fd); return -1;}
-    return 0;
+    if(!log_file) {close(fd);unlock_log();return -1;}
+    unlock_log();return 0;
 }
 void pscloud_log(const char *level, const char *format, ...) {
     int saved = errno;
@@ -27,9 +32,10 @@ void pscloud_log(const char *level, const char *format, ...) {
     time_t now = time(NULL); struct tm tm;
     if(localtime_r(&now, &tm)) strftime(stamp, sizeof stamp, "%Y-%m-%d %H:%M:%S", &tm);
     fprintf(stdout, "[PSCloud] %s %s %s\n", stamp, level, message); fflush(stdout);
-    if(log_file) {
+    lock_log();if(log_file) {
         fprintf(log_file, "%s %s %s\n", stamp, level, message); fflush(log_file);
     }
+    unlock_log();
     errno = saved;
 }
 void pscloud_notify(const char *format, ...) {
@@ -49,5 +55,5 @@ void pscloud_notify(const char *format, ...) {
 #endif
 }
 void pscloud_log_close(void) {
-    if(log_file) {fflush(log_file); fsync(fileno(log_file)); fclose(log_file); log_file = NULL;}
+    lock_log();close_log();unlock_log();
 }

@@ -70,7 +70,11 @@ int main(int argc,char **argv) {
     struct buffer b={malloc(PSCLOUD_RESTORE_MAX),0};int failed=!b.data;
     CURL *curl=NULL;int initialized=0;long status=0;CURLcode rc=CURLE_FAILED_INIT;
     if(!failed) {
+#ifdef PSCLOUD_DOWNLOAD_EMBEDDED
+        initialized=1; /* Dashboard owns global curl lifetime. */
+#else
         initialized=curl_global_init(CURL_GLOBAL_DEFAULT)==CURLE_OK;
+#endif
         curl=initialized?curl_easy_init():NULL;
         failed=!curl;
     }
@@ -94,7 +98,9 @@ int main(int argc,char **argv) {
         if(rc!=CURLE_OK || status!=200)failed=1;
     }
     if(curl)curl_easy_cleanup(curl);
+#ifndef PSCLOUD_DOWNLOAD_EMBEDDED
     if(initialized)curl_global_cleanup();
+#endif
     const unsigned char *payload=NULL;size_t payload_size=0;
     if(!failed && (pscloud_verify_hash(b.data,b.size,s.sha256) ||
        pscloud_save_payload(b.data,b.size,&payload,&payload_size)))failed=1;

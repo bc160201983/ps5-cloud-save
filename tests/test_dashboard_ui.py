@@ -37,7 +37,8 @@ const source=html.slice(html.indexOf('async function api('),html.indexOf('\nfunc
  vm.runInNewContext(html.slice(start,end),controls);controls.setControls();
  assert.equal(buttons[0].disabled,true);assert.equal(buttons[1].disabled,false);assert.equal(restore.disabled,true);
  controls.versionLoading=false;controls.setControls();assert.equal(buttons[0].disabled,false);
- controls.backgroundRunning=true;controls.setControls();assert.equal(buttons[0].disabled,true);assert.equal(buttons[1].disabled,false);
+ controls.backgroundRunning=true;controls.setControls();assert.equal(buttons[0].disabled,false);assert.equal(buttons[1].disabled,false);
+ buttons[0].dataset.upload='true';controls.setControls();assert.equal(buttons[0].disabled,true);
  console.log('Read retry/write non-replay/control fixtures passed');
 })().catch(e=>{console.error(e);process.exit(1);});
 """

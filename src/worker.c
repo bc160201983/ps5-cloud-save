@@ -299,8 +299,8 @@ static int worker_run(int argc,char **argv,const char *base,const char *user,con
     if(dir<0) {perror("spool"); return 2;}
     int lock=openat(dir,".worker.lock",O_CREAT|O_RDWR|O_NOFOLLOW,0600);
     if(lock<0||flock(lock,LOCK_EX|LOCK_NB)) {fprintf(stderr,"Cannot lock spool\n");if(lock>=0)close(lock);close(dir);return 2;}
-    if(curl_global_init(CURL_GLOBAL_DEFAULT)) {close(lock);close(dir);return 2;}
 #ifndef PSCLOUD_EMBEDDED
+    if(curl_global_init(CURL_GLOBAL_DEFAULT)) {close(lock);close(dir);return 2;}
     signal(SIGTERM,stop); signal(SIGINT,stop);
 #endif
     unsigned delay=5; int failed=0;
@@ -320,7 +320,10 @@ static int worker_run(int argc,char **argv,const char *base,const char *user,con
         delay=failed?(delay<150?delay*2:300):5;
     } while(!stopped);
     if(stopped)failed=1;
-    curl_global_cleanup(); close(lock); close(dir);
+#ifndef PSCLOUD_EMBEDDED
+    curl_global_cleanup();
+#endif
+    close(lock); close(dir);
     return failed?1:0;
 }
 #ifdef PSCLOUD_EMBEDDED
@@ -335,5 +338,11 @@ int pscloud_worker_main(int argc,char **argv) {
 int main(int argc,char **argv) {
 #endif
     pscloud_worker_prepare();
+#ifdef PSCLOUD_EMBEDDED
+    if(curl_global_init(CURL_GLOBAL_DEFAULT))return 2;
+    int result=worker_run(argc,argv,getenv("PSCLOUD_URL"),getenv("PSCLOUD_USER"),getenv("PSCLOUD_PASSWORD"),getenv("PSCLOUD_CA_BUNDLE"));
+    curl_global_cleanup();return result;
+#else
     return worker_run(argc,argv,getenv("PSCLOUD_URL"),getenv("PSCLOUD_USER"),getenv("PSCLOUD_PASSWORD"),getenv("PSCLOUD_CA_BUNDLE"));
+#endif
 }

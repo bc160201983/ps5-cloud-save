@@ -115,7 +115,8 @@ int pscloud_bundle_index(const unsigned char *a,size_t length,const struct psclo
     if(local!=central || pos!=length-22)return -1;
     b->count=entries-1;return 0;
 }
-int pscloud_game_backup(const char *home,const char *root,const char *user,const char *title) {
+int pscloud_game_backup_named(const char *home,const char *root,const char *user,const char *title,char published[144]) {
+    published[0]=0;
     struct pscloud_snapshot s={0};
     if(strlen(user)>=sizeof s.user || strlen(title)>=sizeof s.title)return -1;
     strcpy(s.user,user);strcpy(s.title,title);strcpy(s.slot,"WholeGame");
@@ -209,6 +210,8 @@ int pscloud_game_backup(const char *home,const char *root,const char *user,const
     if(duplicate<0 || (!duplicate && stats.hash_failed))goto done;
     if(duplicate) {
         if(pscloud_snapshot_requeue(spool,stats.archive))goto done;
+        size_t n=strlen(stats.archive),suffix=!strcmp(stats.archive+n-6,".ready")?6:5;
+        snprintf(published,144,"%.*s.ready",(int)(n-suffix),stats.archive);
         pscloud_notify("Whole game unchanged - duplicate skipped; checking existing cloud copy");result=0;goto done;
     }
     s.created=(long long)time(NULL);if(s.created<0)s.created=0;
@@ -219,7 +222,7 @@ int pscloud_game_backup(const char *home,const char *root,const char *user,const
     if(fflush(out) || fsync(meta))bad=1;
     if(fclose(out))bad=1;
     if(bad || renameat(spool,strrchr(part,'/')+1,spool,ready) || fsync(spool))goto done;
-    part[0]=0;result=0;pscloud_notify("Whole-game backup ready: %u save slots together; originals untouched",count);
+    snprintf(published,144,"%s",ready);part[0]=0;result=0;pscloud_notify("Whole-game backup ready: %u save slots together; originals untouched",count);
 done:
     if(*part)unlink(part);
     if(stage>=0) {
@@ -243,6 +246,9 @@ static int write_image_bytes(int dir,const char *name,const unsigned char *data,
     if(fsync(fd))bad=1;
     if(close(fd))bad=1;
     return bad?-1:0;
+}
+int pscloud_game_backup(const char *home,const char *root,const char *user,const char *title) {
+    char published[144];return pscloud_game_backup_named(home,root,user,title,published);
 }
 static int bundle_restore(const char *home,const char *root,const struct pscloud_snapshot *s,const unsigned char *archive,size_t length,int verify_only) {
     struct pscloud_bundle bundle;

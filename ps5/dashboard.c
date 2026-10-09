@@ -35,6 +35,7 @@
 #include <ps5/kernel.h>
 #endif
 extern int pscloud_backup_main(int,char **);
+extern const char *pscloud_backup_archive(void);
 extern int pscloud_worker_main(int,char **);
 extern int pscloud_download_main(int,char **);
 static char root[1024],home[1024],cloudpath[1200],logpath[1200],token[33],appmeta[1200];
@@ -280,6 +281,7 @@ static void backups(int sock,const char *query) {
     free(xml);strcat(json,"]}");respond(sock,200,"application/json",json,strlen(json));
 }
 static int upload_selected(const char *file) {
+    background_cancelled=0;background_result=0;
     struct settings s={0};if(pscloud_configure(cloudpath,&s))return 2;
     if(setenv("PSCLOUD_URL",s.url,1) || setenv("PSCLOUD_USER",s.user,1) || setenv("PSCLOUD_PASSWORD",s.password,1) || setenv("PSCLOUD_CA_BUNDLE",s.ca,1))return 2;
     char spool[1400];snprintf(spool,sizeof spool,"%s/spool",root);
@@ -322,14 +324,18 @@ static void queue_list(int sock) {
     }
     snprintf(json+pos,sizeof json-pos,"],\"count\":%u,\"truncated\":%s}",count,truncated?"true":"false");cache_store(queue_cache,sizeof queue_cache,json);respond(sock,200,"application/json",json,strlen(json));
 }
-struct background_job {struct settings settings;char spool[1400],file[144];};
+struct background_job {struct settings settings;char spool[1400],files[256][144];unsigned count;};
 static void *background_upload(void *arg) {
-    struct background_job *job=arg;pthread_mutex_lock(&operation_mutex);
-    int result=stopped||background_cancelled?1:pscloud_worker_upload(job->spool,*job->file?job->file:NULL,&job->settings);
+    struct background_job *job=arg;int result=0;
+    for(unsigned i=0;i<job->count;i++) {
+        if(stopped||background_cancelled) {result=1;break;}
+        result|=pscloud_worker_upload(job->spool,job->files[i],&job->settings);
+    }
+    if(background_cancelled)result=1;
     background_result=result;
     pscloud_log(result?"WARN":"EVENT",result?"Background upload stopped or failed; local backups retained":"Background upload verified and completed");
     volatile unsigned char *secret=(volatile unsigned char *)&job->settings;for(size_t i=0;i<sizeof job->settings;i++)secret[i]=0;
-    free(job);pthread_mutex_unlock(&operation_mutex);background_active=0;
+    free(job);background_active=0;
     pthread_mutex_lock(&clients_mutex);clients--;pthread_cond_broadcast(&clients_done);pthread_mutex_unlock(&clients_mutex);return NULL;
 }
 static void start_background(int sock,const char *form) {
@@ -339,13 +345,24 @@ static void start_background(int sock,const char *form) {
     char file[128]={0};struct pscloud_snapshot snapshot;
     if(!parameter(form,"file",file,sizeof file) && *file) {
         if(pending_archive(file,&snapshot,NULL,NULL)) {free(job);message(sock,400,"Selected pending backup unavailable");return;}
-        snprintf(job->file,sizeof job->file,"%s.ready",file);
+        snprintf(job->files[0],sizeof job->files[0],"%s.ready",file);job->count=1;
         pthread_mutex_lock(&cache_mutex);pscloud_app_name(appmeta,snapshot.title,background_name,sizeof background_name);pthread_mutex_unlock(&cache_mutex);
     }else {pthread_mutex_lock(&cache_mutex);strcpy(background_name,"Queued backups");pthread_mutex_unlock(&cache_mutex);}
-    /* Capture read-only views before handing the operation lock to the worker.
-     * New tabs can display these views without touching changing spool entries. */
-    games(-1);queue_list(-1);
-    snprintf(job->spool,sizeof job->spool,"%s/spool",root);background_result=0;background_cancelled=0;pscloud_worker_prepare();background_active=1;
+    snprintf(job->spool,sizeof job->spool,"%s/spool",root);
+    if(!job->count) {
+        int dir=pscloud_open_directory(job->spool),bad=dir<0;DIR *d=dir<0?NULL:fdopendir(dir);struct dirent *e;
+        if(dir>=0&&!d)close(dir);
+        if(d) {while((e=readdir(d))) {
+            size_t n=strlen(e->d_name);if(n<7 || n>=144 || strcmp(e->d_name+n-6,".ready"))continue;
+            char object[128];if(n-6>=sizeof object)continue;memcpy(object,e->d_name,n-6);object[n-6]=0;
+            if(!valid_archive(object))continue;
+            if(job->count==256) {bad=1;break;}
+            snprintf(job->files[job->count++],144,"%s.ready",object);
+        }closedir(d);}else bad=1;
+        if(bad || !job->count) {free(job);message(sock,400,bad?"Queue unavailable or exceeds 256 jobs; upload individual backups":"No queued backups to upload");return;}
+    }
+    /* Freeze this job's filenames: later PC imports are never auto-uploaded. */
+    background_result=0;background_cancelled=0;pscloud_worker_prepare();background_active=1;
     pthread_mutex_lock(&clients_mutex);clients++;pthread_mutex_unlock(&clients_mutex);
     pthread_t thread;pthread_attr_t attr;pthread_attr_init(&attr);pthread_attr_setstacksize(&attr,4U*1024*1024);
     int bad=pthread_create(&thread,&attr,background_upload,job);pthread_attr_destroy(&attr);
@@ -353,6 +370,14 @@ static void start_background(int sock,const char *form) {
     pthread_detach(thread);
     const char *json="{\"ok\":true,\"background\":true,\"message\":\"Background upload started; you can leave this page\"}";
     respond(sock,202,"application/json",json,strlen(json));
+}
+static void upload_created(int sock,const char *ready,int background) {
+    size_t n=strlen(ready);
+    if(n<7 || n>=144 || strcmp(ready+n-6,".ready")) {message(sock,500,"Backup retained locally; exact upload selection unavailable");return;}
+    if(background_active) {message(sock,200,"Selected game backed up locally; upload already running, so this backup stays queued");return;}
+    if(background) {char form[160];snprintf(form,sizeof form,"file=%.*s",(int)(n-6),ready);start_background(sock,form);return;}
+    int result=upload_selected(ready);
+    message(sock,result?502:200,result?"Backup retained locally; selected upload pending":"Selected game backup checked and uploaded");
 }
 static void attachment(int sock,const char *file,const unsigned char *data,size_t size) {
     char header[1024];int n=snprintf(header,sizeof header,"HTTP/1.1 200 OK\r\nContent-Type: application/zip\r\nContent-Disposition: attachment; filename=\"%s\"\r\nContent-Length: %zu\r\nConnection: close\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\n\r\n",file,size);
@@ -395,6 +420,7 @@ static void import_pc(int sock,const char *query,const unsigned char *data,size_
     for(unsigned i=0;i<32;i++)snprintf(s.sha256+2*i,3,"%02x",digest[i]);
     char policy[16]="ask";
     if(parameter(query,"policy",policy,sizeof policy))strcpy(policy,"ask");
+    if(background_active&&!strcmp(policy,"replace")) {message(sock,409,"Upload is running; import as a separate version now, or replace after it finishes");return;}
     if(strcmp(policy,"ask") && strcmp(policy,"check") && strcmp(policy,"skip") && strcmp(policy,"replace") && strcmp(policy,"new")) {message(sock,400,"Invalid duplicate policy");return;}
     char catalog[1400],matching[128]={0};struct pscloud_snapshot match={0};struct pscloud_dedup_stats stats;
     snprintf(catalog,sizeof catalog,"%s/spool",root);int catalog_fd=pscloud_open_directory(catalog);
@@ -500,16 +526,18 @@ static void action(int sock,const char *path,const char *form) {
         message(sock,result?502:200,result?"Selected upload pending; local backup retained":"Selected backup available in cloud");return;
     }
     if(selection(form,&chosen)) {message(sock,400,"Unsupported save selection");return;}
-    if(!strcmp(path,"/api/backup")) {
+    if(!strcmp(path,"/api/backup") || !strcmp(path,"/api/backup-start")) {
+        int background=!strcmp(path,"/api/backup-start");
         if(parameter(form,"closed",closed,sizeof closed) || strcmp(closed,"yes")) {message(sock,400,"Close the game and confirm before backup");return;}
         if(!strcmp(chosen.slot,"WholeGame")) {
             pscloud_log_open(logpath);
 #ifndef PSCLOUD_HOST_TEST
             if((kernel_get_fw_version()&0xffff0000U)!=0x11400000U) {message(sock,400,"Whole-game backup requires validated firmware 11.40");return;}
 #endif
-            if(pscloud_game_backup(home,root,chosen.user,chosen.title)) {message(sock,500,"Whole-game backup failed; originals untouched. Check Activity for invalid/changing files, slot or size limits, or an active restore marker");return;}
+            char published[144];
+            if(pscloud_game_backup_named(home,root,chosen.user,chosen.title,published)) {message(sock,500,"Whole-game backup failed; originals untouched. Check Activity for invalid/changing files, slot or size limits, or an active restore marker");return;}
             if(!auto_upload) {message(sock,200,"Whole-game backup saved in local queue; automatic upload is off");return;}
-            int result=upload_queue();message(sock,result?502:200,result?"Whole-game backup retained locally; upload pending":"Whole-game backup checked and uploaded");return;
+            upload_created(sock,published,background);return;
         }
         char config[512],file[1200];snprintf(file,sizeof file,"%s/dashboard-backup.conf",root);
         snprintf(config,sizeof config,"USER_ID=%s\nTITLE=%s\nSAVE_NAME=%s\nCONFIRM_GAME_CLOSED=yes\n",chosen.user,chosen.title,chosen.slot);
@@ -524,7 +552,7 @@ static void action(int sock,const char *path,const char *form) {
         pscloud_log_open(logpath);
         if(result) {message(sock,500,"Backup failed; inspect log. Original save was not replaced");return;}
         if(!auto_upload) {message(sock,200,"Backup saved in local queue; automatic upload is off");return;}
-        result=upload_queue();message(sock,result?502:200,result?"Backup retained locally; cloud upload pending":"Backup checked and cloud queue uploaded");return;
+        upload_created(sock,pscloud_backup_archive(),background);return;
     }
     if(!strcmp(path,"/api/restore-local")) {
         char file[128],confirm[8];struct pscloud_snapshot snapshot;unsigned char *data=NULL;size_t size=0;
@@ -687,15 +715,10 @@ static void serve(int sock,int *locked) {
         if(background_active) {background_cancelled=1;pscloud_worker_cancel();}
         message(sock,200,"Upload cancellation requested; local backups retained");return;
     }
-    if(!strcmp(method,"GET") && background_active && (!strcmp(url,"/api/games") || !strcmp(url,"/api/queue"))) {
-        char *copy=malloc(sizeof games_cache);if(!copy) {message(sock,500,"Not enough memory");return;}
-        pthread_mutex_lock(&cache_mutex);snprintf(copy,sizeof games_cache,"%s",!strcmp(url,"/api/games")?games_cache:queue_cache);pthread_mutex_unlock(&cache_mutex);
-        respond(sock,200,"application/json",copy,strlen(copy));free(copy);return;
-    }
     if(!strcmp(method,"GET") && !strcmp(url,"/api/health")) {
         int available=pthread_mutex_trylock(&operation_mutex)==0;
         if(available)pthread_mutex_unlock(&operation_mutex);
-        const char *json=background_active?"{\"busy\":true,\"background_upload\":true}":available?"{\"busy\":false}":"{\"busy\":true}";
+        const char *json=background_active?(available?"{\"busy\":false,\"background_upload\":true}":"{\"busy\":true,\"background_upload\":true}"):available?"{\"busy\":false}":"{\"busy\":true}";
         respond(sock,200,"application/json",json,strlen(json));return;
     }
     /* These read-only resources do not share mutable transfer buffers. */
@@ -717,7 +740,8 @@ static void serve(int sock,int *locked) {
      * get an immediate busy response, never wait behind a multi-minute upload.
      * Header/body reads occur on bounded client threads; idle browser sockets
      * no longer stall the accept loop or page/health requests. */
-    if(background_active || pthread_mutex_trylock(&operation_mutex)) {
+    if(background_active && !strcmp(method,"POST") && (!strcmp(url,"/api/sync") || !strcmp(url,"/api/sync-one") || !strcmp(url,"/api/sync-start") || !strcmp(url,"/api/stop"))) {message(sock,409,"An upload is running; cancel it and wait for completion before starting another or stopping PSCloud");return;}
+    if(pthread_mutex_trylock(&operation_mutex)) {
         const char *json="{\"ok\":false,\"busy\":true,\"message\":\"PSCloud is completing another operation. Your saves are safe; try again when it finishes\"}";
         respond(sock,503,"application/json",json,strlen(json));return;
     }

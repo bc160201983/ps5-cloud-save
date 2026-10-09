@@ -109,8 +109,10 @@ class DashboardTests(unittest.TestCase):
             self.assertEqual(self.request('/api/games')[0],200)
             self.assertEqual(self.request('/api/queue')[1]['count'],1)
             self.assertTrue(self.request('/api/health')[1]['background_upload'])
-            self.assertEqual(self.request('/api/sync-start',{})[0],503)
-            self.assertEqual(self.request('/api/backup',self.selected(closed='yes'))[0],503)
+            self.assertEqual(self.request('/api/sync-start',{})[0],409)
+            self.assertEqual(self.request('/api/backup',self.selected(closed='yes'))[0],200)
+            self.assertEqual(self.binary('/api/download-pc?'+urllib.parse.urlencode(self.selected(file=FILE)))[0],200)
+            self.assertEqual(self.request('/api/restore',self.selected(file=FILE,closed='yes',confirm='yes'))[0],200)
         finally:release.set()
         for _ in range(100):
             data=self.request('/api/transfer')[1]
@@ -118,6 +120,24 @@ class DashboardTests(unittest.TestCase):
             time.sleep(.05)
         self.assertFalse(data['active']);self.assertEqual(data['result'],0)
         self.assertEqual(self.request('/api/queue')[1]['count'],0)
+
+    def test_manual_backup_uploads_only_its_game_not_another_pending_game(self):
+        self.request('/api/preferences',{'auto_upload':'0','activity_refresh':'1'})
+        self.request('/api/backup',self.selected(closed='yes'))
+        old=self.request('/api/queue')[1]['items'][0]['file']
+        folder=self.home/'1eb70483/savedata_prospero/PPSA10595';folder.mkdir()
+        (folder/'sdimg_global1').write_bytes(self.original)
+        self.request('/api/preferences',{'auto_upload':'1','activity_refresh':'1'})
+        status,result=self.request('/api/backup-start',{'user':'1eb70483','title':'PPSA10595','slot':'WholeGame','closed':'yes'})
+        self.assertEqual(status,202,result)
+        for _ in range(100):
+            data=self.request('/api/transfer')[1]
+            if not data['active']:break
+            time.sleep(.05)
+        self.assertFalse(data['active']);self.assertEqual(data['result'],0)
+        self.assertTrue((self.root/'spool'/(old+'.ready')).exists())
+        self.assertEqual(len(list((self.root/'spool').glob('*PPSA10595*.sent'))),1)
+        self.assertFalse(any(old in path for path in self.fixture.puts))
 
     def test_background_cancel_retains_local_queue(self):
         self.request('/api/preferences',{'auto_upload':'0','activity_refresh':'1'})

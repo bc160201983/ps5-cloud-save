@@ -23,6 +23,8 @@
 #include <ps5/kernel.h>
 #endif
 struct selection {char user[17],title[10],slot[64];};
+static char published_archive[144];
+const char *pscloud_backup_archive(void) {return published_archive;}
 static int select_save(const char *path,struct selection *s) {
     int fd=open(path,O_RDONLY | O_NOFOLLOW | O_NONBLOCK);struct stat st;
     if(fd<0)return -1;
@@ -112,10 +114,12 @@ int pscloud_backup_main(int argc,char **argv) {
 int main(int argc,char **argv) {
 #endif
 #ifdef PSCLOUD_HOST_TEST
+    published_archive[0]=0;
     if(argc!=5)return 2;
     const char *config=argv[1],*home=argv[2],*root=argv[3],*log=argv[4];
 #else
     (void)argc;(void)argv;
+    published_archive[0]=0;
     const char *config="/data/pscloud-backup.conf",*home="/user/home",
         *root="/data/pscloud",*log="/data/pscloud.log";
 #endif
@@ -221,6 +225,8 @@ int main(int argc,char **argv) {
     if(same<0)goto cleanup;
     if(same) {
         if(pscloud_snapshot_requeue(spool,stats.archive))goto cleanup;
+        size_t n=strlen(stats.archive),suffix=!strcmp(stats.archive+n-6,".ready")?6:5;
+        snprintf(published_archive,sizeof published_archive,"%.*s.ready",(int)(n-suffix),stats.archive);
         result=0;pscloud_notify("Save unchanged - duplicate skipped; existing backup queued for cloud presence check");goto cleanup;
     }
     /* Bind the queue snapshot to its exact user/title/slot in a local sidecar. */
@@ -233,7 +239,7 @@ int main(int argc,char **argv) {
     if(fflush(out) || fsync(meta))bad=1;
     if(fclose(out))bad=1;
     if(bad || rename(part,ready) || fsync(spool))goto cleanup;
-    part_created=0;result=0;pscloud_notify("Console backup ready: %u files - original untouched",files);
+    snprintf(published_archive,sizeof published_archive,"%s.ready",name);part_created=0;result=0;pscloud_notify("Console backup ready: %u files - original untouched",files);
 cleanup:
     if(result)pscloud_log("ERROR","Backup stopped at %s: errno=%d",phase,errno);
     if(state.mounted) {

@@ -1,4 +1,24 @@
-# PS5 Cloud Save — development milestone 0.11.5
+# PS5 Cloud Save — development milestone 0.11.6
+
+## Version 0.11.6 — selected-game upload and usable dashboard during sync
+
+Manual backup now passes its exact published (or deduplicated/requeued) archive to
+the uploader instead of draining unrelated pending backups. The dashboard manual
+backup path also starts a background upload, and cancellation state is reset for
+each job. A cancelled panel hides the live percentage; cancellation requests are
+shown as cancelling until the worker actually stops.
+
+Background upload no longer holds the save-operation lock. Library, queue, cloud
+versions, PC/console downloads, PC imports and explicitly confirmed restores can
+run while an immutable staged archive uploads. Save operations themselves remain
+serialized with existing closure/identity/rollback checks. Global TLS lifetime
+and shared logging are protected for concurrent jobs. Only competing uploads and
+payload stop are blocked. Upload-all captures a fixed filename list, so subsequent
+PC imports do not silently enter the running job. Replacing an existing import
+waits until upload finishes; importing a separate version remains available.
+Backups created during another upload stay queued instead of starting another job.
+
+Host/native validation is pending. No live saves were restored for development.
 
 ## Version 0.11.5 — background queue uploads and corner progress
 
