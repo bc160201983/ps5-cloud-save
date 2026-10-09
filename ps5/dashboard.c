@@ -50,7 +50,7 @@ static long webdav(const struct settings *s,const char *url,const char *method,s
     curl_easy_setopt(c,CURLOPT_USERAGENT,"PSCloud/" PSCLOUD_VERSION);
     curl_easy_setopt(c,CURLOPT_USERNAME,s->user);curl_easy_setopt(c,CURLOPT_PASSWORD,s->password);
     curl_easy_setopt(c,CURLOPT_CAINFO,s->ca);curl_easy_setopt(c,CURLOPT_CONNECTTIMEOUT,10L);
-    curl_easy_setopt(c,CURLOPT_TIMEOUT,25L);curl_easy_setopt(c,CURLOPT_NOSIGNAL,1L);
+    curl_easy_setopt(c,CURLOPT_TIMEOUT,!strcmp(method,"GET")?300L:25L);curl_easy_setopt(c,CURLOPT_NOSIGNAL,1L);
     curl_easy_setopt(c,CURLOPT_CUSTOMREQUEST,method);curl_easy_setopt(c,CURLOPT_WRITEFUNCTION,collect);
     curl_easy_setopt(c,CURLOPT_WRITEDATA,r);struct curl_slist *headers=NULL;
     if(!strcmp(method,"PROPFIND")) {headers=curl_slist_append(headers,"Depth: 1");curl_easy_setopt(c,CURLOPT_HTTPHEADER,headers);}

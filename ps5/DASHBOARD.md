@@ -1,5 +1,30 @@
 # PSCloud dashboard
 
+## Current behavior — 0.10.0
+
+Choose any discovered PS5/PPSA game and user, select Whole game, close the game
+and confirm, then Back up now. All active save containers are included, not only
+Slot 0/profile. Up to 128 slots and a 256 MiB ZIP are supported; larger or unsafe
+inventories fail without publishing a partial snapshot. PS4/CUSA is not supported.
+V2 ZIPs store sorted encrypted containers and a per-file checksum manifest.
+Legacy Crash two-slot V1 archives remain readable and unchanged backups deduplicate.
+
+Cloud settings provide WebDAV connection testing and persistent PS5 preferences.
+Automatic upload after a manual backup can be disabled: new backups then stay
+queued until Upload / Upload all. PC imports stay queued regardless of that switch.
+Activity has search, filters, recent-log download and optional visible-page refresh.
+Game-close detection and cross-console sharing remain unavailable.
+
+Generic whole-game restore is experimental and same-console only. Every existing
+destination slot must match the archived inventory, encryption keys, sizes and
+verified SFO game/slot/account identity. Originals are preserved in rollback.
+Crash UE4 recovery can migrate payloads into recreated registered containers;
+other games with changed keys are rejected. Deleted database entries are not
+created, extra slots are not deleted, and no account remapping is performed.
+Never interrupt power or launch a game during restore. Retain rollback files.
+
+Older milestone notes below describe the narrower behavior at those releases.
+
 ## PC transfers and upload queue (0.7.0)
 
 The library shows pending backup count and a list of queued snapshots. Each
@@ -10,7 +35,7 @@ bounded while the total count is retained.
 Open Crash Bandicoot 4, choose Whole game, select an original PSCloud ZIP from
 your PC, and click Add to queue. Imported ZIPs are validated and kept locally;
 they do not upload or restore automatically. ZIPs must be unmodified, stored
-PSCloud whole-game exports under 16 MiB for the selected game and PS5 user.
+PSCloud whole-game exports under the current 256 MiB limit for the selected game and PS5 user.
 Do not extract/repack the archive. Per-slot ZIPs remain downloadable but PC
 import initially supports only identity-bearing whole-game ZIPs.
 
