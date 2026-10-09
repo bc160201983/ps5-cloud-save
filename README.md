@@ -25,7 +25,13 @@ Platform ownership is preserved using recipient containers; arbitrary internal
 game-account bindings/encryption are NOT converted. Blind ID replacement is never
 performed. Same-account operation is not proof of all-game compatibility. Generic
 live restore keeps rollback and still requires the user's in-game verification.
-This release is implemented but its new hardware behavior is not verified yet.
+Validation: all 131 host tests and both PS5 build jobs passed. Version 0.12.1
+was deployed on the 11.40 and 7.00 consoles; both dashboards report the expected
+version and accept the compact preference while preserving existing settings.
+Compact backups are enabled on both test consoles. New compact backup/export
+and staged restore hardware tests remain pending fresh game-closed confirmation;
+no live saves were replaced during this deployment. The 7.00 console has no cloud
+account configured. Internal game-account conversion is not implemented.
 
 ## Version 0.12.0 — generic portable sharing and dual-firmware dashboard
 
