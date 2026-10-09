@@ -9,6 +9,7 @@ import tempfile
 import unittest
 import urllib.parse
 import zipfile
+import struct
 import test_worker
 
 ROOT=Path(__file__).resolve().parents[1]
@@ -24,7 +25,7 @@ class DashboardTests(unittest.TestCase):
         subprocess.run(['cc','-O2','-std=c11','-Wall','-Wextra','-Werror',
                         '-DPSCLOUD_HOST_TEST','-DPSCLOUD_BACKUP_EMBEDDED','-DPSCLOUD_DOWNLOAD_EMBEDDED','-DPSCLOUD_EMBEDDED',
                         *[str(ROOT/p) for p in ['ps5/dashboard.c','ps5/backup.c','ps5/download.c','src/worker.c']],
-                        *[str(ROOT/'ps5/common'/n) for n in ['managed.c','mount.c','restore.c','zip.c','log.c','cloud.c','snapshot.c','appmeta.c','bundle.c']],
+                        *[str(ROOT/'ps5/common'/n) for n in ['managed.c','mount.c','restore.c','zip.c','log.c','cloud.c','snapshot.c','appmeta.c','bundle.c','savemeta.c']],
                         '-o',str(ROOT/'dashboard-host'),'-lcurl','-lcrypto'],check=True)
 
     def setUp(self):
@@ -166,6 +167,52 @@ class DashboardTests(unittest.TestCase):
         self.assertEqual(self.request('/api/restore-local',request)[0],500)
         self.assertEqual(self.image.read_bytes(),changed);self.assertEqual(self.profile.read_bytes(),changed)
         self.assertFalse((self.root/'.restore-active').exists())
+
+    def recovery_roots(self,account=b'\x01'*8,wrong_account=False,wrong_title=False):
+        source=self.fixture.root/'recovery-source';target=self.fixture.root/'recovery-target'
+        for role,root in [('source',source),('target',target)]:
+            for i,slot in enumerate([SLOT,'PlayerSaveProfileSaveData']):
+                folder=root/str(i);(folder/'sce_sys').mkdir(parents=True)
+                (folder/'ue4savegame.dpx.sav').write_bytes((b'archived-' if role=='source' else b'fresh-')+str(i).encode())
+                title='PPSA99999' if wrong_title and role=='source' else 'PPSA02433'
+                aid=b'\x02'*8 if wrong_account and role=='source' else account
+                fields=[('TITLE_ID',0x0204,title.encode()+b'\0'),('SAVEDATA_DIRECTORY',0x0204,slot.encode()+b'\0'),('ACCOUNT_ID',0x0004,aid)]
+                keys=b'';values=b'';entries=[]
+                for key,fmt,value in fields:
+                    entries.append(struct.pack('<HHIII',len(keys),fmt,len(value),len(value),len(values)))
+                    keys+=key.encode()+b'\0';values+=value
+                key_offset=20+16*len(fields);value_offset=key_offset+len(keys)
+                blob=struct.pack('<IIIII',0x46535000,0x101,key_offset,value_offset,len(fields))+b''.join(entries)+keys+values
+                (folder/'sce_sys/param.sfo').write_bytes(blob)
+        self.process.terminate();self.process.communicate(timeout=5)
+        self.start_server(PSCLOUD_TEST_SOURCE_ROOT=str(source),PSCLOUD_TEST_TARGET_ROOT=str(target))
+        return source,target
+
+    def test_recreated_save_recovery_preserves_new_keys_and_metadata(self):
+        chosen,file,_=self.game_fixture();source,target=self.recovery_roots()
+        fresh=bytearray(self.original);fresh[0x800:0x860]=b'N'*0x60
+        self.image.write_bytes(fresh);self.profile.write_bytes(fresh)
+        metadata=[(target/str(i)/'sce_sys/param.sfo').read_bytes() for i in range(2)]
+        request=dict(chosen,file=file,confirm='yes')
+        status,result=self.request('/api/restore',request);self.assertEqual(status,200,result)
+        self.assertEqual(self.image.read_bytes()[0x800:0x860],b'N'*0x60)
+        self.assertEqual(self.profile.read_bytes()[0x800:0x860],b'N'*0x60)
+        for i in range(2):
+            self.assertEqual((target/str(i)/'ue4savegame.dpx.sav').read_bytes(),b'archived-'+str(i).encode())
+            self.assertEqual((target/str(i)/'sce_sys/param.sfo').read_bytes(),metadata[i])
+        self.assertFalse((self.root/'.mount-active').exists());self.assertFalse((self.root/'.restore-active').exists())
+
+    def test_recovery_wrong_account_rejects_before_any_live_replacement(self):
+        chosen,file,_=self.game_fixture();self.recovery_roots(wrong_account=True)
+        fresh=bytearray(self.original);fresh[0x800]=1;self.image.write_bytes(fresh);self.profile.write_bytes(fresh)
+        self.assertEqual(self.request('/api/restore',dict(chosen,file=file,confirm='yes'))[0],500)
+        self.assertEqual(self.image.read_bytes(),fresh);self.assertEqual(self.profile.read_bytes(),fresh)
+
+    def test_recovery_staged_check_never_replaces_live_images(self):
+        chosen,file,_=self.game_fixture();self.recovery_roots()
+        fresh=bytearray(self.original);fresh[0x800]=1;self.image.write_bytes(fresh);self.profile.write_bytes(fresh)
+        self.assertEqual(self.request('/api/restore-check',dict(chosen,file=file,confirm='yes'))[0],200)
+        self.assertEqual(self.image.read_bytes(),fresh);self.assertEqual(self.profile.read_bytes(),fresh)
 
     def test_automatic_session_protects_apis_and_state_never_returns_password(self):
         status,page=self.request('/',token=False,raw=True);self.assertEqual(status,200);self.assertIn('PSCloud',page)

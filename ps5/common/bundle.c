@@ -19,6 +19,7 @@
 #include <stdint.h>
 #include <openssl/evp.h>
 #include "mount.h"
+#include "savemeta.h"
 #include <stdlib.h>
 #ifndef PSCLOUD_HOST_TEST
 #include <ps5/kernel.h>
@@ -182,7 +183,7 @@ static int write_image_bytes(int dir,const char *name,const unsigned char *data,
     if(close(fd))bad=1;
     return bad?-1:0;
 }
-int pscloud_bundle_restore(const char *home,const char *root,const struct pscloud_snapshot *s,const unsigned char *archive,size_t length) {
+static int bundle_restore(const char *home,const char *root,const struct pscloud_snapshot *s,const unsigned char *archive,size_t length,int verify_only) {
     const unsigned char *images[2];size_t sizes[2];
     if(pscloud_bundle_parse(archive,length,s,images,sizes) || pscloud_verify_hash(archive,length,s->sha256) || pscloud_no_foreign_mount())return 1;
 #ifndef PSCLOUD_HOST_TEST
@@ -190,6 +191,7 @@ int pscloud_bundle_restore(const char *home,const char *root,const struct psclou
 #endif
     int parent=-1,lock=-1,target=-1,stage=-1,original[2]={-1,-1},result=1,committed=0,journal=0,mount_marker=0,attempted=0,checked_unmount=0;
     struct stat before[2];char baseline[2][65],id[33],stage_name[64]={0},source[1400],stage_path[1600];
+    int migrate=0;unsigned char *payloads[2]={NULL,NULL};size_t payload_sizes[2]={0};struct pscloud_save_meta source_meta[2];
     char replacement[2][96]={{0}},undo[2][96]={{0}},mount[1800]={0};struct pscloud_mount_state state={0};
     parent=pscloud_open_directory(root);if(parent<0)goto done;
     lock=openat(parent,".mount.lock",O_CREAT | O_RDWR | O_NOFOLLOW,0600);
@@ -198,9 +200,9 @@ int pscloud_bundle_restore(const char *home,const char *root,const struct psclou
     for(unsigned i=0;i<2;i++) {
         original[i]=openat(target,bundle_names[i],O_RDONLY | O_NOFOLLOW | O_NONBLOCK);unsigned char key[0x60];
         if(original[i]<0 || fstat(original[i],&before[i]) || !S_ISREG(before[i].st_mode) || before[i].st_nlink!=1 ||
-           before[i].st_size!=(off_t)sizes[i] || pread(original[i],key,sizeof key,0x800)!=(ssize_t)sizeof key)goto done;
-        if(memcmp(key,images[i]+0x800,sizeof key)) {
-            result=2;pscloud_log("ERROR","Restore rejected: %s encryption key differs. Deleted/recreated saves require decrypted-data migration, not raw-image replacement",bundle_names[i]);goto done;
+           before[i].st_size<0x860 || pread(original[i],key,sizeof key,0x800)!=(ssize_t)sizeof key)goto done;
+        if(memcmp(key,images[i]+0x800,sizeof key) || before[i].st_size!=(off_t)sizes[i]) {
+            migrate=1;pscloud_log("INFO","Recreated save detected: preparing decrypted-data recovery for %s",bundle_names[i]);
         }
         if(pscloud_file_hash(original[i],baseline[i]))goto done;
     }
@@ -216,8 +218,16 @@ int pscloud_bundle_restore(const char *home,const char *root,const struct psclou
         int bad=out<0 || lseek(original[i],0,SEEK_SET)<0 || pscloud_copy_image(original[i],out);
         if(out>=0 && close(out))bad=1;
         if(bad)goto done;
-        snprintf(replacement[i],sizeof replacement[i],".pscloud-new-%s-%u.part",id,i);
-        if(write_image_bytes(target,replacement[i],images[i],sizes[i],&before[i]))goto done;
+        if(!migrate) {
+            snprintf(replacement[i],sizeof replacement[i],".pscloud-new-%s-%u.part",id,i);
+            if(write_image_bytes(target,replacement[i],images[i],sizes[i],&before[i]))goto done;
+        }else {
+            snprintf(name,sizeof name,"current-%u.img",i);
+            out=openat(stage,name,O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW,0600);
+            bad=out<0 || lseek(original[i],0,SEEK_SET)<0 || pscloud_copy_image(original[i],out);
+            if(out>=0 && close(out))bad=1;
+            if(bad)goto done;
+        }
         snprintf(name,sizeof name,"incoming-%u.img",i);
         if(write_image_bytes(stage,name,images[i],sizes[i],&before[i]))goto done;
     }
@@ -234,15 +244,66 @@ int pscloud_bundle_restore(const char *home,const char *root,const struct psclou
         const char *payload=mount;
 #ifdef PSCLOUD_HOST_TEST
         payload=getenv("PSCLOUD_TEST_PAYLOAD");
+        char source_payload[1600];const char *source_root=getenv("PSCLOUD_TEST_SOURCE_ROOT");
+        if(migrate && source_root) {snprintf(source_payload,sizeof source_payload,"%s/%u",source_root,i);payload=source_payload;}
 #endif
         int dir=payload?pscloud_open_directory(payload):-1;int file=dir>=0?openat(dir,"ue4savegame.dpx.sav",O_RDONLY | O_NOFOLLOW | O_NONBLOCK):-1;struct stat st;
         bad=file<0 || fstat(file,&st) || !S_ISREG(st.st_mode) || st.st_size<=0 || st.st_size>PSCLOUD_RESTORE_MAX;
+        if(!bad && migrate) {
+            char metadata_hash[65];
+            if(pscloud_save_meta_read(dir,&source_meta[i],metadata_hash) || !pscloud_save_meta_matches(&source_meta[i],s->title,bundle_names[i]+6)) {
+                pscloud_log("ERROR","Source recovery metadata does not match the selected game/save identity");bad=1;result=3;
+            }else {
+                payload_sizes[i]=(size_t)st.st_size;payloads[i]=malloc(payload_sizes[i]);size_t have=0;
+                if(!payloads[i])bad=1;
+                while(!bad && have<payload_sizes[i]) {ssize_t n=read(file,payloads[i]+have,payload_sizes[i]-have);if(n<=0)bad=1;else have+=(size_t)n;}
+                struct stat after;if(!bad && (fstat(file,&after) || after.st_size!=st.st_size || after.st_mtim.tv_sec!=st.st_mtim.tv_sec || after.st_mtim.tv_nsec!=st.st_mtim.tv_nsec))bad=1;
+            }
+        }
         if(file>=0)close(file);
         if(dir>=0)close(dir);
         if(bad || pscloud_mount_end(&state,mount))goto done;
         checked_unmount=1;if(pscloud_mount_leave(&state))goto done;
         if(unlinkat(parent,".mount-active",0) || fsync(parent))goto done;
         mount_marker=0;
+    }
+    if(migrate)for(unsigned i=0;i<2;i++) {
+        char image[1800],mount_name[64];snprintf(image,sizeof image,"%s/current-%u.img",stage_path,i);
+        snprintf(mount_name,sizeof mount_name,"current-mount-%u",i);if(mkdirat(stage,mount_name,0700))goto done;
+        snprintf(mount,sizeof mount,"%s/%s",stage_path,mount_name);
+        int marker=openat(parent,".mount-active",O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW,0600);if(marker<0)goto done;
+        mount_marker=1;attempted=0;checked_unmount=0;size_t n=strlen(mount);int bad=write(marker,mount,n)!=(ssize_t)n || fsync(marker);if(close(marker))bad=1;
+        if(bad || fsync(parent) || pscloud_mount_begin(&state))goto done;
+        attempted=1;if(pscloud_mount_copy(&state,image,mount))goto done;
+        const char *payload=mount;
+#ifdef PSCLOUD_HOST_TEST
+        payload=getenv("PSCLOUD_TEST_PAYLOAD");char target_payload[1600];const char *target_root=getenv("PSCLOUD_TEST_TARGET_ROOT");
+        if(target_root) {snprintf(target_payload,sizeof target_payload,"%s/%u",target_root,i);payload=target_payload;}
+#endif
+        int dir=payload?pscloud_open_directory(payload):-1;struct pscloud_save_meta meta;char old_meta[65],new_meta[65];
+        bad=dir<0 || pscloud_save_meta_read(dir,&meta,old_meta) || !pscloud_save_meta_matches(&meta,s->title,bundle_names[i]+6) ||
+            meta.account_size!=source_meta[i].account_size || memcmp(meta.account,source_meta[i].account,meta.account_size);
+        if(bad) {if(dir>=0)close(dir);result=3;pscloud_log("ERROR","Recovery rejected: destination game/save/account metadata does not match backup");goto done;}
+        int old=openat(dir,"ue4savegame.dpx.sav",O_RDONLY | O_NOFOLLOW | O_NONBLOCK);struct stat owner;
+        bad=old<0 || fstat(old,&owner) || !S_ISREG(owner.st_mode);if(old>=0)close(old);
+        if(!bad)bad=write_image_bytes(dir,".pscloud-recovery.part",payloads[i],payload_sizes[i],&owner);
+        if(!bad)bad=renameat(dir,".pscloud-recovery.part",dir,"ue4savegame.dpx.sav") || fsync(dir);
+        if(!bad)bad=pscloud_save_meta_read(dir,&meta,new_meta) || strcmp(old_meta,new_meta);
+        close(dir);if(bad)goto done;
+        if(pscloud_mount_end(&state,mount))goto done;
+        checked_unmount=1;if(pscloud_mount_leave(&state))goto done;
+        if(unlinkat(parent,".mount-active",0) || fsync(parent))goto done;
+        mount_marker=0;
+        int prepared=openat(stage,".",O_RDONLY | O_DIRECTORY | O_NOFOLLOW);char name[64];snprintf(name,sizeof name,"current-%u.img",i);
+        int encrypted=prepared>=0?openat(prepared,name,O_RDONLY | O_NOFOLLOW | O_NONBLOCK):-1;if(prepared>=0)close(prepared);
+        unsigned char before_key[0x60],after_key[0x60];
+        bad=encrypted<0 || pread(original[i],before_key,sizeof before_key,0x800)!=(ssize_t)sizeof before_key || pread(encrypted,after_key,sizeof after_key,0x800)!=(ssize_t)sizeof after_key || memcmp(before_key,after_key,sizeof before_key);
+        snprintf(replacement[i],sizeof replacement[i],".pscloud-new-%s-%u.part",id,i);
+        int out=!bad?openat(target,replacement[i],O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW,before[i].st_mode&0777):-1;
+        if(!bad)bad=out<0 || lseek(encrypted,0,SEEK_SET)<0 || pscloud_copy_image(encrypted,out);
+        if(out>=0) {if(fchmod(out,before[i].st_mode&0777) || fchown(out,before[i].st_uid,before[i].st_gid))bad=1;if(close(out))bad=1;}
+        if(encrypted>=0)close(encrypted);
+        if(bad)goto done;
     }
     for(unsigned i=0;i<2;i++) {
         char hash[65];struct stat now;
@@ -251,6 +312,7 @@ int pscloud_bundle_restore(const char *home,const char *root,const struct psclou
         if(check>=0)close(check);
         if(bad)goto done;
     }
+    if(verify_only) {result=0;pscloud_log("INFO","Recovery staged check passed: originals untouched; recreated=%d",migrate);goto done;}
     int marker=openat(parent,".restore-active",O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW,0600);if(marker<0)goto done;
     journal=1;char text[256];int n=snprintf(text,sizeof text,"USER_ID=%s\nTITLE=%s\nROLLBACK=%s\n",s->user,s->title,stage_name);
     int bad=write(marker,text,(size_t)n)!=n || fsync(marker);if(close(marker))bad=1;if(bad || fsync(parent))goto done;
@@ -282,12 +344,15 @@ done:
     if(mount_marker && (!attempted || checked_unmount)) {if(unlinkat(parent,".mount-active",0) || fsync(parent))result=1;}
     for(unsigned i=0;i<2;i++) {
         if(original[i]>=0)close(original[i]);
+        free(payloads[i]);
         if(target>=0 && !journal) {if(*replacement[i])unlinkat(target,replacement[i],0);if(*undo[i])unlinkat(target,undo[i],0);}
     }
     if(stage>=0)close(stage);
     if(target>=0)close(target);
     if(lock>=0)close(lock);
     if(parent>=0)close(parent);
-    pscloud_notify(result?"Whole-game restore failed - keep game closed; inspect rollback and activity":"Whole-game restore complete - both rollback images retained");
+    pscloud_notify(result?"Whole-game restore failed - keep game closed; inspect rollback and activity":verify_only?"Recovery staged check passed - live saves untouched":"Whole-game restore complete - both rollback images retained");
     return result;
 }
+int pscloud_bundle_restore(const char *home,const char *root,const struct pscloud_snapshot *s,const unsigned char *archive,size_t length) {return bundle_restore(home,root,s,archive,length,0);}
+int pscloud_bundle_restore_check(const char *home,const char *root,const struct pscloud_snapshot *s,const unsigned char *archive,size_t length) {return bundle_restore(home,root,s,archive,length,1);}

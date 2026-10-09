@@ -433,7 +433,9 @@ static void action(int sock,const char *path,const char *form) {
     }
     char file[128];struct settings cloud={0};struct pscloud_snapshot snapshot;
     if(parameter(form,"file",file,sizeof file) || pscloud_configure(cloudpath,&cloud) || remote_snapshot(&cloud,&chosen,file,&snapshot)) {message(sock,400,"Cloud backup identity could not be verified");return;}
-    int restoring=!strcmp(path,"/api/restore");
+    int checking=!strcmp(path,"/api/restore-check");
+    int restoring=!strcmp(path,"/api/restore") || checking;
+    if(checking && strcmp(chosen.slot,"WholeGame")) {message(sock,400,"Staged recovery check only supports whole-game archives");return;}
     if(!strcmp(chosen.slot,"WholeGame")) {
         if(!restoring && strcmp(path,"/api/download")) {message(sock,404,"Unknown action");return;}
         char folder[256],url[4096];pscloud_snapshot_folder(&snapshot,folder,sizeof folder);snprintf(url,sizeof url,"%s/%s/%s",cloud.url,folder,file);
@@ -442,7 +444,7 @@ static void action(int sock,const char *path,const char *form) {
         if(!bad && restoring) {
             char confirm[8];
             if(parameter(form,"closed",closed,sizeof closed) || strcmp(closed,"yes") || parameter(form,"confirm",confirm,sizeof confirm) || strcmp(confirm,"yes"))bad=1;
-            else bad=pscloud_bundle_restore(home,root,&snapshot,data,r.size);
+            else bad=checking?pscloud_bundle_restore_check(home,root,&snapshot,data,r.size):pscloud_bundle_restore(home,root,&snapshot,data,r.size);
         }
         if(!restoring && !bad) {
             char path[1400],part[144];snprintf(path,sizeof path,"%s/downloads",root);int parent=pscloud_open_directory(root);if(parent>=0) {(void)mkdirat(parent,"downloads",0700);close(parent);}int dir=pscloud_open_directory(path);
@@ -451,7 +453,7 @@ static void action(int sock,const char *path,const char *form) {
             if(!bad)bad=renameat(dir,part,dir,file) || fsync(dir);
             if(dir>=0) {if(bad)unlinkat(dir,part,0);close(dir);}
         }
-        free(data);message(sock,bad?500:200,bad==2?"Save was recreated and encryption keys changed. Raw-image restore cannot recover it; preserve this backup":bad?"Whole-game operation failed; keep game closed if restoring and inspect activity":restoring?"Whole-game restore complete; rollback retained":"Whole-game ZIP downloaded and verified on PS5");return;
+        free(data);message(sock,bad?500:200,bad==3?"Recovery metadata could not confirm matching game, save slot and account. No live save was replaced":bad?"Whole-game operation failed; keep game closed if restoring and inspect activity":checking?"Recovery staged check passed; both live saves untouched":restoring?"Whole-game restore complete; rollback retained":"Whole-game ZIP downloaded and verified on PS5");return;
     }
     if(restoring) {
         char confirm[8];

@@ -1,4 +1,18 @@
-# PS5 Cloud Save — development milestone 0.7.1
+# PS5 Cloud Save — development milestone 0.8.0
+
+## Version 0.8.0 — recreated-container recovery
+
+When existing save containers have changed keys or sizes, whole-game restore
+decrypts the archived images on staged copies, checks source and destination
+SFO game/slot/account identity, and writes only the supported UE4 payload into
+staged copies of the current containers. Their new encryption keys and `sce_sys`
+metadata are preserved. Both images are prepared before any live replacement;
+the existing rollback and interrupted-transaction protections remain in effect.
+A `/api/restore-check` staged validation does not replace live save images.
+This still requires existing, properly registered destination saves: if both
+were deleted, launch the game to create fresh saves, close it, then recover.
+Creation of PS5 save-database records from scratch is not implemented.
+This release is implemented; host and console staged validation are pending.
 
 ## Version 0.7.1 — explicit duplicate choices for PC imports
 

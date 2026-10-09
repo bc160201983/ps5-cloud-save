@@ -9,4 +9,6 @@ int pscloud_bundle_parse(const unsigned char *archive,size_t length,const struct
                          const unsigned char *images[2],size_t sizes[2]);
 int pscloud_bundle_restore(const char *home,const char *root,const struct pscloud_snapshot *identity,
                            const unsigned char *archive,size_t length);
+int pscloud_bundle_restore_check(const char *home,const char *root,const struct pscloud_snapshot *identity,
+                                 const unsigned char *archive,size_t length);
 #endif
