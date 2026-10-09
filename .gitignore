@@ -27,3 +27,7 @@ pscloud-export.conf
 *.sent
 *.log
 *.zip
+google.conf
+google.conf.new
+pscloud-google.conf
+*oauth-client*.json

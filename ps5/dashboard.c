@@ -8,6 +8,8 @@
 #include "common/log.h"
 #include "common/appmeta.h"
 #include "common/bundle.h"
+#include "common/google.h"
+#include <pthread.h>
 #include "ui.h"
 #include <curl/curl.h>
 #include <sys/socket.h>
@@ -36,6 +38,12 @@ extern int pscloud_download_main(int,char **);
 static char root[1024],home[1024],cloudpath[1200],logpath[1200],token[33],appmeta[1200];
 static int cloud_status;
 static int auto_upload=1,activity_refresh=1;
+static struct pscloud_google google,google_pending;
+static char googlepath[1200];
+static pthread_mutex_t operation_mutex=PTHREAD_MUTEX_INITIALIZER;
+static pthread_mutex_t clients_mutex=PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t clients_done=PTHREAD_COND_INITIALIZER;
+static unsigned clients;
 static volatile sig_atomic_t stopped;
 static void stop_server(int sig) {(void)sig;stopped=1;}
 struct response {char *data;size_t size,limit;};
@@ -50,7 +58,8 @@ static long webdav(const struct settings *s,const char *url,const char *method,s
     curl_easy_setopt(c,CURLOPT_USERAGENT,"PSCloud/" PSCLOUD_VERSION);
     curl_easy_setopt(c,CURLOPT_USERNAME,s->user);curl_easy_setopt(c,CURLOPT_PASSWORD,s->password);
     curl_easy_setopt(c,CURLOPT_CAINFO,s->ca);curl_easy_setopt(c,CURLOPT_CONNECTTIMEOUT,10L);
-    curl_easy_setopt(c,CURLOPT_TIMEOUT,!strcmp(method,"GET")?300L:25L);curl_easy_setopt(c,CURLOPT_NOSIGNAL,1L);
+    /* Metadata must not inherit the five-minute archive transfer timeout. */
+    curl_easy_setopt(c,CURLOPT_TIMEOUT,!strcmp(method,"GET") && strstr(url,".zip") && !strstr(url,".identity")?300L:25L);curl_easy_setopt(c,CURLOPT_NOSIGNAL,1L);
     curl_easy_setopt(c,CURLOPT_CUSTOMREQUEST,method);curl_easy_setopt(c,CURLOPT_WRITEFUNCTION,collect);
     curl_easy_setopt(c,CURLOPT_WRITEDATA,r);struct curl_slist *headers=NULL;
     if(!strcmp(method,"PROPFIND")) {headers=curl_slist_append(headers,"Depth: 1");curl_easy_setopt(c,CURLOPT_HTTPHEADER,headers);}
@@ -130,6 +139,11 @@ static void respond(int sock,int status,const char *type,const char *data,size_t
 static void message(int sock,int status,const char *text) {
     pscloud_log(status>=400?"WARN":"EVENT","Dashboard result (HTTP %d): %s",status,text);
     char json[1024];snprintf(json,sizeof json,"{\"ok\":%s,\"message\":\"%s\"}",status==200?"true":"false",text);
+    respond(sock,status,"application/json",json,strlen(json));
+}
+/* Pre-lock errors cannot log beside a save helper that reopens the shared log. */
+static void reject(int sock,int status,const char *text) {
+    char json[1024];snprintf(json,sizeof json,"{\"ok\":false,\"message\":\"%s\"}",text);
     respond(sock,status,"application/json",json,strlen(json));
 }
 static void preferences(int sock,const char *form) {
@@ -556,32 +570,86 @@ static void game_icon(int sock,const char *query) {
     else respond(sock,200,"image/png",(const char *)data,have);
     free(data);
 }
-static void serve(int sock) {
+static void google_action(int sock,const char *url,const char *body) {
+    if(!strcmp(url,"/api/google/status")) {
+        char json[256];snprintf(json,sizeof json,"{\"configured\":%s,\"authorized\":%s,\"pending\":%s,\"transfers_available\":false}",*google.client?"true":"false",*google.refresh?"true":"false",google_pending.expires>time(NULL)?"true":"false");
+        respond(sock,200,"application/json",json,strlen(json));return;
+    }
+    struct settings cloud={0};
+    /* Reuse the existing trusted CA path, never disable certificate checks. */
+    char ca[1200];snprintf(ca,sizeof ca,
+#ifdef PSCLOUD_HOST_TEST
+        "%s/ca.pem",root
+#else
+        "/data/pscloud-ca.pem"
+#endif
+    );
+    if(!pscloud_configure(cloudpath,&cloud))snprintf(ca,sizeof ca,"%s",cloud.ca);
+    if(!strcmp(url,"/api/google/begin")) {
+        struct pscloud_google next={0};char secret[256];
+        if(parameter(body,"client_id",next.client,sizeof next.client) || !*next.client)strcpy(next.client,google.client);
+        if(!parameter(body,"client_secret",secret,sizeof secret) && *secret)strcpy(next.secret,secret);
+        else if(!strcmp(next.client,google.client))strcpy(next.secret,google.secret);
+        if(pscloud_google_begin(&next,ca)) {message(sock,502,"Google sign-in could not start. Check the registered TV/device OAuth client and trusted CA bundle");return;}
+        /* Do not discard an existing saved authorization until approval succeeds. */
+        google_pending=next;
+        char code[128],json[512];escaped(code,sizeof code,google_pending.user_code);
+        snprintf(json,sizeof json,"{\"verification_url\":\"https://www.google.com/device\",\"user_code\":\"%s\",\"interval\":%ld,\"expires_in\":%ld}",code,google_pending.interval,google_pending.expires-(long)time(NULL));
+        respond(sock,200,"application/json",json,strlen(json));return;
+    }
+    if(!strcmp(url,"/api/google/poll")) {
+        int result=pscloud_google_poll(&google_pending,ca);
+        if(result==0) {
+            if(pscloud_google_save(googlepath,&google_pending)) {message(sock,500,"Google approved access but connection storage failed; retry sign-in");return;}
+            google=google_pending;memset(&google_pending,0,sizeof google_pending);
+        }
+        if(result<0) {message(sock,502,"Google sign-in check failed; retry without changing your existing cloud provider");return;}
+        const char *json=result==0?"{\"authorized\":true,\"pending\":false,\"transfers_available\":false}":result==1?"{\"authorized\":false,\"pending\":true}":"{\"authorized\":false,\"pending\":false,\"expired\":true}";
+        respond(sock,200,"application/json",json,strlen(json));return;
+    }
+    message(sock,404,"Unknown Google sign-in endpoint");
+}
+static void serve(int sock,int *locked) {
     char request[16385];size_t size=0;char *body=NULL;
     while(size<8192) {
         ssize_t n=recv(sock,request+size,8192-size,0);if(n<=0)return;size+=(size_t)n;request[size]=0;
         body=strstr(request,"\r\n\r\n");if(body)break;
     }
-    if(!body) {message(sock,400,"Request headers too large");return;}
+    if(!body) {reject(sock,400,"Request headers too large");return;}
     size_t headers=(size_t)(body-request)+4;body+=4;
-    char method[8],url[2048];if(sscanf(request,"%7s %2047s",method,url)!=2) {message(sock,400,"Malformed request");return;}
+    char method[8],url[2048];if(sscanf(request,"%7s %2047s",method,url)!=2) {reject(sock,400,"Malformed request");return;}
     struct sockaddr_in local={0};socklen_t local_size=sizeof local;char ip[INET_ADDRSTRLEN],host[256],expected_host[64];
-    if(getsockname(sock,(struct sockaddr *)&local,&local_size) || !inet_ntop(AF_INET,&local.sin_addr,ip,sizeof ip) || header_value(request,"Host",host,sizeof host)) {message(sock,400,"Invalid dashboard host");return;}
+    if(getsockname(sock,(struct sockaddr *)&local,&local_size) || !inet_ntop(AF_INET,&local.sin_addr,ip,sizeof ip) || header_value(request,"Host",host,sizeof host)) {reject(sock,400,"Invalid dashboard host");return;}
     snprintf(expected_host,sizeof expected_host,"%s:%u",ip,ntohs(local.sin_port));
-    if(strcmp(host,expected_host) && !(ntohs(local.sin_port)==80 && !strcmp(host,ip))) {message(sock,403,"Open the dashboard using the console IP address");return;}
+    if(strcmp(host,expected_host) && !(ntohs(local.sin_port)==80 && !strcmp(host,ip))) {reject(sock,403,"Open the dashboard using the console IP address");return;}
     if(!strcmp(method,"GET") && !strcmp(url,"/")) {respond(sock,200,"text/html; charset=utf-8",(const char *)pscloud_ui,pscloud_ui_size);return;}
     char supplied[64];
     int legacy=header_value(request,"X-PSCloud-Token",supplied,sizeof supplied)==0 && !strcmp(supplied,token);
-    if(!legacy && !session(request)) {message(sock,401,"Reload the dashboard to refresh your browser session");return;}
+    if(!legacy && !session(request)) {reject(sock,401,"Reload the dashboard to refresh your browser session");return;}
     if(!strcmp(method,"POST") && !legacy) {
         char marker[8],origin[2048],host[256],expected_origin[320];
-        if(header_value(request,"X-PSCloud-Request",marker,sizeof marker) || strcmp(marker,"1")) {message(sock,403,"Cross-site request rejected");return;}
+        if(header_value(request,"X-PSCloud-Request",marker,sizeof marker) || strcmp(marker,"1")) {reject(sock,403,"Cross-site request rejected");return;}
         if(!header_value(request,"Origin",origin,sizeof origin)) {
-            if(header_value(request,"Host",host,sizeof host)) {message(sock,403,"Missing host");return;}
+            if(header_value(request,"Host",host,sizeof host)) {reject(sock,403,"Missing host");return;}
             snprintf(expected_origin,sizeof expected_origin,"http://%s",host);
-            if(strcmp(origin,expected_origin)) {message(sock,403,"Cross-site request rejected");return;}
+            if(strcmp(origin,expected_origin)) {reject(sock,403,"Cross-site request rejected");return;}
         }
     }
+    if(!strcmp(method,"GET") && !strcmp(url,"/api/health")) {
+        int available=pthread_mutex_trylock(&operation_mutex)==0;
+        if(available)pthread_mutex_unlock(&operation_mutex);
+        const char *json=available?"{\"busy\":false}":"{\"busy\":true}";
+        respond(sock,200,"application/json",json,strlen(json));return;
+    }
+    /* Slow cloud/save operations remain serialized for safety. Other clients
+     * get an immediate busy response, never wait behind a multi-minute upload.
+     * Header/body reads occur on bounded client threads; idle browser sockets
+     * no longer stall the accept loop or page/health requests. */
+    if(pthread_mutex_trylock(&operation_mutex)) {
+        const char *json="{\"ok\":false,\"busy\":true,\"message\":\"PSCloud is completing another operation. Your saves are safe; try again when it finishes\"}";
+        respond(sock,503,"application/json",json,strlen(json));return;
+    }
+    *locked=1;
     char transfer[64];if(!header_value(request,"Transfer-Encoding",transfer,sizeof transfer)) {message(sock,400,"Chunked requests are not supported");return;}
     char length[32];size_t expected=0;
     if(!strcmp(method,"POST")) {
@@ -600,6 +668,8 @@ static void serve(int sock) {
         request[headers+expected]=0;
     }
     char *query=strchr(url,'?');if(query)*query++=0;else query="";
+    if((!strcmp(method,"GET") && !strcmp(url,"/api/google/status")) ||
+       (!strcmp(method,"POST") && (!strcmp(url,"/api/google/begin") || !strcmp(url,"/api/google/poll")))) {google_action(sock,url,body);return;}
     if(!strcmp(method,"GET") && !strcmp(url,"/api/state")) {
         struct settings s={0};int configured=pscloud_configure(cloudpath,&s)==0;
         char address[6144],username[512],json[8192];escaped(address,sizeof address,s.url);escaped(username,sizeof username,s.user);
@@ -622,6 +692,11 @@ static void serve(int sock) {
     if(!strcmp(method,"POST") && !strcmp(url,"/api/connect")) {configure_cloud(sock,body);return;}
     if(!strcmp(method,"POST")) {action(sock,url,body);return;}
     message(sock,404,"Unknown endpoint");
+}
+static void *client_main(void *arg) {
+    int sock=*(int *)arg;free(arg);int locked=0;serve(sock,&locked);
+    if(locked)pthread_mutex_unlock(&operation_mutex);
+    close(sock);pthread_mutex_lock(&clients_mutex);clients--;pthread_cond_broadcast(&clients_done);pthread_mutex_unlock(&clients_mutex);return NULL;
 }
 int main(int argc,char **argv) {
     unsigned port=8082;
@@ -655,6 +730,7 @@ int main(int argc,char **argv) {
         "/data/pscloud.log"
 #endif
     );
+    snprintf(googlepath,sizeof googlepath,"%s/google.conf",root);pscloud_google_load(googlepath,&google);
     pscloud_log_open(logpath);load_preferences();signal(SIGPIPE,SIG_IGN);signal(SIGTERM,stop_server);signal(SIGINT,stop_server);
     if(curl_global_init(CURL_GLOBAL_DEFAULT))return 2;
     int server=socket(AF_INET,SOCK_STREAM,0);if(server<0)return 2;
@@ -671,7 +747,17 @@ int main(int argc,char **argv) {
         int sock=accept(server,NULL,NULL);if(sock<0)continue;
         struct timeval timeout={15,0};setsockopt(sock,SOL_SOCKET,SO_RCVTIMEO,&timeout,sizeof timeout);
         setsockopt(sock,SOL_SOCKET,SO_SNDTIMEO,&timeout,sizeof timeout);
-        serve(sock);close(sock);
+        pthread_mutex_lock(&clients_mutex);
+        if(clients>=8) {pthread_mutex_unlock(&clients_mutex);close(sock);continue;}
+        clients++;pthread_mutex_unlock(&clients_mutex);
+        int *arg=malloc(sizeof *arg);pthread_t thread;pthread_attr_t attr;
+        pthread_attr_init(&attr);pthread_attr_setstacksize(&attr,4U*1024*1024);
+        if(arg)*arg=sock;
+        int bad=!arg || pthread_create(&thread,&attr,client_main,arg);
+        pthread_attr_destroy(&attr);
+        if(bad) {free(arg);close(sock);pthread_mutex_lock(&clients_mutex);clients--;pthread_mutex_unlock(&clients_mutex);}
+        else pthread_detach(thread);
     }
+    pthread_mutex_lock(&clients_mutex);while(clients)pthread_cond_wait(&clients_done,&clients_mutex);pthread_mutex_unlock(&clients_mutex);
     close(server);curl_global_cleanup();pscloud_log_close();return 0;
 }

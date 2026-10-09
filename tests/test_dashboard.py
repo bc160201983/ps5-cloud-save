@@ -10,6 +10,8 @@ import unittest
 import urllib.parse
 import zipfile
 import struct
+import threading
+import time
 import test_worker
 
 ROOT=Path(__file__).resolve().parents[1]
@@ -33,8 +35,8 @@ class DashboardTests(unittest.TestCase):
         subprocess.run(['cc','-O2','-std=c11','-Wall','-Wextra','-Werror',
                         '-DPSCLOUD_HOST_TEST','-DPSCLOUD_BACKUP_EMBEDDED','-DPSCLOUD_DOWNLOAD_EMBEDDED','-DPSCLOUD_EMBEDDED',
                         *[str(ROOT/p) for p in ['ps5/dashboard.c','ps5/backup.c','ps5/download.c','src/worker.c']],
-                        *[str(ROOT/'ps5/common'/n) for n in ['managed.c','mount.c','restore.c','zip.c','log.c','cloud.c','snapshot.c','appmeta.c','bundle.c','savemeta.c']],
-                        '-o',str(ROOT/'dashboard-host'),'-lcurl','-lcrypto'],check=True)
+                        *[str(ROOT/'ps5/common'/n) for n in ['managed.c','mount.c','restore.c','zip.c','log.c','cloud.c','snapshot.c','appmeta.c','bundle.c','savemeta.c','google.c']],
+                        '-o',str(ROOT/'dashboard-host'),'-lcurl','-lcrypto','-pthread'],check=True)
 
     def setUp(self):
         self.fixture=test_worker.WorkerTest();self.fixture.setUp()
@@ -79,6 +81,88 @@ class DashboardTests(unittest.TestCase):
         return status,text if raw else json.loads(text)
 
     def selected(self,**extra):return dict(user='1eb70483',title='PPSA02433',slot=SLOT,**extra)
+
+    def test_idle_browser_connection_does_not_block_dashboard(self):
+        idle=http.client.HTTPConnection('127.0.0.1',self.port,timeout=5);idle.connect()
+        try:
+            started=time.monotonic()
+            self.assertEqual(self.request('/api/health')[1],{'busy':False})
+            self.assertLess(time.monotonic()-started,2)
+        finally:idle.close()
+
+    def test_slow_cloud_operation_keeps_page_and_health_responsive(self):
+        entered=threading.Event();release=threading.Event();results=[]
+        handler=self.fixture.server.RequestHandlerClass
+        original=handler.do_PROPFIND
+        def slow(request):
+            entered.set();release.wait(8);original(request)
+        handler.do_PROPFIND=slow
+        task=threading.Thread(target=lambda:results.append(self.request('/api/backups?'+urllib.parse.urlencode(self.selected()))))
+        task.start()
+        try:
+            self.assertTrue(entered.wait(3));started=time.monotonic()
+            self.assertEqual(self.request('/api/health')[1],{'busy':True})
+            status,reply=self.request('/api/state');self.assertEqual(status,503);self.assertTrue(reply['busy'])
+            self.assertEqual(self.request('/',raw=True)[0],200)
+            self.assertLess(time.monotonic()-started,2)
+        finally:release.set();task.join(10)
+        self.assertEqual(results[0][0],200)
+        self.assertEqual(self.request('/api/health')[1],{'busy':False})
+
+    def google_fixture(self):
+        self.process.terminate();self.process.communicate(timeout=5)
+        self.google_calls=[];self.google_reply={'error':'authorization_pending'}
+        parent=self
+        def post(request):
+            form=urllib.parse.parse_qs(request.rfile.read(int(request.headers['Content-Length'])).decode())
+            parent.google_calls.append((request.path,form))
+            if request.path=='/device/code':
+                status=200;reply={'device_code':'fixture-device','user_code':'TEST-CODE','verification_url':'https://www.google.com/device','expires_in':30,'interval':1}
+            else:status=200 if 'access_token' in parent.google_reply else 428;reply=parent.google_reply
+            data=json.dumps(reply).encode();request.send_response(status);request.send_header('Content-Length',str(len(data)));request.end_headers();request.wfile.write(data)
+        self.fixture.server.RequestHandlerClass.do_POST=post
+        self.start_server(PSCLOUD_TEST_GOOGLE_URL=self.fixture.env['PSCLOUD_URL'].replace('/backups',''))
+
+    def test_google_device_approval_is_private_and_does_not_switch_webdav(self):
+        self.google_fixture();before=self.cloud.read_bytes()
+        status,result=self.request('/api/google/begin',{'client_id':'fixture.apps.googleusercontent.com','client_secret':'fixture-secret'})
+        self.assertEqual(status,200);self.assertEqual(result['user_code'],'TEST-CODE')
+        self.assertNotIn('device_code',result);self.assertNotIn('client_secret',result)
+        self.assertEqual(self.request('/api/google/poll',{})[1]['pending'],True)
+        self.assertEqual(len(self.google_calls),1) # interval respected; no immediate token call
+        self.google_reply={'access_token':'fixture-access','refresh_token':'fixture-refresh','token_type':'Bearer','expires_in':3600,'scope':'https://www.googleapis.com/auth/drive.file'}
+        time.sleep(1.1)
+        self.assertTrue(self.request('/api/google/poll',{})[1]['authorized'])
+        path=self.root/'google.conf';self.assertEqual(path.stat().st_mode&0o777,0o600)
+        self.assertIn('fixture-refresh',path.read_text());self.assertNotIn('fixture-access',path.read_text())
+        result=self.request('/api/google/status')[1]
+        self.assertTrue(result['authorized']);self.assertFalse(result['transfers_available'])
+        self.assertNotIn('fixture',json.dumps(result));self.assertEqual(self.cloud.read_bytes(),before)
+        self.process.terminate();self.process.communicate(timeout=5);self.start_server()
+        self.assertTrue(self.request('/api/google/status')[1]['authorized'])
+
+    def test_google_denial_preserves_existing_authorization(self):
+        self.google_fixture()
+        path=self.root/'google.conf';path.write_text('CLIENT_ID=old-client\nCLIENT_SECRET=old-secret\nREFRESH_TOKEN=old-refresh\n');path.chmod(0o600)
+        before=path.read_bytes()
+        self.request('/api/google/begin',{'client_id':'new-client','client_secret':'new-secret'})
+        self.google_reply={'error':'access_denied'};time.sleep(1.1)
+        self.assertTrue(self.request('/api/google/poll',{})[1]['expired'])
+        self.assertEqual(path.read_bytes(),before)
+
+    def test_google_rejects_malformed_and_missing_scope_tokens(self):
+        self.google_fixture();self.request('/api/google/begin',{'client_id':'fixture-client'})
+        self.google_reply={'access_token':'fixture-access','refresh_token':'fixture-refresh','token_type':'Bearer','expires_in':3600,'scope':'https://www.googleapis.com/auth/drive'}
+        time.sleep(1.1)
+        self.assertEqual(self.request('/api/google/poll',{})[0],502)
+        self.assertFalse((self.root/'google.conf').exists())
+        self.assertFalse(self.request('/api/google/status')[1]['authorized'])
+
+    def test_google_authentication_required_and_private_config_rejected(self):
+        self.assertEqual(self.request('/api/google/status',token=False)[0],401)
+        path=self.root/'google.conf';path.write_text('CLIENT_ID=fixture\nCLIENT_SECRET=\nREFRESH_TOKEN=fixture\n');path.chmod(0o644)
+        self.process.terminate();self.process.communicate(timeout=5);self.start_server()
+        self.assertFalse(self.request('/api/google/status')[1]['configured'])
 
     def test_preferences_persist_and_unavailable_automation_rejected(self):
         self.assertTrue(self.request('/api/preferences')[1]['auto_upload'])

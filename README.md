@@ -1,4 +1,31 @@
-# PS5 Cloud Save — development milestone 0.10.1
+# PS5 Cloud Save — development milestone 0.11.0
+
+## Version 0.11.0 — responsive requests and Google sign-in foundation
+
+- Bounded client threads keep dashboard HTML and authenticated health available
+  during slow transfers and idle browser connections. Save/cloud/API operations
+  remain serialized: competing operations get an immediate 503 busy response.
+  Navigation remains available during an operation. No concurrent save writes.
+- Small WebDAV identity reads use a 25-second metadata timeout, not the five-minute
+  archive-download timeout. Browser cloud lists are cached for 60 seconds (up to
+  16 selections); Refresh bypasses the cache and successful actions invalidate it.
+- Native Google device sign-in requests only `drive.file`, respects poll intervals
+  and slow-down, handles denial/expiry, privately persists refresh tokens and
+  includes a refresh-token helper. It does not change the WebDAV configuration.
+  Tokens/device secrets are not returned to the browser or logged.
+- **Google Drive transfers are NOT enabled in this milestone.** A registered
+  TV/Limited Input OAuth client is needed for real sign-in validation. Resumable
+  uploads, provider switching, verified listings/downloads and transfer progress
+  and retries still need implementation. This release is a sign-in foundation.
+- Validation in progress: host fixtures cover idle sockets, a blocked cloud list,
+  Google approval/denial, scope checks, private persistence and unchanged WebDAV.
+  Native threading and live Google login are not yet console-tested.
+- Previous milestone: all 90 host tests and native v0.10.1 builds passed. Crash's
+  three-slot backup/deduplication, cloud archive and original-image hash checks
+  passed on console. Astro testing was paused before a backup ran; Tekken was
+  inspected only. Generic restores remain hardware-unverified.
+
+See [Google setup and remaining work](ps5/GOOGLE_DRIVE.md).
 
 ## Version 0.10.1 — larger complete-game archives
 
@@ -7,8 +34,8 @@ and PC-import/download limit is now 512 MiB. Archives above that limit still fai
 closed; no slots are silently omitted. The 128-slot count limit is unchanged.
 Larger images can consume significant disk space and transfer time; no automatic
 retention/deletion is enabled. v0.10.0 passed all 90 host tests and native builds;
-Crash's three-slot cloud upload succeeded, with final integrity checks in progress.
-v0.10.1 build and larger-game hardware checks are pending.
+Crash's three-slot cloud upload and final integrity/deduplication checks passed.
+v0.10.1 native builds passed; larger-game hardware backup checks remain pending.
 
 ## Version 0.10.0 — dynamic PS5 save-slot backups
 
@@ -32,8 +59,9 @@ v0.10.1 build and larger-game hardware checks are pending.
   firmware, save size or account-specific payload is compatible. Cross-console
   sharing, game-close automation, missing save-database creation and automatic
   power-loss recovery remain unavailable. Hardware support remains FW 11.40.
-- Implemented; new host fixtures and native build validation pending. No new live
-  backup or restore test has been run for this release yet.
+- All 90 host tests and native builds passed. Crash three-slot backup/upload and
+  unchanged-backup/original-integrity checks passed. Generic restore is host-tested
+  but remains unverified on hardware.
 
 ## Version 0.9.0 — cloud settings, activity and user preferences
 
