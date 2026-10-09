@@ -35,7 +35,7 @@ class DashboardTests(unittest.TestCase):
         subprocess.run(['cc','-O2','-std=c11','-Wall','-Wextra','-Werror',
                         '-DPSCLOUD_HOST_TEST','-DPSCLOUD_BACKUP_EMBEDDED','-DPSCLOUD_DOWNLOAD_EMBEDDED','-DPSCLOUD_EMBEDDED',
                         *[str(ROOT/p) for p in ['ps5/dashboard.c','ps5/backup.c','ps5/download.c','src/worker.c']],
-                        *[str(ROOT/'ps5/common'/n) for n in ['managed.c','mount.c','restore.c','zip.c','log.c','cloud.c','snapshot.c','appmeta.c','bundle.c','savemeta.c','google.c']],
+                        *[str(ROOT/'ps5/common'/n) for n in ['managed.c','mount.c','restore.c','zip.c','log.c','cloud.c','snapshot.c','appmeta.c','bundle.c','savemeta.c','google.c','sharing.c']],
                         '-o',str(ROOT/'dashboard-host'),'-lcurl','-lcrypto','-pthread'],check=True)
 
     def setUp(self):
@@ -323,7 +323,35 @@ class DashboardTests(unittest.TestCase):
         self.process.terminate();self.process.communicate(timeout=5);self.start_server()
         prefs=self.request('/api/preferences')[1]
         self.assertFalse(prefs['auto_upload']);self.assertFalse(prefs['activity_refresh'])
-        self.assertFalse(prefs['game_close_available']);self.assertFalse(prefs['sharing_available'])
+        self.assertFalse(prefs['game_close_available']);self.assertTrue(prefs['sharing_available'])
+
+    def test_sharing_routes_require_closure_and_staged_proof(self):
+        self.assertEqual(self.request('/api/share-export',self.selected())[0],400)
+        self.assertEqual(self.request('/api/share-restore',self.selected(closed='yes',confirm='yes',file='portable-missing.zip',sha256='0'*64))[0],400)
+        self.assertEqual(self.image.read_bytes(),self.original)
+
+    def test_generic_dashboard_import_check_and_download(self):
+        import test_sharing
+        import test_portable
+        self.process.terminate();self.process.communicate(timeout=5)
+        fixture=self.fixture.root/'generic';slot='save1'
+        test_portable.PortableTests.sfo(self,fixture/slot,slot,b'\x44'*8)
+        (self.image.parent/('sdimg_'+slot)).write_bytes(self.original)
+        metadata=self.root/'appmeta/PPSA02433';metadata.mkdir(parents=True)
+        (metadata/'param.json').write_text(json.dumps({'contentVersion':'01.000.002'}))
+        self.start_server(PSCLOUD_TEST_GENERIC_PAYLOADS=str(fixture))
+        data=test_sharing.portable(slots=(slot,),title='PPSA02433')
+        c=http.client.HTTPConnection('127.0.0.1',self.port,timeout=15)
+        c.request('POST','/api/share-import?'+urllib.parse.urlencode(self.selected()),data,{'Cookie':self.cookie,'X-PSCloud-Request':'1','Content-Type':'application/zip'})
+        response=c.getresponse();result=json.loads(response.read());self.assertEqual(response.status,200,result);c.close()
+        context=self.selected(closed='yes',file=result['file'],sha256=result['sha256'])
+        self.assertEqual(self.request('/api/share-restore',dict(context,confirm='yes'))[0],400)
+        status,check=self.request('/api/share-check',context);self.assertEqual(status,200,check)
+        self.assertEqual(self.image.read_bytes(),self.original)
+        self.assertEqual((fixture/slot/'folder/progress.bin').read_bytes(),b'shared')
+        c=http.client.HTTPConnection('127.0.0.1',self.port,timeout=15)
+        c.request('GET','/api/share-download?'+urllib.parse.urlencode({'file':result['file']}),headers={'Cookie':self.cookie})
+        response=c.getresponse();self.assertEqual(response.status,200);self.assertEqual(response.read(),data);c.close()
 
     def test_local_only_backup_then_explicit_upload(self):
         self.assertEqual(self.request('/api/preferences',{'auto_upload':'0','activity_refresh':'1'})[0],200)

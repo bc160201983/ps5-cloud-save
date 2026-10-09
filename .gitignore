@@ -35,3 +35,5 @@ pscloud-google.conf
 share-host
 portable-host.so
 pscloud-share.conf
+pscloud-share-game.conf
+sharing-host.so

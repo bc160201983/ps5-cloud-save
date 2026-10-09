@@ -1,5 +1,48 @@
 # Manual Crash portable sharing
 
+## 0.12.0: generic dashboard sharing
+
+Open either firmware 7.00 or 11.40 dashboard, choose a game, and expand
+**Share saves · another PS5 or profile**. On the source, close the game and
+choose **Export for sharing**. Send the downloaded portable ZIP to the receiver.
+On its dashboard, choose the same game and desired profile, **Import package**,
+confirm game closure and **Check compatibility safely**. Only after a successful
+staged check and a separate replacement confirmation can **Restore shared save**
+replace included slots. This requires no WebDAV account and does not upload
+personal progress publicly. Export/check never replace live saves.
+
+The generic format packages all discovered slots as stored ZIPs containing
+regular game-data files and nested folders. It excludes root sce_sys, preserves
+recipient account metadata and keys, verifies CRC and slot hashes, refuses
+traversal/duplicate/conflicting paths and requires identical installed
+contentVersion/PPSA ID. Slots must already exist with at least the source image
+capacity; extra receiver slots stay unchanged. 128 slots, 4096 files per slot,
+512 MiB package/combined receiver-image limit. Empty directories are not encoded.
+Automatic save creation, cross-region conversion, version upgrade/downgrade and
+game-internal account-binding conversion are not implemented. Passing staged
+checks is not a universal guarantee of in-game loading.
+
+Before live replacement, every original is rechecked and rollback is retained
+under /data/pscloud/portable-stage-<id>/before-N.img. .restore-active records
+user/title/package digest, slot names, original hashes and stage location.
+Partial failures attempt verified rollback; uncertain recovery or unmount keeps
+its safety marker and blocks new operations. Multiple renames are not atomic
+across power loss. Never blindly clear safety markers. Automatic recovery is
+not implemented. Dashboard sharing on both firmwares is new and initially
+unverified on hardware; representative staging tests do not certify every game.
+
+The old three-file Crash format is separate and is not accepted by the new
+generic dashboard importer. Re-export using the new dashboard for sharing.
+Ordinary cloud backup/restore on firmware 7.00 remains disabled; the new sharing
+export/import/restore path accepts both supported firmwares.
+
+Advanced staged-only tool pscloud-share-game.elf reads /data/pscloud-share-game.conf:
+MODE=export or check, USER_ID=<local hex>, TITLE=<PPSA ID>,
+CONFIRM_GAME_CLOSED=yes, and PACKAGE=<generic ZIP filename> for check.
+It has no live-restore mode. It logs to /data/pscloud/share-game.log.
+
+## Historical Crash-specific tool
+
 ## 0.11.9: requested direction, 7.00 to 11.40
 
 Export and check modes accept both 7.00 and 11.40. Restore is deliberately gated

@@ -57,3 +57,20 @@ int pscloud_app_name(const char *root,const char *title,char *name,size_t max) {
     if(key) {const char *p=strchr(key,':');if(p) {p++;while(*p==' ' || *p=='\n' || *p=='\r' || *p=='\t')p++;char decoded[256]={0};if(!string_value(p,decoded,sizeof decoded))snprintf(name,max,"%s",decoded);}}
     free(json);return 0;
 }
+int pscloud_app_version(const char *root,const char *title,char *version,size_t max) {
+    if(!max||!pscloud_title_valid(title))return -1;
+    char path[1400];if(snprintf(path,sizeof path,"%s/%s",root,title)>=(int)sizeof path)return -1;
+    int dir=pscloud_open_directory(path);if(dir<0)return -1;
+    unsigned char *data=NULL;size_t size=0;
+    int bad=pscloud_read_archive(dir,"param.json",&data,&size);close(dir);
+    if(bad||size>65536) {free(data);return -1;}
+    char *json=malloc(size+1);if(!json) {free(data);return -1;}
+    memcpy(json,data,size);json[size]=0;free(data);bad=1;
+    const char *key=strstr(json,"\"contentVersion\"");
+    if(key&&!strstr(key+16,"\"contentVersion\"")) {
+        const char *p=key+16;while(*p==' '||*p=='\n'||*p=='\r'||*p=='\t')p++;
+        if(*p==':') {p++;while(*p==' '||*p=='\n'||*p=='\r'||*p=='\t')p++;
+            if(!string_value(p,version,max)) {bad=0;for(const char *q=version;*q;q++)if((*q<'0'||*q>'9')&&*q!='.')bad=1;}}
+    }
+    free(json);return bad?-1:0;
+}

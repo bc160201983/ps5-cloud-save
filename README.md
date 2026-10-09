@@ -1,4 +1,34 @@
-# PS5 Cloud Save — development milestone 0.11.9
+# PS5 Cloud Save — development milestone 0.12.0
+
+## Version 0.12.0 — generic portable sharing and dual-firmware dashboard
+
+Sharing no longer hard-codes Crash or two payload files. The new portable format
+discovers up to 128 slots, exports regular nested game-data files, excludes
+sce_sys, and checks a strict stored ZIP layout plus slot SHA-256/CRC integrity.
+The dashboard starts on firmware 7.00 and 11.40 and adds Export for sharing,
+Import package, staged Check compatibility, and explicitly confirmed Restore.
+Local sharing does not require a cloud login. Existing normal encrypted backups
+are distinct from portable packages and are not accepted for sharing.
+
+Imports require the same PPSA ID and installed contentVersion, existing receiver
+slots with the same names and at least the source container capacity, and valid
+local SFO identity/account. Recipient metadata and keys are preserved. Additional
+recipient slots remain unchanged. All payload work occurs on copied containers;
+live replacement rechecks originals and retains before-N.img rollback with a
+durable safety journal. A partial failure attempts verified rollback. A power
+loss across multiple slot renames is not atomic; an uncertain journal blocks
+retry and requires inspection. Automatic crash recovery is not implemented.
+
+Game-level account binding, regional differences or hidden dependencies can
+still prevent in-game loading; container checks do not guarantee every game.
+There is no per-game allowlist, but unsafe/mismatched inputs are refused. Saves
+must already exist on the receiver; save/database creation is not implemented.
+512 MiB total limit and 4096 files per slot. Ordinary 7.00 cloud backup/restore
+remains firmware-gated pending its separate format/hardware validation.
+
+New generic console behavior and dashboard restore are implemented but not yet
+hardware/game-load verified. The user confirmed the separate Crash 7.00 → 11.40
+manual v0.11.9 restore works in-game. This is not universal compatibility evidence.
 
 ## Version 0.11.9 — manual Crash sharing from 7.00 to 11.40
 

@@ -10,6 +10,7 @@
 #include "common/bundle.h"
 #include "common/google.h"
 #include "common/transfer.h"
+#include "common/sharing.h"
 #include <pthread.h>
 #include <stdatomic.h>
 #include "ui.h"
@@ -179,7 +180,7 @@ static void preferences(int sock,const char *form) {
         local_keep_latest=latest;if(latest)prune_local_history();
         pscloud_log("EVENT","Preferences saved: automatic upload %s; activity refresh %s",auto_upload?"on":"off",activity_refresh?"on":"off");
     }
-    char json[512];snprintf(json,sizeof json,"{\"auto_upload\":%s,\"activity_refresh\":%s,\"local_keep_latest\":%s,\"game_close_backup\":false,\"game_close_available\":false,\"sharing_available\":false,\"message\":\"Preferences saved on this PS5\"}",auto_upload?"true":"false",activity_refresh?"true":"false",local_keep_latest?"true":"false");
+    char json[512];snprintf(json,sizeof json,"{\"auto_upload\":%s,\"activity_refresh\":%s,\"local_keep_latest\":%s,\"game_close_backup\":false,\"game_close_available\":false,\"sharing_available\":true,\"message\":\"Preferences saved on this PS5\"}",auto_upload?"true":"false",activity_refresh?"true":"false",local_keep_latest?"true":"false");
     respond(sock,200,"application/json",json,strlen(json));
 }
 static void load_preferences(void) {
@@ -593,6 +594,28 @@ static void action(int sock,const char *path,const char *form) {
         message(sock,result?502:200,result?"Selected upload pending; local backup retained":"Selected backup available in cloud");return;
     }
     if(selection(form,&chosen)) {message(sock,400,"Unsupported save selection");return;}
+    if(!strncmp(path,"/api/share-",11)) {
+        char file[128]={0},sha[65]={0},confirm[8],expected[65],directory[1400];
+        if(parameter(form,"closed",closed,sizeof closed)||strcmp(closed,"yes")) {message(sock,400,"Close the selected game and confirm before sharing");return;}
+        int exporting=!strcmp(path,"/api/share-export"),checking=!strcmp(path,"/api/share-check"),restoring=!strcmp(path,"/api/share-restore");
+        if(!exporting&&!checking&&!restoring) {message(sock,404,"Unknown sharing action");return;}
+        unsigned char *data=NULL;size_t size=0;
+        snprintf(directory,sizeof directory,"%s/share",root);int dir=pscloud_open_directory(directory);
+        if(!exporting) {
+            if(parameter(form,"file",file,sizeof file)||strncmp(file,"portable-",9)||strchr(file,'/')||strchr(file,'\\')||
+               parameter(form,"sha256",expected,sizeof expected)||strlen(expected)!=64||dir<0||pscloud_read_archive(dir,file,&data,&size)||pscloud_verify_hash(data,size,expected)) {free(data);if(dir>=0)close(dir);message(sock,400,"Selected shared package changed or is unavailable");return;}
+        }
+        if(restoring) {
+            char proof[240],checked[65]={0};snprintf(proof,sizeof proof,"%s.check-%s",file,chosen.user);
+            int fd=openat(dir,proof,O_RDONLY|O_NOFOLLOW|O_NONBLOCK);int valid=fd>=0&&read(fd,checked,64)==64&&!strcmp(checked,expected);if(fd>=0)close(fd);
+            if(!valid||parameter(form,"confirm",confirm,sizeof confirm)||strcmp(confirm,"yes")) {free(data);close(dir);message(sock,400,"Run the staged check for this profile and confirm live replacement first");return;}
+        }
+        char published[128];int bad=pscloud_share_game(home,root,appmeta,chosen.user,chosen.title,exporting?0:checking?1:2,data,size,published,sha);free(data);
+        if(!bad&&checking) {char proof[240],proofpath[1800];snprintf(proof,sizeof proof,"%s.check-%s",file,chosen.user);snprintf(proofpath,sizeof proofpath,"%s/%s",directory,proof);bad=atomic_config(proofpath,sha);}
+        if(dir>=0)close(dir);
+        if(bad) {message(sock,400,"Sharing refused or failed. Requires matching game version, existing same-named receiver slots of sufficient size, valid metadata and clean mounts. Live restores retain rollback; inspect Activity before retrying");return;}
+        char json[640];snprintf(json,sizeof json,"{\"ok\":true,\"file\":\"%s\",\"sha256\":\"%s\",\"message\":\"%s\"}",exporting?published:file,sha,exporting?"Shared package ready to download; live saves unchanged":checking?"Staged check passed; live saves unchanged. In-game compatibility is not guaranteed":"Shared save restored; rollback copies retained. Check progress in-game");respond(sock,200,"application/json",json,strlen(json));return;
+    }
     if(!strcmp(path,"/api/delete-cloud")) {
         char file[128],confirm[8],folder[256],url[4096];struct settings s={0};struct pscloud_snapshot identity;
         if(background_active) {message(sock,409,"Wait for upload completion before deleting a cloud backup");return;}
@@ -816,7 +839,12 @@ static void serve(int sock,int *locked) {
         struct settings s={0};int configured=pscloud_configure(cloudpath,&s)==0;
         char address[6144],username[512],json[8192];escaped(address,sizeof address,s.url);escaped(username,sizeof username,s.user);
         int status=cloud_status;
-        snprintf(json,sizeof json,"{\"version\":\"%s\",\"pid\":%ld,\"cloud_http\":%d,\"configured\":%s,\"connected\":%s,\"url\":\"%s\",\"username\":\"%s\"}",PSCLOUD_VERSION,(long)getpid(),status,configured?"true":"false",status==200 || status==207?"true":"false",address,username);
+        unsigned firmware=0x11400000U;
+#ifndef PSCLOUD_HOST_TEST
+        firmware=kernel_get_fw_version()&0xffff0000U;
+#endif
+        char firmware_text[16];snprintf(firmware_text,sizeof firmware_text,"%x.%02x",firmware>>24,(firmware>>16)&255);
+        snprintf(json,sizeof json,"{\"version\":\"%s\",\"firmware\":\"%s\",\"pid\":%ld,\"cloud_http\":%d,\"configured\":%s,\"connected\":%s,\"url\":\"%s\",\"username\":\"%s\"}",PSCLOUD_VERSION,firmware_text,(long)getpid(),status,configured?"true":"false",status==200 || status==207?"true":"false",address,username);
         respond(sock,200,"application/json",json,strlen(json));return;
     }
     if(!strcmp(method,"GET") && !strcmp(url,"/api/log")) {
@@ -839,12 +867,33 @@ static void serve(int sock,int *locked) {
     if(!strcmp(method,"POST")) {
         if(header_value(request,"Content-Length",length,sizeof length)) {message(sock,400,"Content length missing");return;}
         char *end=NULL;unsigned long n=strtoul(length,&end,10);
-        if(!strncmp(url,"/api/import?",12)) {
+        if(!strncmp(url,"/api/import?",12)||!strncmp(url,"/api/share-import?",18)) {
             if(!*length || *end || !n || n>PSCLOUD_RESTORE_MAX) {message(sock,400,"ZIP upload limit is 512 MiB");return;}
             unsigned char *data=malloc(n);if(!data) {message(sock,500,"Not enough memory");return;}
             size_t have=size-headers;if(have>n)have=n;memcpy(data,body,have);time_t deadline=time(NULL)+120;
             while(have<n && time(NULL)<deadline) {ssize_t got=recv(sock,data+have,n-have,0);if(got<=0)break;have+=(size_t)got;}
-            if(have!=n)message(sock,400,"Incomplete ZIP upload");else import_pc(sock,url+12,data,n);
+            if(have!=n)message(sock,400,"Incomplete ZIP upload");
+            else if(!strncmp(url,"/api/share-import?",18)) {
+                struct pscloud_snapshot chosen;
+                if(selection(url+18,&chosen)||pscloud_share_validate(data,n,chosen.title))message(sock,400,"Invalid portable multi-slot package or wrong game; normal backup ZIPs are not sharing packages");
+                else {
+                    char id[33],path[1800],file[128],sha[65];unsigned char digest[32];unsigned length=0;
+                    snprintf(path,sizeof path,"%s/share",root);int parent=pscloud_open_directory(root);int bad=parent<0;
+                    if(!bad&&mkdirat(parent,"share",0700)&&errno!=EEXIST)bad=1;
+                    if(parent>=0)close(parent);
+                    if(!bad)bad=pscloud_random_id(id)||!EVP_Digest(data,n,digest,&length,EVP_sha256(),NULL)||length!=32;
+                    if(!bad) {
+                        for(unsigned i=0;i<32;i++)snprintf(sha+2*i,3,"%02x",digest[i]);
+                        snprintf(file,sizeof file,"portable-%s-%s.zip",chosen.title,id);snprintf(path,sizeof path,"%s/share/%s",root,file);
+                        int fd=open(path,O_WRONLY|O_CREAT|O_EXCL|O_NOFOLLOW,0600);size_t at=0;bad=fd<0;
+                        while(!bad&&at<n) {ssize_t wrote=write(fd,data+at,n-at);if(wrote<0&&errno==EINTR)continue;if(wrote<=0)bad=1;else at+=(size_t)wrote;}
+                        if(fd>=0) {if(fsync(fd))bad=1;if(close(fd))bad=1;}
+                        int verify=bad?-1:open(path,O_RDONLY|O_NOFOLLOW);char actual[65];bad=bad||verify<0||pscloud_file_hash(verify,actual)||strcmp(actual,sha);if(verify>=0)close(verify);
+                    }
+                    if(bad)message(sock,500,"Shared package could not be saved; no live saves changed");
+                    else {char json[512];snprintf(json,sizeof json,"{\"ok\":true,\"file\":\"%s\",\"sha256\":\"%s\",\"message\":\"Shared package imported locally. Run staged check before restoring\"}",file,sha);respond(sock,200,"application/json",json,strlen(json));}
+                }
+            } else import_pc(sock,url+12,data,n);
             free(data);return;
         }
         if(!*length || *end || n>8192 || headers+n>=sizeof request) {message(sock,400,"Request body too large");return;}expected=(size_t)n;
@@ -861,6 +910,12 @@ static void serve(int sock,int *locked) {
     if(!strcmp(method,"GET") && !strcmp(url,"/api/queue")) {queue_list(sock);return;}
     if(!strcmp(method,"GET") && !strcmp(url,"/api/download-pc")) {download_pc(sock,query,0);return;}
     if(!strcmp(method,"GET") && !strcmp(url,"/api/queue-download")) {download_pc(sock,query,1);return;}
+    if(!strcmp(method,"GET")&&!strcmp(url,"/api/share-download")) {
+        char file[128],directory[1400];unsigned char *data=NULL;size_t bytes=0;
+        if(parameter(query,"file",file,sizeof file)||strncmp(file,"portable-",9)||strchr(file,'/')||strchr(file,'\\')) {message(sock,400,"Invalid shared package filename");return;}
+        snprintf(directory,sizeof directory,"%s/share",root);int dir=pscloud_open_directory(directory);int bad=dir<0||pscloud_read_archive(dir,file,&data,&bytes);if(dir>=0)close(dir);
+        if(bad)message(sock,404,"Shared package unavailable");else respond(sock,200,"application/zip",(const char *)data,bytes);free(data);return;
+    }
     if(!strcmp(method,"POST") && !strcmp(url,"/api/stop")) {message(sock,200,"Dashboard stopping");stopped=1;return;}
     if(!strcmp(method,"POST") && !strcmp(url,"/api/connect")) {configure_cloud(sock,body);return;}
     if(!strcmp(method,"POST")) {action(sock,url,body);return;}
@@ -878,7 +933,8 @@ int main(int argc,char **argv) {
     snprintf(root,sizeof root,"%s",argv[1]);snprintf(home,sizeof home,"%s",argv[2]);port=(unsigned)strtoul(argv[3],NULL,10);
 #else
     (void)argc;(void)argv;
-    if((kernel_get_fw_version()&0xffff0000U)!=0x11400000U)return 2;
+    unsigned fw=kernel_get_fw_version()&0xffff0000U;
+    if(fw!=0x11400000U&&fw!=0x07000000U)return 2;
     strcpy(root,"/data/pscloud");strcpy(home,"/user/home");
 #endif
     snprintf(appmeta,sizeof appmeta,

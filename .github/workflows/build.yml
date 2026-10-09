@@ -39,7 +39,7 @@ jobs:
           cp ps5/pscloud-dashboard.elf ps5/DASHBOARD.md VERSION dashboard-package/
           cp "$CA" dashboard-package/pscloud-ca.pem
           mkdir -p share-package
-          cp ps5/pscloud-share.elf ps5/pscloud-share.conf.example ps5/SHARING.md VERSION share-package/
+          cp ps5/pscloud-share.elf ps5/pscloud-share-game.elf ps5/pscloud-share.conf.example ps5/SHARING.md VERSION share-package/
       - uses: actions/upload-artifact@v4
         with:
           name: pscloud-upload
