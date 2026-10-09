@@ -29,6 +29,7 @@ static int read_meta(int payload,struct pscloud_save_meta *meta,char hash[65],un
     size_t have=0;while(have<size) {ssize_t n=read(fd,data+have,size-have);if(n<=0)break;have+=(size_t)n;}close(fd);
     int bad=have!=size || r32(data)!=0x46535000;
     size_t keys=bad?0:r32(data+8),values=bad?0:r32(data+12),count=bad?0:r32(data+16);
+    if(required==0)pscloud_log("INFO","Memory metadata structure: magic=%08x size=%zu keys=%zu values=%zu entries=%zu read=%zu",have>=4?r32(data):0,size,keys,values,count,have);
     if(count>128 || keys<20+16*count || keys>values || values>size)bad=1;
     unsigned seen=0;
     for(size_t i=0;!bad && i<count;i++) {
@@ -36,6 +37,7 @@ static int read_meta(int payload,struct pscloud_save_meta *meta,char hash[65],un
         if(ko>=values-keys || offset>size-values || length>allocation || allocation>size-values-offset) {bad=1;break;}
         const char *key=(const char *)data+keys+ko;size_t max=values-keys-ko;
         if(!memchr(key,0,max)) {bad=1;break;}
+        if(required==0)pscloud_log("INFO","Memory metadata entry %zu: format=%04x length=%zu allocation=%zu",i,r16(entry+2),length,allocation);
         const unsigned char *value=data+values+offset;
         unsigned bit=!strcmp(key,"TITLE_ID")?1U:!strcmp(key,"SAVEDATA_DIRECTORY")?2U:!strcmp(key,"ACCOUNT_ID")?4U:0;
         if(!bit)continue;
