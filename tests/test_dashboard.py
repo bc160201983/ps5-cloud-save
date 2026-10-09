@@ -604,7 +604,8 @@ class DashboardTests(unittest.TestCase):
             self.assertIsNone(z.testzip());self.assertIn(b'SLOTS=3\n',z.read('manifest.txt'))
         self.assertEqual(self.import_fixture(chosen,data)[0],200)
         self.assertEqual(self.request('/api/backup',chosen)[0],200)
-        self.assertEqual(len(list((self.root/'spool').glob('*.sent'))),2) # explicit PC separate import
+        self.assertEqual(len(list((self.root/'spool').glob('*.sent'))),1)
+        self.assertEqual(len(list((self.root/'spool').glob('*.ready'))),1) # separate PC import still awaits explicit upload
         self.assertEqual(self.image.read_bytes(),self.original)
 
     def test_general_game_many_slots_backup_import_and_dedup(self):

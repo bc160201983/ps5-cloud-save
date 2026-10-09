@@ -95,7 +95,7 @@ int pscloud_snapshot_exists_checked(int dir,const struct pscloud_snapshot *wante
     memset(stats,0,sizeof *stats);
     int scan=openat(dir,".",O_RDONLY | O_DIRECTORY | O_NOFOLLOW);if(scan<0)return -1;
     DIR *d=fdopendir(scan);if(!d) {close(scan);return -1;}
-    struct dirent *e;int same=0;long long newest=-1;
+    struct dirent *e;int same=0,best_sent=-1;long long newest=-1;
     while((e=readdir(d))) {
         size_t n=strlen(e->d_name);
         if(n<10 || n>200 || strcmp(e->d_name+n-9,".identity"))continue;
@@ -107,7 +107,11 @@ int pscloud_snapshot_exists_checked(int dir,const struct pscloud_snapshot *wante
            strcmp(s.slot,wanted->slot) || strcmp(s.sha256,wanted->sha256))continue;
         stats->matched++;
         char archive[256];int fd=existing_archive(dir,identity,n,archive);
-        char hash[65];if(fd>=0) {if(pscloud_file_hash_checked(fd,hash,&stats->hash_phase))stats->hash_failed++;else if(!strcmp(hash,wanted->sha256)) {same=1;if(s.created>=newest) {newest=s.created;strcpy(stats->archive,archive);}}else stats->different++;close(fd);}else stats->missing++;
+        char hash[65];if(fd>=0) {if(pscloud_file_hash_checked(fd,hash,&stats->hash_phase))stats->hash_failed++;else if(!strcmp(hash,wanted->sha256)) {
+            same=1;size_t length=strlen(archive);int sent=length>=5&&!strcmp(archive+length-5,".sent");
+            /* Reuse an uploaded copy before a separate pending PC-import version. */
+            if(sent>best_sent || (sent==best_sent&&(s.created>newest || (s.created==newest&&strcmp(archive,stats->archive)>0)))) {best_sent=sent;newest=s.created;strcpy(stats->archive,archive);}
+        }else stats->different++;close(fd);}else stats->missing++;
     }
     closedir(d);return same;
 }
