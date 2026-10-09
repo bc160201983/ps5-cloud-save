@@ -25,6 +25,12 @@ rejection, cancellation retention and UI upload-only disabling. Native concurren
 restore/import and corrected cancellation still need console testing. No live
 saves were restored for development.
 
+Deployed on firmware 11.40 on 2026-10-09 after the earlier uploads completed and
+the old dashboard stopped cleanly. Read-only console checks confirmed v0.11.6,
+nonempty game discovery, an empty pending queue, idle upload status and cleared
+cancellation state. These checks do not validate concurrent native restore/import
+or a new manual backup; those features still require console testing.
+
 ## Version 0.11.5 — background queue uploads and corner progress
 
 Upload this / Upload all now start a console background worker and return without
