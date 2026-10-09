@@ -42,6 +42,9 @@ The old three-file Crash format is separate and is not accepted by the new
 generic dashboard importer. Re-export using the new dashboard for sharing.
 Ordinary cloud backup/restore on firmware 7.00 remains disabled; the new sharing
 export/import/restore path accepts both supported firmwares.
+Successful export/check cleans up its known disposable copies after verified
+unmounts. Portable packages remain available; live restore rollback, failures
+and uncertain mount stages are never automatically discarded.
 
 Advanced staged-only tool pscloud-share-game.elf reads /data/pscloud-share-game.conf:
 MODE=export or check, USER_ID=<local hex>, TITLE=<PPSA ID>,

@@ -151,6 +151,22 @@ static int extract_payload(int dir,const struct entry *archive) {
     free(files);return bad?-1:fsync(dir);
 }
 static int order(const void *a,const void *b) {return strcmp(a,b);}
+/* Known files only, after a successful no-live-change operation and clean
+ * unmounts. Never recursively remove mounts, failures or restore rollback. */
+static void discard_completed_stage(int parent,int stage,const char *name,unsigned count,int exporting) {
+    int clean=1;
+    for(unsigned i=0;i<count;i++) {
+        char file[64];snprintf(file,sizeof file,"before-%u.img",i);if(unlinkat(stage,file,0))clean=0;
+        snprintf(file,sizeof file,"image-%u.img",i);if(unlinkat(stage,file,0))clean=0;
+        if(exporting) {snprintf(file,sizeof file,"slot-%u.zip",i);if(unlinkat(stage,file,0))clean=0;}
+        snprintf(file,sizeof file,"mount-%u",i);if(unlinkat(stage,file,AT_REMOVEDIR))clean=0;
+    }
+    if(exporting&&unlinkat(stage,"manifest.txt",0))clean=0;
+    if(fsync(stage))clean=0;
+    if(clean&&unlinkat(parent,name,AT_REMOVEDIR))clean=0;
+    if(fsync(parent))clean=0;
+    pscloud_log(clean?"INFO":"WARN",clean?"Completed sharing temporary copies removed; portable package retained":"Temporary cleanup incomplete; retained directory requires inspection");
+}
 static int metadata_read(int dir,const char *title,const char *slot,struct pscloud_save_meta *meta,char hash[65]) {
     if(!pscloud_save_meta_read(dir,meta,hash))return pscloud_save_meta_matches(meta,title,slot)?0:-1;
     if(strcmp(slot,"sce_sdmemory")||pscloud_save_meta_read_memory(dir,meta,hash))return -1;
@@ -288,6 +304,7 @@ int pscloud_share_game(const char *home,const char *root,const char *appmeta,con
     }
     if(mode==2&&commit(parent,source,stage,p,before,baseline,id,stage_path,user,title,checksum))goto done;
     pscloud_log("EVENT",mode==2?"GENERIC_RESTORE_COMMITTED=yes; rollback=%s":"LIVE_SAVES_UNCHANGED=yes; generic sharing passed; stage=%s",stage_path);result=0;
+    if(mode!=2&&!marker&&!state.mounted&&!state.credentials_saved)discard_completed_stage(parent,stage,stage_name,p->count,!mode);
 done:
     if(state.mounted) {if(pscloud_mount_end(&state,mount))result=-1;else unmounted=1;}
     if(pscloud_mount_leave(&state))result=-1;

@@ -19,6 +19,8 @@ anchored to the existing local game/user container and
 installed version; their SFO and sealed keys are preserved. This is save-type
 handling, not a per-game exception. Normal slots still require full SFO identity.
 Additional recipient slots remain unchanged. All payload work occurs on copied containers;
+successful export/check removes its known temporary copies after clean unmounts,
+while live-restore rollback and failed/uncertain stages are retained.
 live replacement rechecks originals and retains before-N.img rollback with a
 durable safety journal. A partial failure attempts verified rollback. A power
 loss across multiple slot renames is not atomic; an uncertain journal blocks

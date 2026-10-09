@@ -89,6 +89,7 @@ class GenericSharingTests(unittest.TestCase):
                 self.assertEqual((f[4]/slot/'folder/progress.bin').read_bytes(),b'shared')
                 self.assertFalse((f[4]/slot/'stale-file').exists())
             self.assertFalse((f[1]/'.mount-active').exists())
+            self.assertFalse(list(f[1].glob('portable-stage-*')))
 
     def test_version_missing_slot_and_capacity_mismatch_refused_before_mount(self):
         for kwargs in ({'version':'02.000.000'},{'slots':('save1',)},{'capacity':4096}):
