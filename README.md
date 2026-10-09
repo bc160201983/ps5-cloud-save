@@ -1,4 +1,13 @@
-# PS5 Cloud Save — development milestone 0.11.1
+# PS5 Cloud Save — development milestone 0.11.2
+
+## Version 0.11.2 — optional startup health check
+
+The embedded browser blocked `/api/health` with `ERR_BLOCKED_BY_CLIENT`, although
+the console endpoint responded normally to direct checks. Startup now treats
+health as optional: a blocked/failed health request does not prevent the existing
+state/preferences/game/queue loading sequence. A working health endpoint still
+reports busy and defers loading safely. No save/credential operations are changed.
+Validation and deployment are pending; v0.11.1 console API timings are below.
 
 ## Version 0.11.1 — verify cloud contents before queue completion
 
