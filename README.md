@@ -7,7 +7,20 @@ the console endpoint responded normally to direct checks. Startup now treats
 health as optional: a blocked/failed health request does not prevent the existing
 state/preferences/game/queue loading sequence. A working health endpoint still
 reports busy and defers loading safely. No save/credential operations are changed.
-Validation and deployment are pending; v0.11.1 console API timings are below.
+All 99 host tests and native builds passed. A local JavaScript fixture confirmed
+the core loading sequence proceeds when health fails. Deployed v0.11.2 on firmware
+11.40 on 2026-10-09; final read-only console checks passed. Page load was about
+3.13 seconds; health median 0.72 seconds. During a Koofr listing, health returned
+busy in about 1.05 seconds and HTML in about 1.94 seconds; five cloud versions
+listed in about 15.19 seconds. Two idle sockets did not block health. These are
+single-run timings, not performance guarantees. No save/cloud writes or credential
+changes were performed by these checks.
+
+The embedded browser also blocked `/api/state`, so the optional-health patch is
+not a fix for its broader API restriction. Console APIs work via direct checks;
+end-to-end UI testing in a normal user browser is still needed. Do not bypass
+browser security settings. Koofr remains configured; Google development is on hold.
+Native remote-upload checksum verification still needs a hardware upload test.
 
 ## Version 0.11.1 — verify cloud contents before queue completion
 
