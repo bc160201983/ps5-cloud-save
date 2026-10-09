@@ -22,9 +22,17 @@ Important: a native restore stalled after staged metadata validation on 11.40.
 Read-only hashing confirmed the live save still matched its pre-restore rollback.
 The precise native blocking call is unconfirmed; additional close/unmount entry
 logs are implemented. This milestone does NOT claim to fix every native unmount
-stall. Do not clear active safety markers or force-stop a mounted restore. Host
-and native build validation are pending. Automatic game-close backup remains
-unimplemented and unavailable.
+stall. Do not clear active safety markers or force-stop a mounted restore.
+All 108 host tests and native PS5 builds passed, including local-first/no-change
+restore without cloud availability, selected cloud deletion with confirmation,
+local retention preserving pending/rollback, and pending PC-import isolation.
+After the user-confirmed normal restart, read-only checks found the original
+unchanged, no commit journal and an empty staging mount directory. The old mount
+marker was moved recoverably into its existing rollback folder; images were not
+deleted. v0.11.7 was deployed on firmware 11.40 on 2026-10-09. Read-only checks
+confirmed an idle dashboard, populated game inventory and cleanup off by default.
+Native changed-save restore, cloud deletion and cleanup still need user testing.
+Automatic game-close backup remains unimplemented and unavailable.
 
 ## Version 0.11.6 — selected-game upload and usable dashboard during sync
 
