@@ -28,10 +28,14 @@ live restore keeps rollback and still requires the user's in-game verification.
 Validation: all 131 host tests and both PS5 build jobs passed. Version 0.12.1
 was deployed on the 11.40 and 7.00 consoles; both dashboards report the expected
 version and accept the compact preference while preserving existing settings.
-Compact backups are enabled on both test consoles. New compact backup/export
-and staged restore hardware tests remain pending fresh game-closed confirmation;
-no live saves were replaced during this deployment. The 7.00 console has no cloud
-account configured. Internal game-account conversion is not implemented.
+Compact backups are enabled on both test consoles. With Wolverine closed on
+11.40, all ten slots exported to a 4,020,677-byte compact package instead of the
+48,630,283-byte encrypted whole-game ZIP (about 92% smaller). The selected package
+uploaded successfully to Koofr with readback verification, and local-first staged
+restore passed with all live saves untouched. No live restore or in-game progress
+verification was performed for this new package. New compact cloud hardware
+backup/restore on 7.00 remains untested; that console has no cloud account
+configured. Internal game-account conversion is not implemented.
 
 ## Version 0.12.0 — generic portable sharing and dual-firmware dashboard
 
