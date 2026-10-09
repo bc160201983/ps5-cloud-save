@@ -23,8 +23,6 @@ class Handler(BaseHTTPRequestHandler):
             html=(ROOT/'ps5/ui.html').read_text(encoding='utf-8').replace('__VERSION__',(ROOT/'VERSION').read_text(encoding='utf-8').strip())
             html=html.replace('<header class="topbar">','<div class="info" style="margin:0 0 22px;color:#d6caff">Design preview · PS5 offline. Sample versions only; no actions affect your saves or cloud account.</div><header class="topbar">')
             self.send(html.encode(),'text/html; charset=utf-8');return
-        if self.headers.get('X-PSCloud-Token')!=TOKEN:
-            self.send({'message':'Use the preview pairing code: preview'},status=401);return
         if path=='/api/state':
             self.send({'version':(ROOT/'VERSION').read_text().strip(),'configured':True,'connected':True,
                        'url':'https://your-nextcloud.example/remote.php/dav/files/you/PS5Backups','username':'Your Nextcloud account'})
@@ -45,8 +43,6 @@ class Handler(BaseHTTPRequestHandler):
         n=int(self.headers.get('Content-Length','0'))
         if n>8192:self.send({'message':'Request too large'},status=400);return
         self.rfile.read(n)
-        if self.headers.get('X-PSCloud-Token')!=TOKEN:
-            self.send({'message':'Preview pairing required'},status=401);return
         self.send({'ok':True,'message':'Preview only — no saves, settings or cloud files were changed.'})
 
 if __name__=='__main__':

@@ -1,4 +1,4 @@
-# PS5 Cloud Save — development milestone 0.5.2
+# PS5 Cloud Save — development milestone 0.5.3
 
 This is the first tested component of a proposed standalone PS5 cloud-save app.
 It is NOT an installable PS5 application or a complete save-sync implementation.
@@ -73,6 +73,19 @@ encrypt local HTTP traffic. No automatic startup or game-close detection yet.
 - Nextcloud connection through the dashboard, folder/deduplication checks and
   the new managed restore remain under hardware testing. Saves were not modified
   during the initial dashboard checks.
+
+## Version 0.5.3
+
+- Cleaner, equal-height game cards: internal replay/ghost/profile filenames no
+  longer expand the library. Save categories appear inside supported game details.
+- Real English game names and icons are read from installed `/user/appmeta`
+  metadata. No remote artwork service or save mounting is needed for these cards.
+- Removed manual pairing. Opening the page establishes an automatic HttpOnly,
+  SameSite=Strict browser session; mutations retain cross-site request checks.
+  Anyone on the trusted LAN who opens the dashboard can use it. Keep it private
+  and do not forward the dashboard port to the internet.
+- Unsupported game buttons stay disabled after another operation completes.
+- Nextcloud dashboard verification and managed restore remain under testing.
 
 ## Added in 0.3
 

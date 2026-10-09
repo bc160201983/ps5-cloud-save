@@ -24,7 +24,7 @@ class DashboardTests(unittest.TestCase):
         subprocess.run(['cc','-O2','-std=c11','-Wall','-Wextra','-Werror',
                         '-DPSCLOUD_HOST_TEST','-DPSCLOUD_BACKUP_EMBEDDED','-DPSCLOUD_DOWNLOAD_EMBEDDED','-DPSCLOUD_EMBEDDED',
                         *[str(ROOT/p) for p in ['ps5/dashboard.c','ps5/backup.c','ps5/download.c','src/worker.c']],
-                        *[str(ROOT/'ps5/common'/n) for n in ['managed.c','mount.c','restore.c','zip.c','log.c','cloud.c','snapshot.c']],
+                        *[str(ROOT/'ps5/common'/n) for n in ['managed.c','mount.c','restore.c','zip.c','log.c','cloud.c','snapshot.c','appmeta.c']],
                         '-o',str(ROOT/'dashboard-host'),'-lcurl','-lcrypto'],check=True)
 
     def setUp(self):
@@ -47,7 +47,9 @@ class DashboardTests(unittest.TestCase):
                                       env=dict(os.environ,PSCLOUD_TEST_PAYLOAD=str(self.payload)),
                                       stdout=subprocess.PIPE,stderr=subprocess.STDOUT,text=True)
         self.port=int(self.process.stdout.readline().strip().split('=',1)[1])
-        self.token=self.process.stdout.readline().strip().split('=',1)[1]
+        self.process.stdout.readline()
+        connection=http.client.HTTPConnection('127.0.0.1',self.port,timeout=10)
+        connection.request('GET','/');response=connection.getresponse();self.cookie=response.getheader('Set-Cookie').split(';')[0];response.read();connection.close()
 
     def tearDown(self):
         self.process.terminate()
@@ -57,7 +59,7 @@ class DashboardTests(unittest.TestCase):
 
     def request(self,path,data=None,token=True,raw=False):
         connection=http.client.HTTPConnection('127.0.0.1',self.port,timeout=15)
-        headers={'X-PSCloud-Token':self.token} if token else {}
+        headers={'Cookie':self.cookie,'X-PSCloud-Request':'1'} if token else {}
         method='POST' if data is not None else 'GET'
         body=urllib.parse.urlencode(data) if data is not None else None
         connection.request(method,path,body,headers)
@@ -66,12 +68,30 @@ class DashboardTests(unittest.TestCase):
 
     def selected(self,**extra):return dict(user='1eb70483',title='PPSA02433',slot=SLOT,**extra)
 
-    def test_pairing_protects_apis_and_state_never_returns_password(self):
+    def test_automatic_session_protects_apis_and_state_never_returns_password(self):
         status,page=self.request('/',token=False,raw=True);self.assertEqual(status,200);self.assertIn('PSCloud',page)
         self.assertEqual(self.request('/api/state',token=False)[0],401)
         status,state=self.request('/api/state');self.assertEqual(status,200)
         self.assertEqual(state['version'],(ROOT/'VERSION').read_text().strip())
         self.assertNotIn('password',state)
+
+    def test_cross_site_mutation_is_rejected(self):
+        connection=http.client.HTTPConnection('127.0.0.1',self.port,timeout=10)
+        connection.request('POST','/api/stop','',{'Cookie':self.cookie,'X-PSCloud-Request':'1','Origin':'https://untrusted.example'})
+        response=connection.getresponse();self.assertEqual(response.status,403);response.read();connection.close()
+        self.assertIsNone(self.process.poll())
+
+    def test_installed_game_name_unicode_and_icon(self):
+        folder=self.root/'appmeta/PPSA02433';folder.mkdir(parents=True)
+        (folder/'param.json').write_text(json.dumps({'localizedParameters':{'defaultLanguage':'en-US','en-US':{'titleName':'Crash Bandicoot 4: It\'s About Time™'}}}))
+        png=b'\x89PNG\r\n\x1a\n'+b'fixture'
+        (folder/'icon0.png').write_bytes(png)
+        status,data=self.request('/api/games');self.assertEqual(status,200)
+        self.assertEqual(data['games'][0]['name'],"Crash Bandicoot 4: It's About Time™")
+        connection=http.client.HTTPConnection('127.0.0.1',self.port,timeout=10)
+        connection.request('GET',data['games'][0]['icon'],headers={'Cookie':self.cookie})
+        response=connection.getresponse();self.assertEqual(response.status,200);self.assertEqual(response.read(),png);connection.close()
+        self.assertEqual(self.request('/api/icon?title=../private')[0],400)
 
     def test_cloud_login_checks_credentials_before_saving(self):
         original=self.cloud.read_text()

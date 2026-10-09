@@ -1,11 +1,12 @@
-# PSCloud dashboard 0.5.0
+# PSCloud dashboard
 
 Download the `pscloud-dashboard` artifact from a successful build on `main`.
 Deploy its CA bundle to `/data/pscloud-ca.pem` if not already present. Send
 `pscloud-dashboard.elf` to the PS5 ELF loader, then open `http://PS5-IP:8082` from
-a phone or browser. Enter the per-run pairing code shown in the loader output or
-console notification. A URL fragment `#token=CODE` also pairs the page; it is
-removed from the browser URL after loading. No token is placed in query strings.
+a phone or browser. Opening the page establishes a browser session automatically;
+no pairing code is required. Session cookies are HttpOnly and SameSite=Strict,
+and state-changing requests require a same-origin request marker. Anyone who
+can access this private-LAN dashboard can open a session. Do not expose it publicly.
 
 Use Cloud settings to enter the existing PS5Backups WebDAV URL, username and an
 app password. The server verifies the connection before saving settings with

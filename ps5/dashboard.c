@@ -6,6 +6,7 @@
 #include "common/restore.h"
 #include "common/managed.h"
 #include "common/log.h"
+#include "common/appmeta.h"
 #include "ui.h"
 #include <curl/curl.h>
 #include <sys/socket.h>
@@ -28,7 +29,7 @@
 extern int pscloud_backup_main(int,char **);
 extern int pscloud_worker_main(int,char **);
 extern int pscloud_download_main(int,char **);
-static char root[1024],home[1024],cloudpath[1200],logpath[1200],token[33];
+static char root[1024],home[1024],cloudpath[1200],logpath[1200],token[33],appmeta[1200];
 static int cloud_status;
 static volatile sig_atomic_t stopped;
 static void stop_server(int sig) {(void)sig;stopped=1;}
@@ -114,7 +115,9 @@ static void send_all(int sock,const char *data,size_t size) {
     while(size) {ssize_t n=send(sock,data,size,0);if(n<=0)break;data+=n;size-=(size_t)n;}
 }
 static void respond(int sock,int status,const char *type,const char *data,size_t size) {
-    char header[768];int n=snprintf(header,sizeof header,"HTTP/1.1 %d %s\r\nContent-Type: %s\r\nContent-Length: %zu\r\nConnection: close\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\nReferrer-Policy: no-referrer\r\nContent-Security-Policy: default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'\r\n\r\n",status,status==200?"OK":"Error",type,size);
+    char cookie[192]={0};
+    if(!strncmp(type,"text/html",9))snprintf(cookie,sizeof cookie,"Set-Cookie: PSCloudSession=%s; Path=/; HttpOnly; SameSite=Strict\r\n",token);
+    char header[1024];int n=snprintf(header,sizeof header,"HTTP/1.1 %d %s\r\nContent-Type: %s\r\nContent-Length: %zu\r\nConnection: close\r\nCache-Control: no-store\r\n%sX-Content-Type-Options: nosniff\r\nReferrer-Policy: no-referrer\r\nContent-Security-Policy: default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'\r\n\r\n",status,status==200?"OK":"Error",type,size,cookie);
     send_all(sock,header,(size_t)n);send_all(sock,data,size);
 }
 static void message(int sock,int status,const char *text) {
@@ -163,12 +166,13 @@ static void games(int sock) {
         while((t=readdir(titles)) && count<256) {
             if(strlen(t->d_name)!=9 || strncmp(t->d_name,"PPSA",4) || !safe_word(t->d_name,9))continue;
             if((!strcmp(t->d_name,"PPSA02433"))!=(priority==0))continue;
+            char name[256],escaped_name[1536];pscloud_app_name(appmeta,t->d_name,name,sizeof name);escaped(escaped_name,sizeof escaped_name,name);
             int titlefd=openat(fd,t->d_name,O_RDONLY | O_DIRECTORY | O_NOFOLLOW);if(titlefd<0)continue;
             DIR *slots=fdopendir(titlefd);if(!slots) {close(titlefd);continue;}struct dirent *e;
             while((e=readdir(slots)) && count<256) {
                 if(strncmp(e->d_name,"sdimg_",6) || !strncmp(e->d_name,"sdimg_sce_bu_",13) || !safe_word(e->d_name+6,63))continue;
                 int supported=!strcmp(t->d_name,"PPSA02433") && (!strcmp(e->d_name+6,"PlayerSaveSlot0Save") || !strcmp(e->d_name+6,"PlayerSaveProfileSaveData"));
-                int written=snprintf(json+pos,sizeof json-pos,"%s{\"user\":\"%s\",\"title\":\"%s\",\"slot\":\"%s\",\"name\":\"%s\",\"supported\":%s}",count?",":"",u->d_name,t->d_name,e->d_name+6,!strcmp(t->d_name,"PPSA02433")?"Crash Bandicoot 4":t->d_name,supported?"true":"false");
+                int written=snprintf(json+pos,sizeof json-pos,"%s{\"user\":\"%s\",\"title\":\"%s\",\"slot\":\"%s\",\"name\":\"%s\",\"icon\":\"/api/icon?title=%s\",\"supported\":%s}",count?",":"",u->d_name,t->d_name,e->d_name+6,escaped_name,t->d_name,supported?"true":"false");
                 if(written<0 || (size_t)written>=sizeof json-pos-4)break;
                 pos+=(size_t)written;count++;
             }
@@ -282,6 +286,25 @@ static int header_value(const char *headers,const char *name,char *out,size_t ma
     }
     return found?0:-1;
 }
+static int session(const char *request) {
+    char cookies[2048];if(header_value(request,"Cookie",cookies,sizeof cookies))return 0;
+    char *state=NULL,*part=strtok_r(cookies,";",&state);
+    while(part) {while(*part==' ')part++;if(!strncmp(part,"PSCloudSession=",15) && !strcmp(part+15,token))return 1;part=strtok_r(NULL,";",&state);}
+    return 0;
+}
+static void game_icon(int sock,const char *query) {
+    char title[10],path[1400];
+    if(parameter(query,"title",title,sizeof title) || !pscloud_title_valid(title)) {message(sock,400,"Invalid game ID");return;}
+    snprintf(path,sizeof path,"%s/%s",appmeta,title);int dir=pscloud_open_directory(path);
+    int fd=dir>=0?openat(dir,"icon0.png",O_RDONLY | O_NOFOLLOW | O_NONBLOCK):-1;if(dir>=0)close(dir);
+    struct stat st;if(fd<0 || fstat(fd,&st) || !S_ISREG(st.st_mode) || st.st_size<8 || st.st_size>4*1024*1024) {if(fd>=0)close(fd);message(sock,404,"Installed game icon unavailable");return;}
+    unsigned char *data=malloc((size_t)st.st_size);if(!data) {close(fd);message(sock,500,"Out of memory");return;}
+    size_t have=0;while(have<(size_t)st.st_size) {ssize_t n=read(fd,data+have,(size_t)st.st_size-have);if(n<=0)break;have+=(size_t)n;}
+    close(fd);
+    if(have!=(size_t)st.st_size || memcmp(data,"\x89PNG\r\n\x1a\n",8))message(sock,404,"Invalid installed icon");
+    else respond(sock,200,"image/png",(const char *)data,have);
+    free(data);
+}
 static void serve(int sock) {
     char request[16385];size_t size=0;char *body=NULL;
     while(size<8192) {
@@ -293,7 +316,17 @@ static void serve(int sock) {
     char method[8],url[2048];if(sscanf(request,"%7s %2047s",method,url)!=2) {message(sock,400,"Malformed request");return;}
     if(!strcmp(method,"GET") && !strcmp(url,"/")) {respond(sock,200,"text/html; charset=utf-8",(const char *)pscloud_ui,pscloud_ui_size);return;}
     char supplied[64];
-    if(header_value(request,"X-PSCloud-Token",supplied,sizeof supplied) || strcmp(supplied,token)) {message(sock,401,"Enter the pairing code shown by the PS5 payload");return;}
+    int legacy=header_value(request,"X-PSCloud-Token",supplied,sizeof supplied)==0 && !strcmp(supplied,token);
+    if(!legacy && !session(request)) {message(sock,401,"Reload the dashboard to refresh your browser session");return;}
+    if(!strcmp(method,"POST") && !legacy) {
+        char marker[8],origin[2048],host[256],expected_origin[320];
+        if(header_value(request,"X-PSCloud-Request",marker,sizeof marker) || strcmp(marker,"1")) {message(sock,403,"Cross-site request rejected");return;}
+        if(!header_value(request,"Origin",origin,sizeof origin)) {
+            if(header_value(request,"Host",host,sizeof host)) {message(sock,403,"Missing host");return;}
+            snprintf(expected_origin,sizeof expected_origin,"http://%s",host);
+            if(strcmp(origin,expected_origin)) {message(sock,403,"Cross-site request rejected");return;}
+        }
+    }
     char transfer[64];if(!header_value(request,"Transfer-Encoding",transfer,sizeof transfer)) {message(sock,400,"Chunked requests are not supported");return;}
     char length[32];size_t expected=0;
     if(!strcmp(method,"POST")) {
@@ -311,6 +344,7 @@ static void serve(int sock) {
         respond(sock,200,"application/json",json,strlen(json));return;
     }
     if(!strcmp(method,"GET") && !strcmp(url,"/api/games")) {games(sock);return;}
+    if(!strcmp(method,"GET") && !strcmp(url,"/api/icon")) {game_icon(sock,query);return;}
     if(!strcmp(method,"GET") && !strcmp(url,"/api/backups")) {backups(sock,query);return;}
     if(!strcmp(method,"GET") && !strcmp(url,"/api/log")) {
         int fd=open(logpath,O_RDONLY | O_NOFOLLOW | O_NONBLOCK);struct stat st;char data[8193]={0};
@@ -332,6 +366,13 @@ int main(int argc,char **argv) {
     if((kernel_get_fw_version()&0xffff0000U)!=0x11400000U)return 2;
     strcpy(root,"/data/pscloud");strcpy(home,"/user/home");
 #endif
+    snprintf(appmeta,sizeof appmeta,
+#ifdef PSCLOUD_HOST_TEST
+        "%s/appmeta",root
+#else
+        "/user/appmeta"
+#endif
+    );
     if(port>65535 || pscloud_random_id(token))return 2;
     snprintf(cloudpath,sizeof cloudpath,
 #ifdef PSCLOUD_HOST_TEST
@@ -355,8 +396,8 @@ int main(int argc,char **argv) {
     address.sin_addr.s_addr=htonl(INADDR_ANY);
     if(bind(server,(struct sockaddr *)&address,sizeof address) || listen(server,8)) {close(server);return 2;}
     socklen_t length=sizeof address;getsockname(server,(struct sockaddr *)&address,&length);
-    printf("PSCLOUD_DASHBOARD_PORT=%u\nPSCLOUD_PAIRING_CODE=%s\n",ntohs(address.sin_port),token);fflush(stdout);
-    pscloud_notify("PSCloud dashboard port %u; pairing code %s",ntohs(address.sin_port),token);
+    printf("PSCLOUD_DASHBOARD_PORT=%u\nPSCLOUD_DASHBOARD_READY=1\n",ntohs(address.sin_port));fflush(stdout);
+    pscloud_notify("PSCloud dashboard ready on port %u - open in your browser",ntohs(address.sin_port));
     while(!stopped) {
         fd_set readset;FD_ZERO(&readset);FD_SET(server,&readset);struct timeval wait={1,0};
         int ready=select(server+1,&readset,NULL,NULL,&wait);if(ready<=0)continue;
