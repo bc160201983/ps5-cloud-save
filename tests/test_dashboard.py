@@ -18,6 +18,14 @@ SLOT='PlayerSaveSlot0Save'
 PREFIX='/backups/Crash%20Bandicoot%204%20-%20PPSA02433/User-1eb70483/'+SLOT+'/'
 
 class DashboardTests(unittest.TestCase):
+    def test_ui_ids_unique_and_settings_activity_sections_present(self):
+        import re
+        html=(ROOT/'ps5/ui.html').read_text()
+        ids=re.findall(r'\bid="([^"]+)"',html)
+        self.assertEqual(len(ids),len(set(ids)))
+        self.assertIn('<section id="settings"',html)
+        self.assertIn('<section id="activity"',html)
+
     @classmethod
     def setUpClass(cls):
         subprocess.run(['python3',str(ROOT/'tools/embed_ui.py'),str(ROOT/'ps5/ui.html'),

@@ -126,6 +126,7 @@ static void respond(int sock,int status,const char *type,const char *data,size_t
     send_all(sock,header,(size_t)n);send_all(sock,data,size);
 }
 static void message(int sock,int status,const char *text) {
+    pscloud_log(status>=400?"WARN":"EVENT","Dashboard result (HTTP %d): %s",status,text);
     char json[1024];snprintf(json,sizeof json,"{\"ok\":%s,\"message\":\"%s\"}",status==200?"true":"false",text);
     respond(sock,status,"application/json",json,strlen(json));
 }
@@ -154,6 +155,7 @@ static void load_preferences(void) {
     DIR *dir=opendir(root);if(!dir)return;int exists=0;struct dirent *e;
     while((e=readdir(dir)))if(!strcmp(e->d_name,"preferences.conf"))exists=1;
     closedir(dir);if(!exists)return;
+    auto_upload=0; /* Existing but unreadable preferences must not enable uploads. */
     char path[1200];snprintf(path,sizeof path,"%s/preferences.conf",root);
     int fd=open(path,O_RDONLY | O_NOFOLLOW | O_NONBLOCK);struct stat st;char data[129]={0};
     if(fd<0)return;
@@ -163,7 +165,8 @@ static void load_preferences(void) {
             if(!strcmp(data,"AUTO_UPLOAD=0\nACTIVITY_REFRESH=0\n")) {auto_upload=0;activity_refresh=0;}
             else if(!strcmp(data,"AUTO_UPLOAD=0\nACTIVITY_REFRESH=1\n")) {auto_upload=0;activity_refresh=1;}
             else if(!strcmp(data,"AUTO_UPLOAD=1\nACTIVITY_REFRESH=0\n")) {auto_upload=1;activity_refresh=0;}
-            else if(strcmp(data,"AUTO_UPLOAD=1\nACTIVITY_REFRESH=1\n")) {auto_upload=0;pscloud_log("WARN","Invalid preferences; automatic upload paused");}
+            else if(!strcmp(data,"AUTO_UPLOAD=1\nACTIVITY_REFRESH=1\n")) {auto_upload=1;activity_refresh=1;}
+            else pscloud_log("WARN","Invalid preferences; automatic upload paused");
         }
     } else {auto_upload=0;pscloud_log("WARN","Unreadable preferences; automatic upload paused");}
     close(fd);
