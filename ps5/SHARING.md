@@ -18,8 +18,9 @@ traversal/duplicate/conflicting paths and requires identical installed
 contentVersion/PPSA ID. Slots must already exist with at least the source image
 capacity; extra receiver slots stay unchanged. 128 slots, 4096 files per slot,
 512 MiB package/combined receiver-image limit. Empty directories are not encoded.
-System-memory slots (sce_sdmemory) require a valid SFO with no normal identity
-fields, and are identified by the selected existing local game/user directory,
+System-memory slots (sce_sdmemory) accept a valid SFO with no normal identity
+fields or an exact zero-filled 3 KiB metadata placeholder. They are identified
+by the selected existing local game/user directory,
 installed version and original key; their metadata stays untouched. Normal slots
 still require title/slot/account SFO fields. There is no per-game allowlist.
 Cloud version history is loaded on demand so local sharing does not wait for

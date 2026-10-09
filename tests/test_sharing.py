@@ -129,6 +129,16 @@ class GenericSharingTests(unittest.TestCase):
             sfo.write_bytes(struct.pack('<IIIII',0x46535000,0x101,20,20,0))
             self.assertNotEqual(self.run_share(f,1,portable(slots=('save1',)))[0],0)
 
+    def test_system_memory_zero_placeholder_and_corrupt_metadata(self):
+        for corrupt in (False,True):
+            with self.subTest(corrupt=corrupt),tempfile.TemporaryDirectory() as tmp:
+                f=self.fixture(Path(tmp),slots=('sce_sdmemory',));sfo=f[4]/'sce_sdmemory/sce_sys/param.sfo'
+                data=b'\0'*3072
+                if corrupt:data=data[:100]+b'\x01'+data[101:]
+                sfo.write_bytes(data)
+                self.assertEqual(self.run_share(f,1,portable(slots=('sce_sdmemory',)))[0]!=0,corrupt)
+                self.assertEqual(sfo.read_bytes(),data)
+
     def test_restore_and_partial_rollback_retain_recovery_copies(self):
         for failure in (False,True):
             with self.subTest(failure=failure),tempfile.TemporaryDirectory() as tmp:

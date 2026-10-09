@@ -27,6 +27,10 @@ static int read_meta(int payload,struct pscloud_save_meta *meta,char hash[65],un
     if(fstat(fd,&st) || !S_ISREG(st.st_mode) || st.st_size<20 || st.st_size>65536 || pscloud_file_hash(fd,hash)) {close(fd);return -1;}
     size_t size=(size_t)st.st_size;unsigned char *data=malloc(size);if(!data) {close(fd);return -1;}
     size_t have=0;while(have<size) {ssize_t n=read(fd,data+have,size-have);if(n<=0)break;have+=(size_t)n;}close(fd);
+    if(required==0&&have==size&&size==3072) {
+        int blank=1;for(size_t i=0;i<size;i++)if(data[i]) {blank=0;break;}
+        if(blank) {free(data);pscloud_log("INFO","Validated 3 KiB zero-filled system-memory metadata placeholder");return 0;}
+    }
     int bad=have!=size || r32(data)!=0x46535000;
     size_t keys=bad?0:r32(data+8),values=bad?0:r32(data+12),count=bad?0:r32(data+16);
     if(required==0)pscloud_log("INFO","Memory metadata structure: magic=%08x size=%zu keys=%zu values=%zu entries=%zu read=%zu",have>=4?r32(data):0,size,keys,values,count,have);
