@@ -80,7 +80,7 @@ class DashboardTests(unittest.TestCase):
         r=connection.getresponse();text=r.read().decode();status=r.status;connection.close()
         return status,text if raw else json.loads(text)
 
-    def selected(self,**extra):return dict(user='1eb70483',title='PPSA02433',slot=SLOT,**extra)
+    def selected(self,**extra):return dict(dict(user='1eb70483',title='PPSA02433',slot=SLOT),**extra)
 
     def test_idle_browser_connection_does_not_block_dashboard(self):
         idle=http.client.HTTPConnection('127.0.0.1',self.port,timeout=5);idle.connect()
