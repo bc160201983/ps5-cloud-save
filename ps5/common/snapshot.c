@@ -43,23 +43,34 @@ int pscloud_snapshot_read(int dir,const char *name,struct pscloud_snapshot *s) {
     if(seen&16U) {char *end=NULL;s->created=strtoll(created,&end,10);if(*end || s->created<0)bad=1;}
     return bad || (seen!=15 && seen!=31) || !pscloud_snapshot_valid(s)?-1:0;
 }
-int pscloud_file_hash(int fd,char hex[65]) {
+int pscloud_file_hash_checked(int fd,char hex[65],unsigned *phase) {
+    *phase=1;
     struct stat before,after;
     if(fstat(fd,&before) || !S_ISREG(before.st_mode))return -1;
-    EVP_MD_CTX *ctx=EVP_MD_CTX_new();if(!ctx)return -1;
+    *phase=2;EVP_MD_CTX *ctx=EVP_MD_CTX_new();if(!ctx)return -1;
+    *phase=3;
     int good=EVP_DigestInit_ex(ctx,EVP_sha256(),NULL);unsigned char b[65536],digest[EVP_MAX_MD_SIZE];
     off_t offset=0;unsigned n=0;
     while(good && offset<before.st_size) {
+        *phase=4;
         ssize_t got=pread(fd,b,sizeof b,offset);
         if(got<0 && errno==EINTR)continue;
         if(got<=0) {good=0;break;}
         good=EVP_DigestUpdate(ctx,b,(size_t)got);offset+=got;
     }
-    if(fstat(fd,&after) || before.st_size!=after.st_size || before.st_mtim.tv_sec!=after.st_mtim.tv_sec || before.st_mtim.tv_nsec!=after.st_mtim.tv_nsec)good=0;
-    if(good)good=EVP_DigestFinal_ex(ctx,digest,&n);
+    if(good) {
+        *phase=5;
+        if(fstat(fd,&after))good=0;
+        else {*phase=6;if(before.st_size!=after.st_size || before.st_mtim.tv_sec!=after.st_mtim.tv_sec || before.st_mtim.tv_nsec!=after.st_mtim.tv_nsec)good=0;}
+    }
+    if(good) {*phase=7;good=EVP_DigestFinal_ex(ctx,digest,&n);}
     EVP_MD_CTX_free(ctx);if(!good || n!=32)return -1;
     for(unsigned i=0;i<32;i++)snprintf(hex+2*i,3,"%02x",digest[i]);
+    *phase=0;
     return 0;
+}
+int pscloud_file_hash(int fd,char hex[65]) {
+    unsigned phase;return pscloud_file_hash_checked(fd,hex,&phase);
 }
 int pscloud_snapshot_exists_checked(int dir,const struct pscloud_snapshot *wanted,struct pscloud_dedup_stats *stats) {
     memset(stats,0,sizeof *stats);
@@ -80,7 +91,7 @@ int pscloud_snapshot_exists_checked(int dir,const struct pscloud_snapshot *wante
             snprintf(file,sizeof file,"%.*s.%s",(int)n-9,e->d_name,i?"sent":"ready");
             fd=openat(dir,file,O_RDONLY | O_NOFOLLOW | O_NONBLOCK);
         }
-        char hash[65];if(fd>=0) {if(pscloud_file_hash(fd,hash))stats->hash_failed++;else if(!strcmp(hash,wanted->sha256))same=1;else stats->different++;close(fd);}else stats->missing++;
+        char hash[65];if(fd>=0) {if(pscloud_file_hash_checked(fd,hash,&stats->hash_phase))stats->hash_failed++;else if(!strcmp(hash,wanted->sha256))same=1;else stats->different++;close(fd);}else stats->missing++;
         if(same)break;
     }
     closedir(d);return same;

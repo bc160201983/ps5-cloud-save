@@ -94,8 +94,8 @@ int pscloud_game_backup(const char *home,const char *root,const char *user,const
     if(bad)goto done;
     struct pscloud_dedup_stats stats;
     int duplicate=pscloud_snapshot_exists_checked(spool,&s,&stats);
-    pscloud_log("INFO","Whole-game dedup: scanned=%u invalid=%u matched=%u missing=%u hash_failed=%u different=%u",stats.scanned,stats.invalid,stats.matched,stats.missing,stats.hash_failed,stats.different);
-    if(duplicate<0)goto done;
+    pscloud_log("INFO","Whole-game dedup: scanned=%u invalid=%u matched=%u missing=%u hash_failed=%u different=%u phase=%u",stats.scanned,stats.invalid,stats.matched,stats.missing,stats.hash_failed,stats.different,stats.hash_phase);
+    if(duplicate<0 || (!duplicate && stats.hash_failed))goto done;
     if(duplicate) {pscloud_notify("Whole game unchanged - duplicate skipped");result=0;goto done;}
     s.created=(long long)time(NULL);if(s.created<0)s.created=0;
     snprintf(identity,sizeof identity,"%s.identity",name);snprintf(ready,sizeof ready,"%s.ready",name);
