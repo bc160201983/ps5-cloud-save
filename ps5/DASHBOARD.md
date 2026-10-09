@@ -1,5 +1,32 @@
 # PSCloud dashboard
 
+## PC transfers and upload queue (0.7.0)
+
+The library shows pending backup count and a list of queued snapshots. Each
+validated item has individual upload and PC download controls; the main button
+uploads all pending items. Counts refresh after import/upload. Large lists are
+bounded while the total count is retained.
+
+Open Crash Bandicoot 4, choose Whole game, select an original PSCloud ZIP from
+your PC, and click Add to queue. Imported ZIPs are validated and kept locally;
+they do not upload or restore automatically. ZIPs must be unmodified, stored
+PSCloud whole-game exports under 16 MiB for the selected game and PS5 user.
+Do not extract/repack the archive. Per-slot ZIPs remain downloadable but PC
+import initially supports only identity-bearing whole-game ZIPs.
+
+Cloud snapshots offer Download to PC, Download to PS5 and Restore. Imported
+queue backups offer Restore to PS5 without requiring a cloud upload first.
+Restore requires explicit closure/overwrite confirmation and matching current
+encrypted keys and image sizes. Both incoming filesystems are checked before
+replacement. Full original rollback images are retained in a unique directory
+under `/data/pscloud/rollback/whole-restore-<id>/`.
+
+Whole-game restore is experimental: host fixtures test success, rejection and
+partial-failure rollback, but actual PS5 overwrite/game-load validation remains
+pending. Never interrupt power. If an operation fails or a `.restore-active`
+marker survives interruption, keep the game closed and preserve rollback files
+for inspection. Automatic interrupted-transaction recovery is not implemented.
+
 Download the `pscloud-dashboard` artifact from a successful build on `main`.
 Deploy its CA bundle to `/data/pscloud-ca.pem` if not already present. Send
 `pscloud-dashboard.elf` to the PS5 ELF loader, then open `http://PS5-IP:8082` from
@@ -63,10 +90,10 @@ unchanged throughout copying; a missing/unsafe image aborts the entire snapshot.
 Unchanged whole-game ZIPs are skipped. Cloud storage uses a `WholeGame` folder
 under the existing game/user folder. Existing per-slot snapshots remain usable.
 
-These encrypted whole-game archives can be downloaded from Koofr/WebDAV. They
-cannot yet be imported or restored through PSCloud. Do not replace console files
-manually or delete your original saves as a test. The single-slot restorer is
-explicitly blocked for this format.
+These encrypted whole-game archives can now be downloaded and imported through
+PSCloud 0.7.0. Whole-game restore has its own guarded path; the single-slot
+restorer never treats a whole-game ZIP as a single payload. Do not replace
+console files manually or delete your original saves as a test.
 
 Cloud version cards show the console-recorded creation date in the browser's
 local timezone, newest first. Undated older commits show “Date unavailable”.

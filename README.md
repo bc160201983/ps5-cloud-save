@@ -16,8 +16,12 @@
   save operations. Keep the game closed after a failed/interrupted restore;
   do not restart it until recovery is inspected. Multi-image restore is not
   atomic across power loss; automatic interruption recovery is not implemented.
-- This release is implemented; host and live validation are pending. Real console
-  save overwrite/game-load validation has NOT been performed for whole-game restore.
+- All 76 host tests and PS5 builds passed, including PC import/restore, wrong-key
+  rejection and partial-commit rollback fixtures. Live firmware 11.40 testing
+  verified PC ZIP download/import, local queue download, queue counts, individual
+  upload and upload-all. These checks did not restore or modify console saves.
+  Real console overwrite/game-load validation has NOT been performed for
+  whole-game restore; that remains experimental until a controlled hardware test.
 
 ### 0.6.3 cloud-aware unchanged backups
 
