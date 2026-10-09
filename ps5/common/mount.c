@@ -88,7 +88,8 @@ int pscloud_mount_leave(struct pscloud_mount_state *s) {
     if(!s->credentials_saved)return 0;
 #ifdef PSCLOUD_HOST_TEST
     pscloud_log("INFO","Host simulated credentials restored");
-    return getenv("PSCLOUD_TEST_CREDENTIAL_RESTORE_FAIL")?-1:0;
+    if(getenv("PSCLOUD_TEST_CREDENTIAL_RESTORE_FAIL"))return -1;
+    s->credentials_saved=0;return 0;
 #else
     int failed=0;pid_t pid=getpid();
     if(kernel_set_ucred_uid(pid,s->uid)<0)failed=1;
