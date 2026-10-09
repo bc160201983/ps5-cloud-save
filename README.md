@@ -33,9 +33,14 @@ must already exist on the receiver; save/database creation is not implemented.
 512 MiB total limit and 4096 files per slot. Ordinary 7.00 cloud backup/restore
 remains firmware-gated pending its separate format/hardware validation.
 
-New generic console behavior and dashboard restore are implemented but not yet
-hardware/game-load verified. The user confirmed the separate Crash 7.00 → 11.40
-manual v0.11.9 restore works in-game. This is not universal compatibility evidence.
+All 127 host tests and native builds passed. On 2026-10-09, both dashboards
+ran v0.12.0. The generic dashboard export/download/import/staged-check flow
+passed for Astro Bot in both 7.00 → 11.40 and 11.40 → 7.00 directions, and for
+Crash in the 7.00 → 11.40 direction. Both save-layout classes unmounted cleanly;
+live-image hashes, recipient metadata/keys and payload checks passed. No generic
+live replacement was performed. Generic live restore/game-load behavior remains
+unverified. The user confirmed the separate Crash 7.00 → 11.40 manual v0.11.9
+restore works in-game. This is not universal compatibility evidence.
 
 ## Version 0.11.9 — manual Crash sharing from 7.00 to 11.40
 

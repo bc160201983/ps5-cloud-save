@@ -35,8 +35,13 @@ user/title/package digest, slot names, original hashes and stage location.
 Partial failures attempt verified rollback; uncertain recovery or unmount keeps
 its safety marker and blocks new operations. Multiple renames are not atomic
 across power loss. Never blindly clear safety markers. Automatic recovery is
-not implemented. Dashboard sharing on both firmwares is new and initially
-unverified on hardware; representative staging tests do not certify every game.
+not implemented. All 127 host tests and native builds passed. On 2026-10-09,
+the dashboard sharing flow passed staged Astro Bot transfers in both directions
+between 7.00 and 11.40, plus a staged Crash transfer from 7.00 to 11.40. Both
+dashboards were deployed and no live images were replaced. Generic live restore
+and in-game loading remain unverified; representative staging tests do not
+certify every game. The older manual Crash restore was confirmed working by
+the user, but is a separate path from the new generic dashboard restorer.
 
 The old three-file Crash format is separate and is not accepted by the new
 generic dashboard importer. Re-export using the new dashboard for sharing.
