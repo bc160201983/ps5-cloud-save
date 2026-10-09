@@ -5,16 +5,20 @@
 Queue validation selects an existing `.ready` or `.sent` file by directory
 inventory before opening it. This avoids the console's missing-target descriptor
 behavior when checking an uploaded archive. Whole-game backup fails closed on
-an archive verification error rather than publishing a duplicate. Console
-retesting of this fix is pending.
+an archive verification error rather than publishing a duplicate. Firmware 11.40
+console retesting verified a matching uploaded archive with zero hash errors and
+skipped repeated unchanged game backups. The cloud ZIP's SHA-256, CRC and both
+included images were checked; original console images matched before and after.
+All 70 host tests and PS5 builds passed.
 
 ### 0.6.1 validation follow-up
 
 Whole-game console export and Koofr ZIP upload are verified: both encrypted
 images and the manifest pass cloud checksum and ZIP CRC checks. Snapshot dates
 are visible in the dashboard. The first repeat test found duplicate archives;
-additional deduplication diagnostics are included while this is investigated.
-Do not assume whole-game duplicate skipping is console-validated yet.
+additional deduplication diagnostics identified the uploaded-file lookup issue.
+Version 0.6.2 fixes it and passes the console repeat check. Earlier test-created
+duplicate snapshots are retained rather than deleted.
 
 ## Version 0.6.0
 
@@ -30,7 +34,8 @@ Do not assume whole-game duplicate skipping is console-validated yet.
   console clock, not proof of when game progress changed.
 - Koofr WebDAV connection and dashboard uploads are console-confirmed. Per-slot
   console-managed export and unchanged-save skipping are also console-tested.
-  The new whole-game path is implemented; live validation is pending.
+  Whole-game ZIP creation/upload, CRC/SHA-256 integrity and dated dashboard cards
+  are now console-tested, as is unchanged uploaded-snapshot skipping in 0.6.2.
 
 This is the first tested component of a proposed standalone PS5 cloud-save app.
 It is NOT an installable PS5 application or a complete save-sync implementation.
