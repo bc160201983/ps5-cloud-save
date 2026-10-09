@@ -178,7 +178,9 @@ static int write_image_bytes(int dir,const char *name,const unsigned char *data,
     struct stat st;int bad=fstat(fd,&st) || !S_ISREG(st.st_mode);
     if(!bad && (fchmod(fd,owner->st_mode&0777) || fchown(fd,owner->st_uid,owner->st_gid)))bad=1;
     size_t have=0;while(!bad && have<size) {ssize_t n=write(fd,data+have,size-have);if(n<0 && errno==EINTR)continue;if(n<=0)bad=1;else have+=(size_t)n;}
-    if(fsync(fd))bad=1;if(close(fd))bad=1;return bad?-1:0;
+    if(fsync(fd))bad=1;
+    if(close(fd))bad=1;
+    return bad?-1:0;
 }
 int pscloud_bundle_restore(const char *home,const char *root,const struct pscloud_snapshot *s,const unsigned char *archive,size_t length) {
     const unsigned char *images[2];size_t sizes[2];
@@ -209,7 +211,8 @@ int pscloud_bundle_restore(const char *home,const char *root,const struct psclou
         char name[64];snprintf(name,sizeof name,"before-%u.img",i);
         int out=openat(stage,name,O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW,0600);
         int bad=out<0 || lseek(original[i],0,SEEK_SET)<0 || pscloud_copy_image(original[i],out);
-        if(out>=0 && close(out))bad=1;if(bad)goto done;
+        if(out>=0 && close(out))bad=1;
+        if(bad)goto done;
         snprintf(replacement[i],sizeof replacement[i],".pscloud-new-%s-%u.part",id,i);
         if(write_image_bytes(target,replacement[i],images[i],sizes[i],&before[i]))goto done;
         snprintf(name,sizeof name,"incoming-%u.img",i);
@@ -231,16 +234,19 @@ int pscloud_bundle_restore(const char *home,const char *root,const struct psclou
 #endif
         int dir=payload?pscloud_open_directory(payload):-1;int file=dir>=0?openat(dir,"ue4savegame.dpx.sav",O_RDONLY | O_NOFOLLOW | O_NONBLOCK):-1;struct stat st;
         bad=file<0 || fstat(file,&st) || !S_ISREG(st.st_mode) || st.st_size<=0 || st.st_size>PSCLOUD_RESTORE_MAX;
-        if(file>=0)close(file);if(dir>=0)close(dir);
+        if(file>=0)close(file);
+        if(dir>=0)close(dir);
         if(bad || pscloud_mount_end(&state,mount))goto done;
         checked_unmount=1;if(pscloud_mount_leave(&state))goto done;
-        if(unlinkat(parent,".mount-active",0) || fsync(parent))goto done;mount_marker=0;
+        if(unlinkat(parent,".mount-active",0) || fsync(parent))goto done;
+        mount_marker=0;
     }
     for(unsigned i=0;i<2;i++) {
         char hash[65];struct stat now;
         int check=openat(target,bundle_names[i],O_RDONLY | O_NOFOLLOW | O_NONBLOCK);
         int bad=check<0 || fstat(check,&now) || now.st_dev!=before[i].st_dev || now.st_ino!=before[i].st_ino || pscloud_file_hash(check,hash) || strcmp(hash,baseline[i]);
-        if(check>=0)close(check);if(bad)goto done;
+        if(check>=0)close(check);
+        if(bad)goto done;
     }
     int marker=openat(parent,".restore-active",O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW,0600);if(marker<0)goto done;
     journal=1;char text[256];int n=snprintf(text,sizeof text,"USER_ID=%s\nTITLE=%s\nROLLBACK=%s\n",s->user,s->title,stage_name);
@@ -275,7 +281,10 @@ done:
         if(original[i]>=0)close(original[i]);
         if(target>=0 && !journal) {if(*replacement[i])unlinkat(target,replacement[i],0);if(*undo[i])unlinkat(target,undo[i],0);}
     }
-    if(stage>=0)close(stage);if(target>=0)close(target);if(lock>=0)close(lock);if(parent>=0)close(parent);
+    if(stage>=0)close(stage);
+    if(target>=0)close(target);
+    if(lock>=0)close(lock);
+    if(parent>=0)close(parent);
     pscloud_notify(result?"Whole-game restore failed - keep game closed; inspect rollback and activity":"Whole-game restore complete - both rollback images retained");
     return result;
 }

@@ -230,7 +230,7 @@ static int pending_archive(const char *file,struct pscloud_snapshot *s,unsigned 
 }
 static void queue_list(int sock) {
     char path[1400],json[65536]="{\"items\":[";snprintf(path,sizeof path,"%s/spool",root);
-    int dir=pscloud_open_directory(path);size_t pos=strlen(json);unsigned count=0;
+    int dir=pscloud_open_directory(path);size_t pos=strlen(json);unsigned count=0,shown=0;int truncated=0;
     if(dir>=0) {
         int scan=openat(dir,".",O_RDONLY | O_DIRECTORY | O_NOFOLLOW);DIR *d=scan>=0?fdopendir(scan):NULL;struct dirent *e;
         if(d) {
@@ -238,16 +238,19 @@ static void queue_list(int sock) {
                 size_t n=strlen(e->d_name);if(n<7 || n>=144 || strcmp(e->d_name+n-6,".ready"))continue;
                 char file[128];if(n-6>=sizeof file)continue;memcpy(file,e->d_name,n-6);file[n-6]=0;
                 if(!valid_archive(file))continue;
+                count++;
+                if(truncated)continue;
                 struct pscloud_snapshot s={0};int valid=pending_archive(file,&s,NULL,NULL)==0;
                 char name[256],label[1536];pscloud_app_name(appmeta,valid?s.title:"PPSA02433",name,sizeof name);escaped(label,sizeof label,name);
-                int got=snprintf(json+pos,sizeof json-pos,"%s{\"file\":\"%s\",\"user\":\"%s\",\"title\":\"%s\",\"slot\":\"%s\",\"name\":\"%s\",\"created\":%lld,\"valid\":%s}",count?",":"",file,s.user,s.title,s.slot,label,s.created,valid?"true":"false");
-                if(got<0 || (size_t)got>=sizeof json-pos-40)break;pos+=(size_t)got;count++;
+                int got=snprintf(json+pos,sizeof json-pos,"%s{\"file\":\"%s\",\"user\":\"%s\",\"title\":\"%s\",\"slot\":\"%s\",\"name\":\"%s\",\"created\":%lld,\"valid\":%s}",shown?",":"",file,s.user,s.title,s.slot,label,s.created,valid?"true":"false");
+                if(got<0 || (size_t)got>=sizeof json-pos-64) {truncated=1;json[pos]=0;continue;}
+                pos+=(size_t)got;shown++;
             }
             closedir(d);
         }else if(scan>=0)close(scan);
         close(dir);
     }
-    snprintf(json+pos,sizeof json-pos,"],\"count\":%u}",count);respond(sock,200,"application/json",json,strlen(json));
+    snprintf(json+pos,sizeof json-pos,"],\"count\":%u,\"truncated\":%s}",count,truncated?"true":"false");respond(sock,200,"application/json",json,strlen(json));
 }
 static void attachment(int sock,const char *file,const unsigned char *data,size_t size) {
     char header[1024];int n=snprintf(header,sizeof header,"HTTP/1.1 200 OK\r\nContent-Type: application/zip\r\nContent-Disposition: attachment; filename=\"%s\"\r\nContent-Length: %zu\r\nConnection: close\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\n\r\n",file,size);
@@ -300,7 +303,8 @@ static void import_pc(int sock,const char *query,const unsigned char *data,size_
         else {s.created=(long long)time(NULL);if(s.created<0)s.created=0;bad=fprintf(f,"USER_ID=%s\nTITLE=%s\nSAVE_NAME=WholeGame\nSHA256=%s\nCREATED_UNIX=%lld\n",s.user,s.title,s.sha256,s.created)<0;if(fflush(f) || fsync(fd))bad=1;if(fclose(f))bad=1;}
     }
     if(!bad)bad=renameat(dir,part,dir,ready) || fsync(dir);
-    if(bad)unlinkat(dir,part,0);close(dir);
+    if(bad)unlinkat(dir,part,0);
+    close(dir);
     message(sock,bad?500:200,bad?"Import failed; no console save was changed":"PC backup validated and queued. Upload or restore it from the queue");
 }
 static void configure_cloud(int sock,const char *form) {
@@ -357,7 +361,8 @@ static void action(int sock,const char *path,const char *form) {
         if(parameter(form,"closed",closed,sizeof closed) || strcmp(closed,"yes") || parameter(form,"confirm",confirm,sizeof confirm) || strcmp(confirm,"yes") ||
            parameter(form,"file",file,sizeof file) || pending_archive(file,&snapshot,&data,&size)) {free(data);message(sock,400,"Select a valid queued backup and confirm the game is closed");return;}
         int bad=strcmp(snapshot.user,chosen.user) || strcmp(snapshot.title,chosen.title) || strcmp(snapshot.slot,chosen.slot) || strcmp(snapshot.slot,"WholeGame");
-        if(!bad)bad=pscloud_bundle_restore(home,root,&snapshot,data,size);free(data);
+        if(!bad)bad=pscloud_bundle_restore(home,root,&snapshot,data,size);
+        free(data);
         message(sock,bad?500:200,bad?"Restore refused or failed. Keep game closed; inspect activity and rollback":"Whole-game restore complete; original images retained in rollback");return;
     }
     char file[128];struct settings cloud={0};struct pscloud_snapshot snapshot;
