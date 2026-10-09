@@ -13,9 +13,16 @@
 - v0.11.1 passed all 99 host tests and native PS5 builds. Corrupt upload retention,
   no identity commit on corruption and repair of an existing corrupt cloud copy
   passed HTTPS fixtures. Browser preview verified Google settings, game navigation,
-  cached versions and explicit refresh. No live saves/cloud files were modified
-  and no new payload was deployed during this work. Native threading and Google
-  approval remain hardware/real-account unverified.
+  cached versions and explicit refresh.
+- Deployed v0.11.1 on firmware 11.40 on 2026-10-09. Read-only checks passed:
+  page load about 0.97 seconds; health median about 0.51 seconds; two idle browser
+  sockets no longer blocked health. During a Koofr listing, health returned busy
+  in about 1.29 seconds and dashboard HTML in about 1.01 seconds. Five cloud
+  snapshots listed in about 11.12 seconds. These are single-run LAN timings, not
+  guaranteed performance. No backup, upload, restore or credential changes were
+  made by the smoke check. New upload checksum readback remains host-tested only;
+  Google approval remains real-account unverified. Koofr remains the active
+  provider; further Google development is postponed.
 
 ## Version 0.11.0 — responsive requests and Google sign-in foundation
 
