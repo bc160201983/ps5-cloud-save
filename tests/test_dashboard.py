@@ -121,6 +121,51 @@ class DashboardTests(unittest.TestCase):
         self.assertFalse(data['active']);self.assertEqual(data['result'],0)
         self.assertEqual(self.request('/api/queue')[1]['count'],0)
 
+    def test_local_first_unchanged_restore_works_without_cloud_or_mount(self):
+        self.request('/api/preferences',{'auto_upload':'0','activity_refresh':'1'})
+        folder=self.home/'1eb70483/savedata_prospero/PPSA10595';folder.mkdir()
+        image=folder/'sdimg_global1';image.write_bytes(self.original)
+        chosen={'user':'1eb70483','title':'PPSA10595','slot':'WholeGame','closed':'yes','confirm':'yes','skip_identical':'yes'}
+        self.assertEqual(self.request('/api/backup',chosen)[0],200)
+        archive=next((self.root/'spool').glob('*.ready'));sha=hashlib.sha256(archive.read_bytes()).hexdigest()
+        self.fixture.status=503
+        status,result=self.request('/api/restore',dict(chosen,file=archive.name[:-6],sha256=sha))
+        self.assertEqual(status,200,result);self.assertIn('already matches',result['message'])
+        self.assertFalse((self.root/'.mount-active').exists());self.assertFalse((self.root/'.restore-active').exists())
+        self.assertEqual(image.read_bytes(),self.original)
+        self.assertIn('checksum-verified local archive',(self.root/'pscloud.log').read_text())
+        status,_=self.request('/api/restore',dict(chosen,file=archive.name[:-6],sha256='f'*64))
+        self.assertEqual(status,400);self.assertEqual(image.read_bytes(),self.original)
+
+    def test_cloud_delete_requires_confirmation_and_preserves_console_save(self):
+        chosen=self.selected(file=FILE)
+        self.assertEqual(self.request('/api/delete-cloud',chosen)[0],400)
+        self.assertIn(PREFIX+FILE,self.fixture.objects)
+        self.assertEqual(self.request('/api/delete-cloud',dict(chosen,confirm='yes'))[0],200)
+        self.assertNotIn(PREFIX+FILE,self.fixture.objects)
+        self.assertNotIn(PREFIX+'.pscloud/'+FILE+'.identity',self.fixture.objects)
+        self.assertEqual(self.image.read_bytes(),self.original)
+
+    def test_latest_local_retention_preserves_pending_and_rollback(self):
+        files=[]
+        for value in (b'one',b'two'):
+            (self.payload/'ue4savegame.dpx.sav').write_bytes(value)
+            self.assertEqual(self.request('/api/backup',self.selected(closed='yes'))[0],200)
+            files.append(next(p for p in (self.root/'spool').glob('*.sent') if p not in files))
+        for i,file in enumerate(files):
+            meta=file.with_name(file.name[:-5]+'.identity');text=meta.read_text()
+            import re
+            meta.write_text(re.sub(r'CREATED_UNIX=\d+',f'CREATED_UNIX={1000+i}',text))
+        self.request('/api/preferences',{'auto_upload':'0','activity_refresh':'1'})
+        (self.payload/'ue4savegame.dpx.sav').write_bytes(b'pending')
+        self.request('/api/backup',self.selected(closed='yes'))
+        rollback=self.root/'rollback';rollback.mkdir(exist_ok=True);(rollback/'original.img').write_bytes(self.original)
+        status,prefs=self.request('/api/preferences',{'auto_upload':'0','activity_refresh':'1','local_keep_latest':'1'})
+        self.assertEqual(status,200);self.assertTrue(prefs['local_keep_latest'])
+        self.assertFalse(files[0].exists());self.assertTrue(files[1].exists())
+        self.assertEqual(len(list((self.root/'spool').glob('*.ready'))),1)
+        self.assertEqual((rollback/'original.img').read_bytes(),self.original)
+
     def test_manual_backup_uploads_only_its_game_not_another_pending_game(self):
         self.request('/api/preferences',{'auto_upload':'0','activity_refresh':'1'})
         self.request('/api/backup',self.selected(closed='yes'))

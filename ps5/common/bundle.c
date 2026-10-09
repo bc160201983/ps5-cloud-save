@@ -250,7 +250,8 @@ static int write_image_bytes(int dir,const char *name,const unsigned char *data,
 int pscloud_game_backup(const char *home,const char *root,const char *user,const char *title) {
     char published[144];return pscloud_game_backup_named(home,root,user,title,published);
 }
-static int bundle_restore(const char *home,const char *root,const struct pscloud_snapshot *s,const unsigned char *archive,size_t length,int verify_only) {
+static int bundle_restore(const char *home,const char *root,const struct pscloud_snapshot *s,const unsigned char *archive,size_t length,int mode) {
+    int verify_only=mode==1;
     struct pscloud_bundle bundle;
     const unsigned char **images=bundle.images;size_t *sizes=bundle.sizes;
     if(pscloud_bundle_index(archive,length,s,&bundle) || pscloud_verify_hash(archive,length,s->sha256) || pscloud_no_foreign_mount())return 1;
@@ -286,6 +287,11 @@ static int bundle_restore(const char *home,const char *root,const struct pscloud
             migrate=1;pscloud_log("INFO","Recreated save detected: preparing decrypted-data recovery for %s",bundle.names[i]);
         }
         if(pscloud_file_hash(original[i],baseline[i]))goto done;
+    }
+    if(mode==2 && !migrate) {
+        int identical=1;
+        for(unsigned i=0;i<bundle.count;i++)if(pscloud_verify_hash(images[i],sizes[i],baseline[i]))identical=0;
+        if(identical) {result=5;pscloud_log("EVENT","Restore unnecessary: all live save images already match the verified backup; no mounts or save writes performed");goto done;}
     }
     if(migrate && strcmp(s->title,"PPSA02433")) {result=2;pscloud_log("WARN","Recreated-container migration is only validated for the Crash UE4 format");goto done;}
     if(pscloud_random_id(id))goto done;
@@ -350,6 +356,7 @@ static int bundle_restore(const char *home,const char *root,const struct pscloud
                 struct stat after;if(!bad && (fstat(file,&after) || after.st_size!=st.st_size || after.st_mtim.tv_sec!=st.st_mtim.tv_sec || after.st_mtim.tv_nsec!=st.st_mtim.tv_nsec))bad=1;
             }
         }
+        pscloud_log("INFO","Restore stage: closing incoming validation handles, slot %u",i);
         if(file>=0)close(file);
         if(dir>=0)close(dir);
         if(bad || pscloud_mount_end(&state,mount))goto done;
@@ -448,8 +455,9 @@ done:
     if(target>=0)close(target);
     if(lock>=0)close(lock);
     if(parent>=0)close(parent);
-    pscloud_notify(result?"Whole-game restore failed - keep game closed; inspect rollback and activity":verify_only?"Recovery staged check passed - live saves untouched":"Whole-game restore complete - all original images retained in rollback");
+    pscloud_notify(result==5?"Save already matches backup - no mounts or save changes needed":result?"Whole-game restore failed - keep game closed; inspect rollback and activity":verify_only?"Recovery staged check passed - live saves untouched":"Whole-game restore complete - all original images retained in rollback");
     return result;
 }
 int pscloud_bundle_restore(const char *home,const char *root,const struct pscloud_snapshot *s,const unsigned char *archive,size_t length) {return bundle_restore(home,root,s,archive,length,0);}
 int pscloud_bundle_restore_check(const char *home,const char *root,const struct pscloud_snapshot *s,const unsigned char *archive,size_t length) {return bundle_restore(home,root,s,archive,length,1);}
+int pscloud_bundle_restore_smart(const char *home,const char *root,const struct pscloud_snapshot *s,const unsigned char *archive,size_t length) {return bundle_restore(home,root,s,archive,length,2);}

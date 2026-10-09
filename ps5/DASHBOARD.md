@@ -1,6 +1,21 @@
 # PSCloud dashboard
 
-## Current behavior — 0.11.6
+## Current behavior — 0.11.7
+
+Whole-game Restore uses a checksum/identity-matching local archive first. The
+snapshot checksum supplied by the dashboard prevents silently restoring another
+version. Identical destination images can return a no-change result without
+mounts. Native changed-save restore still needs validation: one console test
+stalled after staged metadata validation; unmount entry diagnostics are added.
+Never clear a live mount marker, force-stop a mounted restore or launch its game.
+
+Cloud versions have a confirmed Delete from cloud button. Local copies and PS5
+saves are unaffected. Optional Keep latest local history retains one uploaded
+archive per game/user/save group; pending uploads, downloaded caches and restore
+rollback are excluded from cleanup. It is off by default. Enabling cleanup asks
+for confirmation, and active save markers or unverifiable newest copies prevent
+cleanup. Activity remains readable during operations, with a warning after a
+long restore wait; the warning does not cancel a native operation.
 
 Dashboard HTML and authenticated `/api/health` remain available while a slow
 operation runs. Save/cloud operations are still serialized: competing API calls

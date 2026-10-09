@@ -41,6 +41,8 @@ extern int pscloud_download_main(int,char **);
 static char root[1024],home[1024],cloudpath[1200],logpath[1200],token[33],appmeta[1200];
 static _Atomic int cloud_status;
 static _Atomic int auto_upload=1,activity_refresh=1;
+static _Atomic int local_keep_latest;
+static void prune_local_history(void);
 static struct pscloud_google google,google_pending;
 static char googlepath[1200];
 static pthread_mutex_t operation_mutex=PTHREAD_MUTEX_INITIALIZER;
@@ -58,6 +60,7 @@ static volatile sig_atomic_t stopped;
 static void stop_server(int sig) {(void)sig;stopped=1;}
 struct response {char *data;size_t size,limit;};
 static size_t collect(char *p,size_t a,size_t b,void *ctx) {
+    if(!ctx) {if(b&&a>(size_t)-1/b)return 0;return a*b;}
     struct response *r=ctx;if(b && a>r->limit/b)return 0;size_t n=a*b;
     if(n>r->limit-r->size)return 0;
     memcpy(r->data+r->size,p,n);r->size+=n;r->data[r->size]=0;return n;
@@ -167,13 +170,16 @@ static void preferences(int sock,const char *form) {
         if(!parameter(form,"game_close_backup",unavailable,sizeof unavailable) && strcmp(unavailable,"0")) {
             message(sock,400,"Automatic game-close backup is not available yet");return;
         }
+        char keep[8];int latest=local_keep_latest;
+        if(!parameter(form,"local_keep_latest",keep,sizeof keep)) {if(strcmp(keep,"0")&&strcmp(keep,"1")) {message(sock,400,"Invalid local retention option");return;}latest=!strcmp(keep,"1");}
         char file[1200],text[128];snprintf(file,sizeof file,"%s/preferences.conf",root);
-        snprintf(text,sizeof text,"AUTO_UPLOAD=%s\nACTIVITY_REFRESH=%s\n",upload,refresh);
+        snprintf(text,sizeof text,"AUTO_UPLOAD=%s\nACTIVITY_REFRESH=%s\nLOCAL_KEEP_LATEST=%d\n",upload,refresh,latest);
         if(atomic_config(file,text)) {message(sock,500,"Preferences could not be saved");return;}
         auto_upload=!strcmp(upload,"1");activity_refresh=!strcmp(refresh,"1");
+        local_keep_latest=latest;if(latest)prune_local_history();
         pscloud_log("EVENT","Preferences saved: automatic upload %s; activity refresh %s",auto_upload?"on":"off",activity_refresh?"on":"off");
     }
-    char json[512];snprintf(json,sizeof json,"{\"auto_upload\":%s,\"activity_refresh\":%s,\"game_close_backup\":false,\"game_close_available\":false,\"sharing_available\":false,\"message\":\"Preferences saved on this PS5\"}",auto_upload?"true":"false",activity_refresh?"true":"false");
+    char json[512];snprintf(json,sizeof json,"{\"auto_upload\":%s,\"activity_refresh\":%s,\"local_keep_latest\":%s,\"game_close_backup\":false,\"game_close_available\":false,\"sharing_available\":false,\"message\":\"Preferences saved on this PS5\"}",auto_upload?"true":"false",activity_refresh?"true":"false",local_keep_latest?"true":"false");
     respond(sock,200,"application/json",json,strlen(json));
 }
 static void load_preferences(void) {
@@ -188,7 +194,9 @@ static void load_preferences(void) {
     if(!fstat(fd,&st) && S_ISREG(st.st_mode) && st.st_size>0 && st.st_size<129) {
         ssize_t n=read(fd,data,128);
         if(n>0) {
-            if(!strcmp(data,"AUTO_UPLOAD=0\nACTIVITY_REFRESH=0\n")) {auto_upload=0;activity_refresh=0;}
+            int upload,refresh,keep,used=0;
+            if(sscanf(data,"AUTO_UPLOAD=%d\nACTIVITY_REFRESH=%d\nLOCAL_KEEP_LATEST=%d\n%n",&upload,&refresh,&keep,&used)==3 && used==(int)strlen(data) && upload>=0 && upload<=1 && refresh>=0 && refresh<=1 && keep>=0 && keep<=1) {auto_upload=upload;activity_refresh=refresh;local_keep_latest=keep;}
+            else if(!strcmp(data,"AUTO_UPLOAD=0\nACTIVITY_REFRESH=0\n")) {auto_upload=0;activity_refresh=0;}
             else if(!strcmp(data,"AUTO_UPLOAD=0\nACTIVITY_REFRESH=1\n")) {auto_upload=0;activity_refresh=1;}
             else if(!strcmp(data,"AUTO_UPLOAD=1\nACTIVITY_REFRESH=0\n")) {auto_upload=1;activity_refresh=0;}
             else if(!strcmp(data,"AUTO_UPLOAD=1\nACTIVITY_REFRESH=1\n")) {auto_upload=1;activity_refresh=1;}
@@ -286,7 +294,7 @@ static int upload_selected(const char *file) {
     if(setenv("PSCLOUD_URL",s.url,1) || setenv("PSCLOUD_USER",s.user,1) || setenv("PSCLOUD_PASSWORD",s.password,1) || setenv("PSCLOUD_CA_BUNDLE",s.ca,1))return 2;
     char spool[1400];snprintf(spool,sizeof spool,"%s/spool",root);
     char *args[]={"worker",spool,"--once",(char *)file,NULL};int result=pscloud_worker_main(file?4:3,args);unsetenv("PSCLOUD_PASSWORD");
-    signal(SIGTERM,stop_server);signal(SIGINT,stop_server);return result;
+    signal(SIGTERM,stop_server);signal(SIGINT,stop_server);if(!result)prune_local_history();return result;
 }
 static int upload_queue(void) {return upload_selected(NULL);}
 static int pending_archive(const char *file,struct pscloud_snapshot *s,unsigned char **data,size_t *size) {
@@ -299,6 +307,44 @@ static int pending_archive(const char *file,struct pscloud_snapshot *s,unsigned 
     int bad=!found || pscloud_snapshot_read(dir,identity,s);
     if(!bad && data)bad=pscloud_read_archive(dir,ready,data,size) || pscloud_verify_hash(*data,*size,s->sha256);
     close(dir);return bad?-1:0;
+}
+static void prune_local_history(void) {
+    if(!local_keep_latest)return;
+    int parent=pscloud_open_directory(root);if(parent<0)return;
+    int active=pscloud_active_marker(parent);close(parent);if(active!=0)return;
+    char path[1400];snprintf(path,sizeof path,"%s/spool",root);int dir=pscloud_open_directory(path);if(dir<0)return;
+    struct kept {char file[128];struct pscloud_snapshot s;struct timespec modified;};
+    struct kept *items=calloc(256,sizeof *items);if(!items) {close(dir);return;}
+    int scan=openat(dir,".",O_RDONLY | O_DIRECTORY | O_NOFOLLOW);DIR *d=scan<0?NULL:fdopendir(scan);
+    unsigned count=0;int overflow=0;struct dirent *e;
+    if(d) {while((e=readdir(d))) {
+        size_t n=strlen(e->d_name);if(n<6 || n-5>=128 || strcmp(e->d_name+n-5,".sent"))continue;
+        char file[128],identity[144];memcpy(file,e->d_name,n-5);file[n-5]=0;if(!valid_archive(file))continue;
+        if(count==256) {overflow=1;break;}
+        snprintf(identity,sizeof identity,"%s.identity",file);
+        struct stat st;
+        if(!pscloud_snapshot_read(dir,identity,&items[count].s)&&!fstatat(dir,e->d_name,&st,AT_SYMLINK_NOFOLLOW)&&S_ISREG(st.st_mode)&&st.st_nlink==1) {strcpy(items[count].file,file);items[count].modified=st.st_mtim;count++;}
+    }closedir(d);}else {if(scan>=0)close(scan);overflow=1;}
+    unsigned removed=0;unsigned char checked[256]={0};
+    for(unsigned i=0;!overflow&&i<count;i++) {
+        unsigned latest=i;
+        for(unsigned j=0;j<count;j++)if(!strcmp(items[i].s.user,items[j].s.user)&&!strcmp(items[i].s.title,items[j].s.title)&&!strcmp(items[i].s.slot,items[j].s.slot)&&
+            (items[j].s.created>items[latest].s.created || (items[j].s.created==items[latest].s.created&&
+            (items[j].modified.tv_sec>items[latest].modified.tv_sec || (items[j].modified.tv_sec==items[latest].modified.tv_sec&&
+            (items[j].modified.tv_nsec>items[latest].modified.tv_nsec || (items[j].modified.tv_nsec==items[latest].modified.tv_nsec&&strcmp(items[j].file,items[latest].file)>0)))))))latest=j;
+        if(i==latest)continue;
+        char name[144],hash[65];
+        if(!checked[latest]) {snprintf(name,sizeof name,"%s.sent",items[latest].file);int fd=openat(dir,name,O_RDONLY | O_NOFOLLOW | O_NONBLOCK);
+            checked[latest]=fd>=0&&!pscloud_file_hash(fd,hash)&&!strcmp(hash,items[latest].s.sha256)?1:2;if(fd>=0)close(fd);}
+        if(checked[latest]!=1)continue;
+        struct stat st;snprintf(name,sizeof name,"%s.ready",items[i].file);if(!fstatat(dir,name,&st,AT_SYMLINK_NOFOLLOW))continue;
+        snprintf(name,sizeof name,"%s.replace",items[i].file);if(!fstatat(dir,name,&st,AT_SYMLINK_NOFOLLOW))continue;
+        snprintf(name,sizeof name,"%s.sent",items[i].file);
+        if(fstatat(dir,name,&st,AT_SYMLINK_NOFOLLOW)||!S_ISREG(st.st_mode)||st.st_nlink!=1)continue;
+        if(!unlinkat(dir,name,0)) {snprintf(name,sizeof name,"%s.identity",items[i].file);(void)unlinkat(dir,name,0);removed++;}
+    }
+    if(removed) {fsync(dir);pscloud_log("EVENT","Local history cleanup removed %u older uploaded backups; latest, pending uploads and rollback retained",removed);}
+    free(items);close(dir);
 }
 static void queue_list(int sock) {
     char path[1400],json[65536]="{\"items\":[";snprintf(path,sizeof path,"%s/spool",root);
@@ -332,6 +378,7 @@ static void *background_upload(void *arg) {
         result|=pscloud_worker_upload(job->spool,job->files[i],&job->settings);
     }
     if(background_cancelled)result=1;
+    if(!result && !pthread_mutex_trylock(&operation_mutex)) {prune_local_history();pthread_mutex_unlock(&operation_mutex);}
     background_result=result;
     pscloud_log(result?"WARN":"EVENT",result?"Background upload stopped or failed; local backups retained":"Background upload verified and completed");
     volatile unsigned char *secret=(volatile unsigned char *)&job->settings;for(size_t i=0;i<sizeof job->settings;i++)secret[i]=0;
@@ -394,6 +441,26 @@ static int store_blob(int dir,const char *name,const unsigned char *data,size_t 
 static int archive_valid(const unsigned char *data,size_t size,const struct pscloud_snapshot *s) {
     struct pscloud_bundle bundle;const unsigned char *payload;size_t length;
     return !strcmp(s->slot,"WholeGame")?pscloud_bundle_index(data,size,s,&bundle):pscloud_save_payload(data,size,&payload,&length);
+}
+static int local_restore_copy(const char *file,const struct pscloud_snapshot *s,unsigned char **data,size_t *size) {
+    char directory[1400],name[144];
+    for(unsigned i=0;i<3;i++) {
+        snprintf(directory,sizeof directory,"%s/%s",root,i==2?"downloads":"spool");
+        snprintf(name,sizeof name,"%s%s",file,i==0?".ready":i==1?".sent":"");
+        int dir=pscloud_open_directory(directory);if(dir<0)continue;
+        int bad=pscloud_read_archive(dir,name,data,size);close(dir);
+        if(!bad && !pscloud_verify_hash(*data,*size,s->sha256) && !archive_valid(*data,*size,s)) {pscloud_log("INFO","Restore source: checksum-verified local archive; cloud archive download skipped");return 0;}
+        free(*data);*data=NULL;*size=0;
+    }
+    return -1;
+}
+static int local_restore_identity(const char *file,const struct pscloud_snapshot *chosen,const char *sha,struct pscloud_snapshot *s) {
+    if(strlen(sha)!=64)return -1;
+    for(unsigned i=0;i<64;i++)if(!strchr("0123456789abcdef",sha[i]))return -1;
+    char directory[1400],name[144];snprintf(directory,sizeof directory,"%s/spool",root);snprintf(name,sizeof name,"%s.identity",file);
+    int dir=pscloud_open_directory(directory);if(dir<0)return -1;
+    int bad=pscloud_snapshot_read(dir,name,s);close(dir);
+    return bad || strcmp(s->user,chosen->user) || strcmp(s->title,chosen->title) || strcmp(s->slot,chosen->slot) || strcmp(s->sha256,sha)?-1:0;
 }
 static void download_pc(int sock,const char *query,int local) {
     char file[128];struct pscloud_snapshot s={0},chosen;unsigned char *data=NULL;size_t size=0;
@@ -526,6 +593,16 @@ static void action(int sock,const char *path,const char *form) {
         message(sock,result?502:200,result?"Selected upload pending; local backup retained":"Selected backup available in cloud");return;
     }
     if(selection(form,&chosen)) {message(sock,400,"Unsupported save selection");return;}
+    if(!strcmp(path,"/api/delete-cloud")) {
+        char file[128],confirm[8],folder[256],url[4096];struct settings s={0};struct pscloud_snapshot identity;
+        if(background_active) {message(sock,409,"Wait for upload completion before deleting a cloud backup");return;}
+        if(parameter(form,"confirm",confirm,sizeof confirm)||strcmp(confirm,"yes")||parameter(form,"file",file,sizeof file)||
+            pscloud_configure(cloudpath,&s)||remote_snapshot(&s,&chosen,file,&identity)||pscloud_snapshot_folder(&identity,folder,sizeof folder)) {message(sock,400,"Confirm deletion of a verified cloud backup");return;}
+        snprintf(url,sizeof url,"%s/%s/%s",s.url,folder,file);long status=webdav(&s,url,"DELETE",NULL);
+        if(status!=404&&(status<200||status>=300)) {message(sock,502,"Cloud deletion failed; local backups and PS5 saves untouched");return;}
+        snprintf(url,sizeof url,"%s/%s/.pscloud/%s.identity",s.url,folder,file);status=webdav(&s,url,"DELETE",NULL);
+        message(sock,status==404||(status>=200&&status<300)?200:502,status==404||(status>=200&&status<300)?"Cloud backup deleted; local copies and PS5 saves unchanged":"Cloud archive deleted; cloud metadata cleanup failed");return;
+    }
     if(!strcmp(path,"/api/backup") || !strcmp(path,"/api/backup-start")) {
         int background=!strcmp(path,"/api/backup-start");
         if(parameter(form,"closed",closed,sizeof closed) || strcmp(closed,"yes")) {message(sock,400,"Close the game and confirm before backup");return;}
@@ -559,33 +636,44 @@ static void action(int sock,const char *path,const char *form) {
         if(parameter(form,"closed",closed,sizeof closed) || strcmp(closed,"yes") || parameter(form,"confirm",confirm,sizeof confirm) || strcmp(confirm,"yes") ||
            parameter(form,"file",file,sizeof file) || pending_archive(file,&snapshot,&data,&size)) {free(data);message(sock,400,"Select a valid queued backup and confirm the game is closed");return;}
         int bad=strcmp(snapshot.user,chosen.user) || strcmp(snapshot.title,chosen.title) || strcmp(snapshot.slot,chosen.slot) || strcmp(snapshot.slot,"WholeGame");
-        if(!bad)bad=pscloud_bundle_restore(home,root,&snapshot,data,size);
+        char skip[8];int smart=!parameter(form,"skip_identical",skip,sizeof skip)&&!strcmp(skip,"yes");
+        if(!bad)bad=smart?pscloud_bundle_restore_smart(home,root,&snapshot,data,size):pscloud_bundle_restore(home,root,&snapshot,data,size);
         free(data);
-        message(sock,bad?500:200,bad==2?"This game's keys changed; recreated-save recovery is only available for the Crash UE4 format":bad==4?"Backup and current save slots differ. No saves changed; preserve the backup and do not delete other slots":bad==3?"Restore metadata could not confirm game, slot and account identity":bad?"Restore refused or failed. Keep game closed; inspect activity and rollback":"Whole-game restore complete; original images retained in rollback");return;
+        message(sock,bad&&bad!=5?500:200,bad==5?"Save already matches this backup; no save changes or mounts needed":bad==2?"This game's keys changed; recreated-save recovery is only available for the Crash UE4 format":bad==4?"Backup and current save slots differ. No saves changed; preserve the backup and do not delete other slots":bad==3?"Restore metadata could not confirm game, slot and account identity":bad?"Restore refused or failed. Keep game closed; inspect activity and rollback":"Whole-game restore complete; original images retained in rollback");return;
     }
     char file[128];struct settings cloud={0};struct pscloud_snapshot snapshot;
-    if(parameter(form,"file",file,sizeof file) || pscloud_configure(cloudpath,&cloud) || remote_snapshot(&cloud,&chosen,file,&snapshot)) {message(sock,400,"Cloud backup identity could not be verified");return;}
     int checking=!strcmp(path,"/api/restore-check");
     int restoring=!strcmp(path,"/api/restore") || checking;
+    if(parameter(form,"file",file,sizeof file) || !valid_archive(file)) {message(sock,400,"Invalid backup selection");return;}
+    unsigned char *local_data=NULL;size_t local_size=0;char expected_sha[65]={0};
+    int local=restoring && !strcmp(chosen.slot,"WholeGame") && !parameter(form,"sha256",expected_sha,sizeof expected_sha) &&
+        !local_restore_identity(file,&chosen,expected_sha,&snapshot) && !local_restore_copy(file,&snapshot,&local_data,&local_size);
+    if(!local && (pscloud_configure(cloudpath,&cloud) || remote_snapshot(&cloud,&chosen,file,&snapshot))) {message(sock,400,"Cloud backup identity could not be verified and no matching verified local copy was available");return;}
+    if(*expected_sha && strcmp(expected_sha,snapshot.sha256)) {free(local_data);message(sock,409,"Selected cloud version changed; refresh versions before restoring");return;}
     if(checking && strcmp(chosen.slot,"WholeGame")) {message(sock,400,"Staged recovery check only supports whole-game archives");return;}
     if(!strcmp(chosen.slot,"WholeGame")) {
         if(!restoring && strcmp(path,"/api/download")) {message(sock,404,"Unknown action");return;}
         char folder[256],url[4096];pscloud_snapshot_folder(&snapshot,folder,sizeof folder);snprintf(url,sizeof url,"%s/%s/%s",cloud.url,folder,file);
-        unsigned char *data=malloc(PSCLOUD_RESTORE_MAX+1U);if(!data) {message(sock,500,"Not enough memory");return;}
-        struct response r={(char *)data,0,PSCLOUD_RESTORE_MAX};int bad=webdav(&cloud,url,"GET",&r)!=200 || pscloud_verify_hash(data,r.size,snapshot.sha256) || archive_valid(data,r.size,&snapshot);
+        unsigned char *data=local_data;size_t size=local_size;
+        if(!data && restoring)(void)local_restore_copy(file,&snapshot,&data,&size);
+        int bad=0;
+        if(!data) {
+            data=malloc(PSCLOUD_RESTORE_MAX+1U);if(!data) {message(sock,500,"Not enough memory");return;}
+            struct response r={(char *)data,0,PSCLOUD_RESTORE_MAX};bad=webdav(&cloud,url,"GET",&r)!=200 || pscloud_verify_hash(data,r.size,snapshot.sha256) || archive_valid(data,r.size,&snapshot);size=r.size;
+        }
         if(!bad && restoring) {
             char confirm[8];
             if(parameter(form,"closed",closed,sizeof closed) || strcmp(closed,"yes") || parameter(form,"confirm",confirm,sizeof confirm) || strcmp(confirm,"yes"))bad=1;
-            else bad=checking?pscloud_bundle_restore_check(home,root,&snapshot,data,r.size):pscloud_bundle_restore(home,root,&snapshot,data,r.size);
+            else {char skip[8];int smart=!parameter(form,"skip_identical",skip,sizeof skip)&&!strcmp(skip,"yes");bad=checking?pscloud_bundle_restore_check(home,root,&snapshot,data,size):smart?pscloud_bundle_restore_smart(home,root,&snapshot,data,size):pscloud_bundle_restore(home,root,&snapshot,data,size);}
         }
         if(!restoring && !bad) {
             char path[1400],part[144];snprintf(path,sizeof path,"%s/downloads",root);int parent=pscloud_open_directory(root);if(parent>=0) {(void)mkdirat(parent,"downloads",0700);close(parent);}int dir=pscloud_open_directory(path);
             snprintf(part,sizeof part,"%s.part",file);
-            bad=dir<0 || store_blob(dir,part,data,r.size);
+            bad=dir<0 || store_blob(dir,part,data,size);
             if(!bad)bad=renameat(dir,part,dir,file) || fsync(dir);
             if(dir>=0) {if(bad)unlinkat(dir,part,0);close(dir);}
         }
-        free(data);message(sock,bad?500:200,bad==4?"Backup and current save slots differ. No saves changed; preserve the backup and do not delete other slots":bad==2?"This game's keys changed; recreated-save recovery is only available for the Crash UE4 format":bad==3?"Recovery metadata could not confirm matching game, save slot and account. No live save was replaced":bad?"Whole-game operation failed; keep game closed if restoring and inspect activity":checking?"Recovery staged check passed; all live saves untouched":restoring?"Whole-game restore complete; rollback retained":"Whole-game ZIP downloaded and verified on PS5");return;
+        free(data);message(sock,bad&&bad!=5?500:200,bad==5?"Save already matches this backup; no save changes or mounts needed":bad==4?"Backup and current save slots differ. No saves changed; preserve the backup and do not delete other slots":bad==2?"This game's keys changed; recreated-save recovery is only available for the Crash UE4 format":bad==3?"Recovery metadata could not confirm matching game, save slot and account. No live save was replaced":bad?"Whole-game operation failed; keep game closed if restoring and inspect activity":checking?"Recovery staged check passed; all live saves untouched":restoring?"Whole-game restore complete; rollback retained":"Whole-game ZIP downloaded and verified on PS5");return;
     }
     if(restoring) {
         char confirm[8];

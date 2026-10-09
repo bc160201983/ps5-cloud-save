@@ -1,4 +1,30 @@
-# PS5 Cloud Save — development milestone 0.11.6
+# PS5 Cloud Save — development milestone 0.11.7
+
+## Version 0.11.7 — local-first restore and optional backup housekeeping
+
+Whole-game restore checks local queue/sent/download archives by checksum and
+identity before downloading archive bytes. The dashboard passes the selected
+snapshot SHA-256, enabling a matching spool archive to restore without a cloud
+request. Missing/corrupt/mismatched local archives fall back to verified cloud
+retrieval. A changed cloud version is rejected rather than silently substituted.
+Identical destination images can return an explicit no-change result without
+mounting or rewriting saves; closure confirmation and active-marker guards remain.
+
+Cloud snapshots have a confirmed Delete from cloud action. It deletes only that
+archive and cloud identity, never PS5 saves, rollback or local copies. Deletion is
+blocked during an upload. Optional Keep latest local history retains one uploaded
+archive per game/user/save group, preserving pending uploads, downloaded caches
+and rollback. It is off by default and enabling it requires confirmation. Cleanup
+skips active restore/mount markers, oversized inventories and unverifiable newest
+copies. It runs after successful uploads or when the preference is enabled.
+
+Important: a native restore stalled after staged metadata validation on 11.40.
+Read-only hashing confirmed the live save still matched its pre-restore rollback.
+The precise native blocking call is unconfirmed; additional close/unmount entry
+logs are implemented. This milestone does NOT claim to fix every native unmount
+stall. Do not clear active safety markers or force-stop a mounted restore. Host
+and native build validation are pending. Automatic game-close backup remains
+unimplemented and unavailable.
 
 ## Version 0.11.6 — selected-game upload and usable dashboard during sync
 

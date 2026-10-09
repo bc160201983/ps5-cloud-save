@@ -21,4 +21,6 @@ int pscloud_bundle_restore(const char *home,const char *root,const struct psclou
                            const unsigned char *archive,size_t length);
 int pscloud_bundle_restore_check(const char *home,const char *root,const struct pscloud_snapshot *identity,
                                  const unsigned char *archive,size_t length);
+int pscloud_bundle_restore_smart(const char *home,const char *root,const struct pscloud_snapshot *identity,
+                                 const unsigned char *archive,size_t length);
 #endif

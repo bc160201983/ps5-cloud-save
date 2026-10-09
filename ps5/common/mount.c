@@ -75,7 +75,9 @@ int pscloud_mount_end(struct pscloud_mount_state *s,const char *mount) {
     pscloud_log("INFO","Host simulated unmount");
 #else
     struct unmount_options options={0};
+    pscloud_log("INFO","Restore stage: initializing staged unmount");
     if(sceFsInitUmountSaveDataOpt(&options)<0)return -1;
+    pscloud_log("INFO","Restore stage: requesting staged unmount (do not interrupt)");
     int result=sceFsUmountSaveData(&options,mount,0,0);
     pscloud_log("INFO","Staged unmount result: 0x%x",(unsigned)result);
     if(result<0)return -1;

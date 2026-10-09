@@ -67,6 +67,11 @@ class WorkerTest(unittest.TestCase):
                 self.send_response(200 if body is not None else 404)
                 if body is not None:self.send_header('Content-Length',str(len(body)))
                 self.end_headers()
+            def do_DELETE(self):
+                if self.headers.get('Authorization') != 'Basic dXNlcjpwYXNz':status=401
+                elif parent.status!=201:status=parent.status
+                else:status=204 if parent.objects.pop(self.path,None) is not None else 404
+                self.send_response(status);self.end_headers()
             def do_PUT(self):
                 body = self.rfile.read(int(self.headers['Content-Length']))
                 if self.headers.get('Authorization') != 'Basic dXNlcjpwYXNz':
