@@ -15,6 +15,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
+#include <errno.h>
 
 int pscloud_game_backup(const char *home,const char *root,const char *user,const char *title) {
     struct pscloud_snapshot s={0};
@@ -26,16 +27,19 @@ int pscloud_game_backup(const char *home,const char *root,const char *user,const
     int result=-1,parent=-1,lock=-1,source=-1,stage=-1,spool=-1;
     char id[33],stage_name[64]={0},source_path[1400],part[1600]={0};
     char name[128],identity[144],ready[144],hashes[2][65];
-    int sources[2]={-1,-1};struct stat before[2];unsigned copied=0;
+    int sources[2]={-1,-1};struct stat before[2],directory_before,directory_after;unsigned copied=0;
     parent=pscloud_open_directory(root);if(parent<0)goto done;
     lock=openat(parent,".mount.lock",O_CREAT | O_RDWR | O_NOFOLLOW,0600);
     if(lock<0 || flock(lock,LOCK_EX | LOCK_NB) || pscloud_active_marker(parent)!=0)goto done;
     snprintf(source_path,sizeof source_path,"%s/%s/savedata_prospero/%s",home,user,title);
     source=pscloud_open_directory(source_path);if(source<0)goto done;
+    if(fstat(source,&directory_before))goto done;
     int scan=openat(source,".",O_RDONLY | O_DIRECTORY | O_NOFOLLOW);if(scan<0)goto done;
     DIR *directory=fdopendir(scan);if(!directory) {close(scan);goto done;}
     struct dirent *entry;int unsupported=0;
-    while((entry=readdir(directory))) {
+    while(1) {
+        errno=0;entry=readdir(directory);
+        if(!entry) {if(errno)unsupported=1;break;}
         if(!strncmp(entry->d_name,"sdimg_",6) && strncmp(entry->d_name,"sdimg_sce_bu_",13) &&
            strcmp(entry->d_name,names[0]) && strcmp(entry->d_name,names[1]))unsupported=1;
     }
@@ -82,6 +86,9 @@ int pscloud_game_backup(const char *home,const char *root,const char *user,const
         if(check>=0)close(check);
         if(bad)goto done;
     }
+    if(fstat(source,&directory_after) || directory_before.st_mtim.tv_sec!=directory_after.st_mtim.tv_sec ||
+       directory_before.st_mtim.tv_nsec!=directory_after.st_mtim.tv_nsec || directory_before.st_ctim.tv_sec!=directory_after.st_ctim.tv_sec ||
+       directory_before.st_ctim.tv_nsec!=directory_after.st_ctim.tv_nsec)goto done;
     int archive=open(part,O_RDONLY | O_NOFOLLOW | O_NONBLOCK);
     bad=archive<0 || pscloud_file_hash(archive,s.sha256);if(archive>=0)close(archive);
     if(bad)goto done;
