@@ -108,7 +108,7 @@ class DashboardTests(unittest.TestCase):
         self.assertEqual(c.getresponse().status,401);c.close()
         self.assertEqual(self.request('/api/preferences',{'auto_upload':'0','activity_refresh':'1'})[0],200)
         self.image.with_name('sdimg_PlayerSaveProfileSaveData').write_bytes(self.original)
-        chosen=self.selected(closed='yes',slot='WholeGame')
+        chosen=self.selected(closed='yes');chosen['slot']='WholeGame'
         self.assertEqual(self.request('/api/backup',chosen)[0],200)
         self.assertEqual(self.fixture.puts,[])
         self.assertEqual(self.request('/api/queue')[1]['count'],1)
