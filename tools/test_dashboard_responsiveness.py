@@ -54,6 +54,10 @@ def main():
             print('Health during cloud listing:',elapsed,json.loads(data),flush=True)
             _,elapsed=get('/')
             print('Page during cloud listing seconds:',elapsed,flush=True)
+            if state['version']=='0.11.3':
+                for path in ('/api/state','/api/preferences','/api/log'):
+                    _,elapsed=get(path)
+                    print('Read-only',path,'seconds:',elapsed,flush=True)
             try:
                 data,elapsed=listing.result(timeout=95)
                 result=json.loads(data)

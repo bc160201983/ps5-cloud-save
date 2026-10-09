@@ -14,11 +14,17 @@ passed. Fixtures verified metadata/icons remain available during a blocked cloud
 request, while a competing backup is refused without changing saves. Browser
 fixtures verified safe GET retry and non-replay of busy/failed write calls.
 
-Deployment of v0.11.3 could not start: dashboard, FTP and ELF-loader connections
-all timed out before any new payload bytes were sent. This does not establish why
-the console became unreachable. v0.11.3 is not deployed or hardware-verified;
-v0.11.2 was the last confirmed running version. Confirm console connectivity
-before retrying; never interrupt an active save operation or blindly resend.
+The first deployment attempt was stopped by unreachable console ports before any
+payload was sent. After the user confirmed connectivity, v0.11.3 was deployed on
+firmware 11.40 on 2026-10-09. Read-only checks passed: while listing Koofr versions,
+saved state, preferences and activity returned successfully without busy errors
+(about 0.31, 0.54 and 1.65 seconds respectively). Page response was about 1.57
+seconds during the listing; the cloud list took about 15.49 seconds. These are
+single-run LAN timings, not guarantees. Idle connections did not block health.
+The live browser displayed the library, disabled write buttons while versions
+loaded, and retained navigation access. No backup, upload, restore or credential
+changes were performed by these tests. Remote-upload checksum verification and
+broader backup/restore regression checks still need hardware testing.
 
 ## Version 0.11.2 — optional startup health check
 
