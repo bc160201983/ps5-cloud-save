@@ -120,6 +120,17 @@ static int upload(const char *base,const char *user,const char *pass,const char 
     if(snprintf(url,sizeof url,"%s/%s",destination,object)>=(int)sizeof url) {
         curl_easy_cleanup(c); fclose(f); return 1;
     }
+    if(structured) {
+        char manifest[4096];
+        if(snprintf(manifest,sizeof manifest,"%s/.pscloud/%s.identity",destination,object)>=(int)sizeof manifest) {curl_easy_cleanup(c);fclose(f);return 1;}
+        int present=cloud_copy(url,manifest,user,pass,ca,&snapshot,(curl_off_t)st.st_size);
+        if(present<0) {fprintf(stderr,"Cloud presence check failed; backup retained: %s\n",object);curl_easy_cleanup(c);fclose(f);return 1;}
+        if(present) {
+            curl_easy_cleanup(c);fclose(f);char done[272];snprintf(done,sizeof done,"%s.sent",object);
+            if(renameat(dir,name,dir,done) || fsync(dir))return 1;
+            printf("Already in cloud; upload skipped: %s\n",object);fflush(stdout);return 0;
+        }
+    }
     curl_easy_setopt(c,CURLOPT_URL,url);
     curl_easy_setopt(c,CURLOPT_PROTOCOLS_STR,"https");
     curl_easy_setopt(c,CURLOPT_USERNAME,user);
@@ -139,17 +150,6 @@ static int upload(const char *base,const char *user,const char *pass,const char 
     if(rc!=CURLE_OK || status<200 || status>=300) {
         fprintf(stderr,"Upload retained for retry: %s (transport=%d, HTTP=%ld)\n",object,rc,status);
         return 1;
-    }
-    if(structured) {
-        char manifest[4096];
-        if(snprintf(manifest,sizeof manifest,"%s/.pscloud/%s.identity",destination,object)>=(int)sizeof manifest) {curl_easy_cleanup(c);fclose(f);return 1;}
-        int present=cloud_copy(url,manifest,user,pass,ca,&snapshot,(curl_off_t)st.st_size);
-        if(present<0) {fprintf(stderr,"Cloud presence check failed; backup retained: %s\n",object);curl_easy_cleanup(c);fclose(f);return 1;}
-        if(present) {
-            curl_easy_cleanup(c);fclose(f);char done[272];snprintf(done,sizeof done,"%s.sent",object);
-            if(renameat(dir,name,dir,done) || fsync(dir))return 1;
-            printf("Already in cloud; upload skipped: %s\n",object);fflush(stdout);return 0;
-        }
     }
     if(structured) {
         char manifest[4096];
