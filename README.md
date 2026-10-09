@@ -18,7 +18,12 @@ PC imports do not silently enter the running job. Replacing an existing import
 waits until upload finishes; importing a separate version remains available.
 Backups created during another upload stay queued instead of starting another job.
 
-Host/native validation is pending. No live saves were restored for development.
+All 105 host tests and native PS5 builds passed. Fixtures verified exact-game
+manual upload leaving another game's queue entry untouched, downloads and
+confirmed staged-fixture restore during a blocked upload, competing-upload
+rejection, cancellation retention and UI upload-only disabling. Native concurrent
+restore/import and corrected cancellation still need console testing. No live
+saves were restored for development.
 
 ## Version 0.11.5 — background queue uploads and corner progress
 
