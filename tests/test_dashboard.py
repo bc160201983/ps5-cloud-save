@@ -167,6 +167,13 @@ class DashboardTests(unittest.TestCase):
         self.assertFalse(list((self.root/'spool').glob('*.ready')))
         self.assertEqual(self.image.read_bytes(),self.original)
 
+    def test_whole_game_rejects_unvalidated_extra_slots(self):
+        self.image.with_name('sdimg_PlayerSaveProfileSaveData').write_bytes(self.original)
+        self.image.with_name('sdimg_PlayerSaveSlot1Save').write_bytes(self.original)
+        chosen=self.selected(closed='yes');chosen['slot']='WholeGame'
+        self.assertEqual(self.request('/api/backup',chosen)[0],500)
+        self.assertEqual(self.image.read_bytes(),self.original)
+
     def test_restore_rejects_unconfirmed_and_wrong_identity(self):
         self.assertEqual(self.request('/api/restore',self.selected(file=FILE,closed='no',confirm='yes'))[0],400)
         self.assertEqual(self.image.read_bytes(),self.original)

@@ -1,4 +1,6 @@
+#ifndef __FreeBSD__
 #define _POSIX_C_SOURCE 200809L
+#endif
 #include "bundle.h"
 #include "managed.h"
 #include "restore.h"
@@ -9,6 +11,7 @@
 #include <sys/file.h>
 #include <fcntl.h>
 #include <unistd.h>
+#include <dirent.h>
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
@@ -29,6 +32,15 @@ int pscloud_game_backup(const char *home,const char *root,const char *user,const
     if(lock<0 || flock(lock,LOCK_EX | LOCK_NB) || pscloud_active_marker(parent)!=0)goto done;
     snprintf(source_path,sizeof source_path,"%s/%s/savedata_prospero/%s",home,user,title);
     source=pscloud_open_directory(source_path);if(source<0)goto done;
+    int scan=openat(source,".",O_RDONLY | O_DIRECTORY | O_NOFOLLOW);if(scan<0)goto done;
+    DIR *directory=fdopendir(scan);if(!directory) {close(scan);goto done;}
+    struct dirent *entry;int unsupported=0;
+    while((entry=readdir(directory))) {
+        if(!strncmp(entry->d_name,"sdimg_",6) && strncmp(entry->d_name,"sdimg_sce_bu_",13) &&
+           strcmp(entry->d_name,names[0]) && strcmp(entry->d_name,names[1]))unsupported=1;
+    }
+    closedir(directory);
+    if(unsupported) {pscloud_log("ERROR","Additional save slots found; refusing an incomplete whole-game backup");goto done;}
     /* Open and hash both originals before copying either. Reject missing slots,
      * symlinks, changing images, or a path replaced during the operation. */
     for(unsigned i=0;i<2;i++) {
