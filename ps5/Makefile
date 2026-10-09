@@ -21,7 +21,7 @@ backup: pscloud-backup.elf
 dashboard: pscloud-dashboard.elf
 ui.h: ui.html ../VERSION ../tools/embed_ui.py
 	python3 ../tools/embed_ui.py ui.html ui.h ../VERSION
-pscloud-dashboard.elf: dashboard.c ui.h backup.c download.c ../src/worker.c common/managed.c common/managed.h common/mount.c common/restore.c common/zip.c common/log.c common/cloud.c common/snapshot.c common/appmeta.c common/appmeta.h common/bundle.c common/bundle.h common/savemeta.c common/savemeta.h common/google.c common/google.h
+pscloud-dashboard.elf: dashboard.c ui.h backup.c download.c ../src/worker.c common/managed.c common/managed.h common/mount.c common/restore.c common/zip.c common/log.c common/cloud.c common/snapshot.c common/appmeta.c common/appmeta.h common/bundle.c common/bundle.h common/savemeta.c common/savemeta.h common/google.c common/google.h common/transfer.h
 	$(CC) -O2 -Wall -Wextra -Werror -DPSCLOUD_BACKUP_EMBEDDED -DPSCLOUD_DOWNLOAD_EMBEDDED -DPSCLOUD_EMBEDDED $$($(CURL_CONFIG) --cflags) -o $@ dashboard.c backup.c download.c ../src/worker.c common/managed.c common/mount.c common/restore.c common/zip.c common/log.c common/cloud.c common/snapshot.c common/appmeta.c common/bundle.c common/savemeta.c common/google.c $$($(CURL_CONFIG) --static-libs) -lkernel -lSceFsInternalForVsh -lpthread
 pscloud-backup.elf: backup.c common/mount.c common/mount.h common/restore.c common/zip.c common/log.c common/snapshot.c
 	$(CC) -O2 -Wall -Wextra -Werror $$($(CURL_CONFIG) --cflags) -o $@ backup.c common/mount.c common/restore.c common/zip.c common/log.c common/snapshot.c $$($(CURL_CONFIG) --static-libs) -lkernel -lSceFsInternalForVsh

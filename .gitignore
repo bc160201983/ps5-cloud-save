@@ -10,6 +10,7 @@ download-host
 restore-host
 backup-host
 dashboard-host
+transfer-host
 ps5/ui.h
 tools/pscloud-backup.zip
 tools/pscloud-dashboard*.zip

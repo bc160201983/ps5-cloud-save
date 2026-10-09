@@ -1,4 +1,26 @@
-# PS5 Cloud Save — development milestone 0.11.3
+# PS5 Cloud Save — development milestone 0.11.4
+
+## Version 0.11.4 — bounded large transfers and visible upload stages
+
+- Archive upload/readback budgets scale by byte count (minimum five minutes,
+  maximum two hours), with a separate 60-second low-speed guard. Large encrypted
+  save containers no longer inherit the same five-minute deadline as tiny saves.
+- Explicit bounded `pread` upload streaming with a 256 KiB curl buffer; no full
+  archive allocation and no dependency on curl's default FILE reader. Truncated
+  reads abort rather than reporting premature EOF. Remote checksum verification
+  still precedes the cloud identity commit and local sent marker.
+- Authenticated, memory-only transfer status remains readable during uploads.
+  The dashboard shows upload and verification byte progress and the current
+  stage. Transport/HTTP result codes are logged without credentials or URLs.
+- Host/native validation is pending. The observed large queued backup exceeded
+  the older five-minute transfer window; that is a size/timeout hypothesis until
+  a diagnosed native upload completes. No live save mounts/restores are added.
+- Garlic's newer upstream has background jobs, locally staged ZIPs and bounded
+  streaming FTP uploads. Its cloud path also packages encrypted containers; the
+  mounted/decrypted browser export is a separate feature, not a guaranteed small
+  cloud backup. PSCloud retains verified HTTPS WebDAV and its existing ZIP format.
+
+Reference: [Garlic upstream cloud implementation](https://git.etawen.dev/earthonion/garlic-savemgr/src/branch/main/src/main.c).
 
 ## Version 0.11.3 — avoid false busy errors from read-only requests
 

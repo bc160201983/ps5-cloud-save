@@ -9,6 +9,7 @@
 #include "common/appmeta.h"
 #include "common/bundle.h"
 #include "common/google.h"
+#include "common/transfer.h"
 #include <pthread.h>
 #include <stdatomic.h>
 #include "ui.h"
@@ -635,6 +636,11 @@ static void serve(int sock,int *locked) {
             snprintf(expected_origin,sizeof expected_origin,"http://%s",host);
             if(strcmp(origin,expected_origin)) {reject(sock,403,"Cross-site request rejected");return;}
         }
+    }
+    if(!strcmp(method,"GET") && !strcmp(url,"/api/transfer")) {
+        struct pscloud_transfer_status s;pscloud_worker_status(&s);char json[512];
+        snprintf(json,sizeof json,"{\"sequence\":%u,\"phase\":%d,\"failed_phase\":%d,\"done\":%llu,\"total\":%llu,\"http\":%ld,\"transport\":%d,\"timeout_seconds\":%ld}",s.sequence,s.phase,s.failed_phase,s.done,s.total,s.http,s.transport,pscloud_transfer_timeout(s.total));
+        respond(sock,200,"application/json",json,strlen(json));return;
     }
     if(!strcmp(method,"GET") && !strcmp(url,"/api/health")) {
         int available=pthread_mutex_trylock(&operation_mutex)==0;

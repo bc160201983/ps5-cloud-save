@@ -90,6 +90,29 @@ class DashboardTests(unittest.TestCase):
             self.assertLess(time.monotonic()-started,2)
         finally:idle.close()
 
+    def test_transfer_progress_available_while_upload_waits_for_server(self):
+        self.assertEqual(self.request('/api/transfer',token=False)[0],401)
+        self.assertEqual(self.request('/api/transfer')[1]['phase'],0)
+        self.request('/api/preferences',{'auto_upload':'0','activity_refresh':'1'})
+        self.assertEqual(self.request('/api/backup',self.selected(closed='yes'))[0],200)
+        queued=self.request('/api/queue')[1]['items'][0]['file']
+        entered=threading.Event();release=threading.Event();result=[]
+        handler=self.fixture.server.RequestHandlerClass;original=handler.do_PUT
+        def slow(request):
+            if not request.path.endswith('.identity'):entered.set();release.wait(8)
+            original(request)
+        handler.do_PUT=slow
+        task=threading.Thread(target=lambda:result.append(self.request('/api/sync-one',{'file':queued})))
+        task.start()
+        try:
+            self.assertTrue(entered.wait(4));status,data=self.request('/api/transfer')
+            self.assertEqual(status,200);self.assertEqual(data['phase'],4)
+            self.assertGreater(data['total'],0);self.assertGreater(data['sequence'],0)
+            self.assertFalse(any(key in data for key in ('url','password','username')))
+        finally:release.set();task.join(10)
+        self.assertEqual(result[0][0],200)
+        self.assertEqual(self.request('/api/transfer')[1]['phase'],7)
+
     def test_slow_cloud_operation_keeps_page_and_health_responsive(self):
         entered=threading.Event();release=threading.Event();results=[]
         icons=self.root/'appmeta/PPSA02433';icons.mkdir(parents=True)
