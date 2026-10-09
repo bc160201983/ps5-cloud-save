@@ -879,7 +879,11 @@ static void serve(int sock,int *locked) {
                 else {
                     char id[33],path[1800],file[128],sha[65];unsigned char digest[32];unsigned length=0;
                     snprintf(path,sizeof path,"%s/share",root);int parent=pscloud_open_directory(root);int bad=parent<0;
-                    if(!bad&&mkdirat(parent,"share",0700)&&errno!=EEXIST)bad=1;
+                    if(!bad) {
+                        (void)mkdirat(parent,"share",0700);
+                        int directory=openat(parent,"share",O_RDONLY|O_DIRECTORY|O_NOFOLLOW);struct stat st;
+                        bad=directory<0||fstat(directory,&st)||!S_ISDIR(st.st_mode);if(directory>=0)close(directory);
+                    }
                     if(parent>=0)close(parent);
                     if(!bad)bad=pscloud_random_id(id)||!EVP_Digest(data,n,digest,&length,EVP_sha256(),NULL)||length!=32;
                     if(!bad) {

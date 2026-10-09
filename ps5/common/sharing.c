@@ -134,7 +134,9 @@ static int extract_payload(int dir,const struct entry *archive) {
         char name[1024];strcpy(name,files[i].name);char *last=strrchr(name,'/');int target=dup(dir);
         if(target<0) {bad=1;break;}
         if(last) {*last++=0;char *save=NULL;for(char *part=strtok_r(name,"/",&save);part;part=strtok_r(NULL,"/",&save)) {
-            if(mkdirat(target,part,0700)&&errno!=EEXIST) {bad=1;break;}
+            /* Console mkdir may report an existing directory without errno.
+             * The no-follow directory open below is the authoritative check. */
+            (void)mkdirat(target,part,0700);
             int next=openat(target,part,O_RDONLY|O_DIRECTORY|O_NOFOLLOW);if(next<0) {bad=1;break;}
             if(fchown(next,owner.st_uid,owner.st_gid)||fsync(target))bad=1;
             close(target);target=next;if(bad)break;
@@ -263,7 +265,11 @@ int pscloud_share_game(const char *home,const char *root,const char *appmeta,con
         for(unsigned i=0;i<p->count;i++) {char hash[65];snprintf(names[i+1],sizeof names[i+1],"slot-%u.zip",i);ordered[i+1]=names[i+1];int fd=openat(stage,names[i+1],O_RDONLY|O_NOFOLLOW);int bad=fd<0||pscloud_file_hash(fd,hash);if(fd>=0)close(fd);if(bad)goto done;
             int n=snprintf(manifest+length,sizeof manifest-(size_t)length,"SLOT=%u:%s:%zu:%s\n",i,p->slots[i],p->capacity[i],hash);if(n<0||(size_t)n>=sizeof manifest-(size_t)length)goto done;length+=n;}
         if(write_bytes(stage,"manifest.txt",(const unsigned char *)manifest,(size_t)length))goto done;
-        if(mkdirat(parent,"share",0700)&&errno!=EEXIST)goto done;
+        (void)mkdirat(parent,"share",0700);
+        int share_directory=openat(parent,"share",O_RDONLY|O_DIRECTORY|O_NOFOLLOW);struct stat share_stat;
+        int directory_bad=share_directory<0||fstat(share_directory,&share_stat)||!S_ISDIR(share_stat.st_mode);
+        if(share_directory>=0)close(share_directory);
+        if(directory_bad)goto done;
         snprintf(published,128,"portable-%s-%s.zip",title,id);snprintf(path,sizeof path,"%s/share/%s",root,published);unsigned files=0;unsigned long long bytes=0;
         if(pscloud_zip_export_named(stage,path,ordered,p->count+1,&files,&bytes))goto done;
         int fd=open(path,O_RDONLY|O_NOFOLLOW);struct stat st;int bad=fd<0||fstat(fd,&st)||st.st_size>PSCLOUD_SHARE_LIMIT||pscloud_file_hash(fd,checksum);if(fd>=0)close(fd);if(bad) {published[0]=0;goto done;}
