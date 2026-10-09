@@ -92,7 +92,12 @@ class DashboardTests(unittest.TestCase):
         self.assertEqual(self.request('/api/queue')[1]['count'],0)
 
     def test_whole_game_local_only_and_preference_authentication(self):
-        self.assertEqual(self.request('/api/preferences',{'auto_upload':'0','activity_refresh':'1'},token=False)[0],401)
+        self.assertEqual(self.request('/api/preferences',token=False)[0],401)
+        # Rejected POST bodies are deliberately not consumed; inspect the status
+        # without expecting a graceful body read after the socket closes.
+        c=http.client.HTTPConnection('127.0.0.1',self.port,timeout=10)
+        c.request('POST','/api/preferences','auto_upload=0&activity_refresh=1')
+        self.assertEqual(c.getresponse().status,401);c.close()
         self.assertEqual(self.request('/api/preferences',{'auto_upload':'0','activity_refresh':'1'})[0],200)
         self.image.with_name('sdimg_PlayerSaveProfileSaveData').write_bytes(self.original)
         chosen=self.selected(closed='yes',slot='WholeGame')

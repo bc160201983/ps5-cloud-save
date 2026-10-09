@@ -26,6 +26,10 @@ class Handler(BaseHTTPRequestHandler):
         if path=='/api/state':
             self.send({'version':(ROOT/'VERSION').read_text().strip(),'configured':True,'connected':True,
                        'url':'https://your-nextcloud.example/remote.php/dav/files/you/PS5Backups','username':'Your Nextcloud account'})
+        elif path=='/api/preferences':
+            self.send({'auto_upload':True,'activity_refresh':True,'game_close_available':False,'sharing_available':False})
+        elif path=='/api/queue':
+            self.send({'items':[],'count':0,'truncated':False})
         elif path=='/api/games':
             self.send({'games':[{'user':'1eb70483','title':'PPSA02433','slot':slot,
                                  'name':'Crash Bandicoot 4','supported':True}
@@ -35,7 +39,7 @@ class Handler(BaseHTTPRequestHandler):
                                    'sha256':char*64,'slot':'PlayerSaveSlot0Save','created':stamp}
                                   for char,stamp in [('a',1791536400),('b',1791450000)]]})
         elif path=='/api/log':
-            self.send({'log':'DESIGN PREVIEW — sample activity\n\nBackup checked: no changes found; duplicate skipped.\nNextcloud: game/user/save-slot folder ready.\nVersion downloaded: SHA-256 verified.\n\nThe PS5 is offline. No live operations have run in this preview.'})
+            self.send({'log':'2026-10-09 14:00:00 EVENT Preview: backup saved in local queue\n2026-10-09 14:01:00 INFO Preview: upload checksum verified\n2026-10-09 14:02:00 WARN Preview: network unavailable; backup retained\n'})
         else:self.send({'message':'Preview endpoint unavailable'},status=404)
 
     def do_POST(self):
