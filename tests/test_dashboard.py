@@ -85,6 +85,19 @@ class DashboardTests(unittest.TestCase):
         status,data=self.request('/api/games');self.assertEqual(status,200)
         self.assertEqual(len(data['games']),1);self.assertEqual(data['games'][0]['slot'],SLOT)
 
+    def test_large_game_library_keeps_supported_saves_visible(self):
+        another=self.home/'1eb70483/savedata_prospero/PPSA10595';another.mkdir()
+        for i in range(300):(another/f'sdimg_replay{i}').write_bytes(b'file')
+        status,data=self.request('/api/games');self.assertEqual(status,200)
+        self.assertEqual(data['games'][0]['title'],'PPSA02433')
+        self.assertTrue(data['games'][0]['supported']);self.assertTrue(data['truncated'])
+
+    def test_stop_requires_pairing_and_shuts_down_cleanly(self):
+        self.assertEqual(self.request('/api/stop',{},token=False)[0],401)
+        self.assertIsNone(self.process.poll())
+        self.assertEqual(self.request('/api/stop',{})[0],200)
+        self.assertEqual(self.process.wait(timeout=5),0)
+
     def test_grouped_committed_cloud_listing_and_download(self):
         status,data=self.request('/api/backups?'+urllib.parse.urlencode(self.selected()))
         self.assertEqual(status,200);self.assertEqual(data['backups'][0]['sha256'],self.sha)

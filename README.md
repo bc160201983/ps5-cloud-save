@@ -1,4 +1,4 @@
-# PS5 Cloud Save — development milestone 0.5.1
+# PS5 Cloud Save — development milestone 0.5.2
 
 This is the first tested component of a proposed standalone PS5 cloud-save app.
 It is NOT an installable PS5 application or a complete save-sync implementation.
@@ -61,6 +61,18 @@ encrypt local HTTP traffic. No automatic startup or game-close detection yet.
 - The dashboard and new encrypted-image restore require console/game-load tests;
   these were deferred because the console is off. Core staged export and direct
   WebDAV transport were previously tested successfully on firmware 11.40.
+
+## Version 0.5.2
+
+- Live 11.40 testing confirmed dashboard startup, pairing and settings reads.
+- Fixed save discovery filling its 64-entry limit before the supported Crash
+  saves: supported saves are listed first, the limit is now 256, and truncation
+  is reported explicitly.
+- Added safe WebDAV transport/status diagnostics and a dashboard User-Agent.
+- Added pairing-protected `/api/stop` for graceful dashboard upgrades.
+- Nextcloud connection through the dashboard, folder/deduplication checks and
+  the new managed restore remain under hardware testing. Saves were not modified
+  during the initial dashboard checks.
 
 ## Added in 0.3
 

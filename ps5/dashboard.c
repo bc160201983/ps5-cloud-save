@@ -41,6 +41,7 @@ static size_t collect(char *p,size_t a,size_t b,void *ctx) {
 static long webdav(const struct settings *s,const char *url,const char *method,struct response *r) {
     CURL *c=curl_easy_init();if(!c)return 0;
     curl_easy_setopt(c,CURLOPT_URL,url);curl_easy_setopt(c,CURLOPT_PROTOCOLS_STR,"https");
+    curl_easy_setopt(c,CURLOPT_USERAGENT,"PSCloud/" PSCLOUD_VERSION);
     curl_easy_setopt(c,CURLOPT_USERNAME,s->user);curl_easy_setopt(c,CURLOPT_PASSWORD,s->password);
     curl_easy_setopt(c,CURLOPT_CAINFO,s->ca);curl_easy_setopt(c,CURLOPT_CONNECTTIMEOUT,10L);
     curl_easy_setopt(c,CURLOPT_TIMEOUT,25L);curl_easy_setopt(c,CURLOPT_NOSIGNAL,1L);
@@ -48,6 +49,7 @@ static long webdav(const struct settings *s,const char *url,const char *method,s
     curl_easy_setopt(c,CURLOPT_WRITEDATA,r);struct curl_slist *headers=NULL;
     if(!strcmp(method,"PROPFIND")) {headers=curl_slist_append(headers,"Depth: 1");curl_easy_setopt(c,CURLOPT_HTTPHEADER,headers);}
     CURLcode result=curl_easy_perform(c);long status=0;curl_easy_getinfo(c,CURLINFO_RESPONSE_CODE,&status);
+    pscloud_log("INFO","WebDAV %s: transport=%d HTTP=%ld",method,(int)result,status);
     curl_slist_free_all(headers);curl_easy_cleanup(c);return result==CURLE_OK?status:0;
 }
 static int safe_word(const char *s,size_t max) {
@@ -146,21 +148,24 @@ static int remote_snapshot(const struct settings *cloud,const struct pscloud_sna
     return 0;
 }
 static void games(int sock) {
-    char json[32768]="{\"games\":[";size_t pos=strlen(json);unsigned count=0;
+    char json[131072]="{\"games\":[";size_t pos=strlen(json);unsigned count=0;
     int dir=pscloud_open_directory(home);if(dir<0) {message(sock,500,"User save folders unavailable");return;}
     int scan=openat(dir,".",O_RDONLY | O_DIRECTORY);DIR *users=scan>=0?fdopendir(scan):NULL;
     if(!users) {if(scan>=0)close(scan);close(dir);message(sock,500,"User enumeration failed");return;}
     struct dirent *u;
-    while((u=readdir(users)) && count<64) {
+    for(unsigned priority=0;priority<2;priority++) {
+    rewinddir(users);
+    while((u=readdir(users)) && count<256) {
         if(!safe_word(u->d_name,16))continue;
         char path[1400];snprintf(path,sizeof path,"%s/%s/savedata_prospero",home,u->d_name);
         int fd=pscloud_open_directory(path);if(fd<0)continue;
         DIR *titles=fdopendir(fd);if(!titles) {close(fd);continue;}struct dirent *t;
-        while((t=readdir(titles)) && count<64) {
+        while((t=readdir(titles)) && count<256) {
             if(strlen(t->d_name)!=9 || strncmp(t->d_name,"PPSA",4) || !safe_word(t->d_name,9))continue;
+            if((!strcmp(t->d_name,"PPSA02433"))!=(priority==0))continue;
             int titlefd=openat(fd,t->d_name,O_RDONLY | O_DIRECTORY | O_NOFOLLOW);if(titlefd<0)continue;
             DIR *slots=fdopendir(titlefd);if(!slots) {close(titlefd);continue;}struct dirent *e;
-            while((e=readdir(slots)) && count<64) {
+            while((e=readdir(slots)) && count<256) {
                 if(strncmp(e->d_name,"sdimg_",6) || !strncmp(e->d_name,"sdimg_sce_bu_",13) || !safe_word(e->d_name+6,63))continue;
                 int supported=!strcmp(t->d_name,"PPSA02433") && (!strcmp(e->d_name+6,"PlayerSaveSlot0Save") || !strcmp(e->d_name+6,"PlayerSaveProfileSaveData"));
                 int written=snprintf(json+pos,sizeof json-pos,"%s{\"user\":\"%s\",\"title\":\"%s\",\"slot\":\"%s\",\"name\":\"%s\",\"supported\":%s}",count?",":"",u->d_name,t->d_name,e->d_name+6,!strcmp(t->d_name,"PPSA02433")?"Crash Bandicoot 4":t->d_name,supported?"true":"false");
@@ -171,7 +176,8 @@ static void games(int sock) {
         }
         closedir(titles);
     }
-    closedir(users);close(dir);strcat(json,"]}");respond(sock,200,"application/json",json,strlen(json));
+    }
+    closedir(users);close(dir);snprintf(json+pos,sizeof json-pos,"],\"truncated\":%s}",count>=256?"true":"false");respond(sock,200,"application/json",json,strlen(json));
 }
 static void backups(int sock,const char *query) {
     struct pscloud_snapshot chosen;struct settings cloud={0};
@@ -301,7 +307,7 @@ static void serve(int sock) {
     if(!strcmp(method,"GET") && !strcmp(url,"/api/state")) {
         struct settings s={0};int configured=pscloud_configure(cloudpath,&s)==0;
         char address[6144],username[512],json[8192];escaped(address,sizeof address,s.url);escaped(username,sizeof username,s.user);
-        snprintf(json,sizeof json,"{\"version\":\"%s\",\"configured\":%s,\"connected\":%s,\"url\":\"%s\",\"username\":\"%s\"}",PSCLOUD_VERSION,configured?"true":"false",cloud_status==200 || cloud_status==207?"true":"false",address,username);
+        snprintf(json,sizeof json,"{\"version\":\"%s\",\"pid\":%ld,\"cloud_http\":%d,\"configured\":%s,\"connected\":%s,\"url\":\"%s\",\"username\":\"%s\"}",PSCLOUD_VERSION,(long)getpid(),cloud_status,configured?"true":"false",cloud_status==200 || cloud_status==207?"true":"false",address,username);
         respond(sock,200,"application/json",json,strlen(json));return;
     }
     if(!strcmp(method,"GET") && !strcmp(url,"/api/games")) {games(sock);return;}
@@ -311,6 +317,7 @@ static void serve(int sock) {
         if(fd>=0) {if(!fstat(fd,&st) && S_ISREG(st.st_mode)) {off_t offset=st.st_size>8192?st.st_size-8192:0;ssize_t got=pread(fd,data,8192,offset);if(got>=0)data[got]=0;}close(fd);}
         char text[50000],json[50100];escaped(text,sizeof text,data);snprintf(json,sizeof json,"{\"log\":\"%s\"}",text);respond(sock,200,"application/json",json,strlen(json));return;
     }
+    if(!strcmp(method,"POST") && !strcmp(url,"/api/stop")) {message(sock,200,"Dashboard stopping");stopped=1;return;}
     if(!strcmp(method,"POST") && !strcmp(url,"/api/connect")) {configure_cloud(sock,body);return;}
     if(!strcmp(method,"POST")) {action(sock,url,body);return;}
     message(sock,404,"Unknown endpoint");
