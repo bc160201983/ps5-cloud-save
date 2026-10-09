@@ -96,7 +96,10 @@ int pscloud_game_backup(const char *home,const char *root,const char *user,const
     int duplicate=pscloud_snapshot_exists_checked(spool,&s,&stats);
     pscloud_log("INFO","Whole-game dedup: scanned=%u invalid=%u matched=%u missing=%u hash_failed=%u different=%u phase=%u",stats.scanned,stats.invalid,stats.matched,stats.missing,stats.hash_failed,stats.different,stats.hash_phase);
     if(duplicate<0 || (!duplicate && stats.hash_failed))goto done;
-    if(duplicate) {pscloud_notify("Whole game unchanged - duplicate skipped");result=0;goto done;}
+    if(duplicate) {
+        if(pscloud_snapshot_requeue(spool,stats.archive))goto done;
+        pscloud_notify("Whole game unchanged - duplicate skipped; checking existing cloud copy");result=0;goto done;
+    }
     s.created=(long long)time(NULL);if(s.created<0)s.created=0;
     snprintf(identity,sizeof identity,"%s.identity",name);snprintf(ready,sizeof ready,"%s.ready",name);
     int meta=openat(spool,identity,O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW,0600);if(meta<0)goto done;

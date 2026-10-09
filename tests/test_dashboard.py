@@ -174,6 +174,34 @@ class DashboardTests(unittest.TestCase):
         self.assertEqual(self.request('/api/backup',chosen)[0],500)
         self.assertEqual(self.image.read_bytes(),self.original)
 
+    def test_deleted_cloud_game_copy_reuploads_same_archive_without_new_version(self):
+        self.image.with_name('sdimg_PlayerSaveProfileSaveData').write_bytes(self.original)
+        chosen=self.selected(closed='yes');chosen['slot']='WholeGame'
+        self.assertEqual(self.request('/api/backup',chosen)[0],200)
+        archive=next((self.root/'spool').glob('*.sent'));name=archive.name[:-5]
+        self.fixture.puts.clear()
+        self.assertEqual(self.request('/api/backup',chosen)[0],200)
+        self.assertEqual(self.fixture.puts,[])
+        prefix='/backups/Crash%20Bandicoot%204%20-%20PPSA02433/User-1eb70483/WholeGame/'
+        del self.fixture.objects[prefix+name]
+        self.assertEqual(self.request('/api/backup',chosen)[0],200)
+        self.assertIn(prefix+name,self.fixture.objects)
+        self.assertEqual(len(list((self.root/'spool').glob('*.sent'))),1)
+        self.fixture.objects.pop(prefix+'.pscloud/'+name+'.identity')
+        self.assertEqual(self.request('/api/backup',chosen)[0],200)
+        self.assertIn(prefix+'.pscloud/'+name+'.identity',self.fixture.objects)
+        self.assertEqual(self.image.read_bytes(),self.original)
+
+    def test_cloud_error_during_unchanged_backup_retains_retry_not_false_success(self):
+        self.assertEqual(self.request('/api/backup',self.selected(closed='yes'))[0],200)
+        self.fixture.status=503
+        self.assertEqual(self.request('/api/backup',self.selected(closed='yes'))[0],502)
+        self.assertEqual(len(list((self.root/'spool').glob('*.ready'))),1)
+        self.fixture.status=201
+        self.fixture.puts.clear()
+        self.assertEqual(self.request('/api/sync',{})[0],200)
+        self.assertEqual(self.fixture.puts,[])
+
     def test_restore_rejects_unconfirmed_and_wrong_identity(self):
         self.assertEqual(self.request('/api/restore',self.selected(file=FILE,closed='no',confirm='yes'))[0],400)
         self.assertEqual(self.image.read_bytes(),self.original)

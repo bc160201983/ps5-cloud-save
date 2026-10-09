@@ -26,6 +26,7 @@ class WorkerTest(unittest.TestCase):
         self.status = 201
         self.manifest_status = 201
         self.collections=set()
+        self.puts=[]
         parent = self
         class Handler(http.server.BaseHTTPRequestHandler):
             def do_MKCOL(self):
@@ -56,6 +57,15 @@ class WorkerTest(unittest.TestCase):
                 self.send_response(200)
                 self.send_header('Content-Length',str(len(body)))
                 self.end_headers(); self.wfile.write(body)
+            def do_HEAD(self):
+                if self.headers.get('Authorization') != 'Basic dXNlcjpwYXNz':
+                    self.send_response(401);self.end_headers();return
+                if parent.status != 201:
+                    self.send_response(parent.status);self.end_headers();return
+                body=parent.objects.get(self.path)
+                self.send_response(200 if body is not None else 404)
+                if body is not None:self.send_header('Content-Length',str(len(body)))
+                self.end_headers()
             def do_PUT(self):
                 body = self.rfile.read(int(self.headers['Content-Length']))
                 if self.headers.get('Authorization') != 'Basic dXNlcjpwYXNz':
@@ -63,6 +73,7 @@ class WorkerTest(unittest.TestCase):
                 else:
                     status=parent.manifest_status if self.path.endswith('.identity') else parent.status
                     if status == 201:
+                        parent.puts.append(self.path)
                         parent.objects[self.path] = body
                     self.send_response(status)
                 self.end_headers()

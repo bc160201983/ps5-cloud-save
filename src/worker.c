@@ -29,6 +29,36 @@ static int valid(const char *s) {
         if(!isalnum((unsigned char)s[i]) && s[i]!='-' && s[i]!='_' && s[i]!='.') return 0;
     return s[0]!='.';
 }
+struct remote_body {char text[1025];size_t size;};
+static size_t collect_identity(char *p,size_t a,size_t b,void *ctx) {
+    struct remote_body *r=ctx;if(b && a>1024/b)return 0;
+    size_t n=a*b;if(n>1024-r->size)return 0;
+    memcpy(r->text+r->size,p,n);r->size+=n;r->text[r->size]=0;return n;
+}
+/* 1: committed archive present, 0: missing/incomplete, -1: cannot establish.
+ * Errors never count as deletion. No redirects or credential forwarding. */
+static int cloud_copy(const char *archive,const char *identity,const char *user,const char *pass,const char *ca,
+                      const struct pscloud_snapshot *s,curl_off_t size) {
+    CURL *c=curl_easy_init();if(!c)return -1;
+    struct remote_body body={{0},0};char expected[512];
+    snprintf(expected,sizeof expected,"USER_ID=%s\nTITLE=%s\nSAVE_NAME=%s\nSHA256=%s\nCREATED_UNIX=%lld\n",s->user,s->title,s->slot,s->sha256,s->created);
+    curl_easy_setopt(c,CURLOPT_URL,identity);curl_easy_setopt(c,CURLOPT_PROTOCOLS_STR,"https");
+    curl_easy_setopt(c,CURLOPT_USERNAME,user);curl_easy_setopt(c,CURLOPT_PASSWORD,pass);
+    curl_easy_setopt(c,CURLOPT_CONNECTTIMEOUT,15L);curl_easy_setopt(c,CURLOPT_TIMEOUT,60L);curl_easy_setopt(c,CURLOPT_NOSIGNAL,1L);
+    curl_easy_setopt(c,CURLOPT_WRITEFUNCTION,collect_identity);curl_easy_setopt(c,CURLOPT_WRITEDATA,&body);
+    if(ca && *ca)curl_easy_setopt(c,CURLOPT_CAINFO,ca);
+    CURLcode rc=curl_easy_perform(c);long status=0;curl_easy_getinfo(c,CURLINFO_RESPONSE_CODE,&status);
+    if(rc!=CURLE_OK || (status!=200 && status!=404)) {curl_easy_cleanup(c);return -1;}
+    if(status==404) {curl_easy_cleanup(c);return 0;}
+    if(strcmp(body.text,expected)) {curl_easy_cleanup(c);return -1;}
+    curl_easy_setopt(c,CURLOPT_URL,archive);curl_easy_setopt(c,CURLOPT_NOBODY,1L);
+    rc=curl_easy_perform(c);curl_easy_getinfo(c,CURLINFO_RESPONSE_CODE,&status);
+    curl_off_t length=-1;curl_easy_getinfo(c,CURLINFO_CONTENT_LENGTH_DOWNLOAD_T,&length);curl_easy_cleanup(c);
+    if(rc!=CURLE_OK || (status!=200 && status!=404))return -1;
+    if(status==404)return 0;
+    if(length<0)return -1;
+    return length==size?1:0;
+}
 static int collection(const char *url,const char *user,const char *pass,const char *ca) {
     CURL *c=curl_easy_init();if(!c)return 1;
     curl_easy_setopt(c,CURLOPT_URL,url);curl_easy_setopt(c,CURLOPT_PROTOCOLS_STR,"https");
@@ -109,6 +139,17 @@ static int upload(const char *base,const char *user,const char *pass,const char 
     if(rc!=CURLE_OK || status<200 || status>=300) {
         fprintf(stderr,"Upload retained for retry: %s (transport=%d, HTTP=%ld)\n",object,rc,status);
         return 1;
+    }
+    if(structured) {
+        char manifest[4096];
+        if(snprintf(manifest,sizeof manifest,"%s/.pscloud/%s.identity",destination,object)>=(int)sizeof manifest) {curl_easy_cleanup(c);fclose(f);return 1;}
+        int present=cloud_copy(url,manifest,user,pass,ca,&snapshot,(curl_off_t)st.st_size);
+        if(present<0) {fprintf(stderr,"Cloud presence check failed; backup retained: %s\n",object);curl_easy_cleanup(c);fclose(f);return 1;}
+        if(present) {
+            curl_easy_cleanup(c);fclose(f);char done[272];snprintf(done,sizeof done,"%s.sent",object);
+            if(renameat(dir,name,dir,done) || fsync(dir))return 1;
+            printf("Already in cloud; upload skipped: %s\n",object);fflush(stdout);return 0;
+        }
     }
     if(structured) {
         char manifest[4096];

@@ -216,10 +216,12 @@ int main(int argc,char **argv) {
     unmounted=1;
     phase="credential restoration";
     if(pscloud_mount_leave(&state))goto cleanup;
-    int same=pscloud_snapshot_exists(spool,&snapshot);
+    struct pscloud_dedup_stats stats;
+    int same=pscloud_snapshot_exists_checked(spool,&snapshot,&stats);
     if(same<0)goto cleanup;
     if(same) {
-        result=0;pscloud_notify("Save unchanged - existing backup retained; duplicate skipped");goto cleanup;
+        if(pscloud_snapshot_requeue(spool,stats.archive))goto cleanup;
+        result=0;pscloud_notify("Save unchanged - duplicate skipped; existing backup queued for cloud presence check");goto cleanup;
     }
     /* Bind the queue snapshot to its exact user/title/slot in a local sidecar. */
     phase="queue identity and archive publication";

@@ -75,7 +75,7 @@ int pscloud_file_hash(int fd,char hex[65]) {
 /* Some console SDK builds do not reliably expose a missing openat target as
  * a negative descriptor. Select an existing queue entry first, rather than
  * probing a nonexistent .ready before its existing .sent sibling. */
-static int existing_archive(int dir,const char *identity,size_t length) {
+static int existing_archive(int dir,const char *identity,size_t length,char filename[256]) {
     char ready[256],sent[256],found[256]={0};
     snprintf(ready,sizeof ready,"%.*s.ready",(int)length-9,identity);
     snprintf(sent,sizeof sent,"%.*s.sent",(int)length-9,identity);
@@ -88,13 +88,14 @@ static int existing_archive(int dir,const char *identity,size_t length) {
         }
     }
     closedir(d);
+    strcpy(filename,found);
     return *found?openat(dir,found,O_RDONLY | O_NOFOLLOW | O_NONBLOCK):-1;
 }
 int pscloud_snapshot_exists_checked(int dir,const struct pscloud_snapshot *wanted,struct pscloud_dedup_stats *stats) {
     memset(stats,0,sizeof *stats);
     int scan=openat(dir,".",O_RDONLY | O_DIRECTORY | O_NOFOLLOW);if(scan<0)return -1;
     DIR *d=fdopendir(scan);if(!d) {close(scan);return -1;}
-    struct dirent *e;int same=0;
+    struct dirent *e;int same=0;long long newest=-1;
     while((e=readdir(d))) {
         size_t n=strlen(e->d_name);
         if(n<10 || n>200 || strcmp(e->d_name+n-9,".identity"))continue;
@@ -105,14 +106,27 @@ int pscloud_snapshot_exists_checked(int dir,const struct pscloud_snapshot *wante
         if(strcmp(s.user,wanted->user) || strcmp(s.title,wanted->title) ||
            strcmp(s.slot,wanted->slot) || strcmp(s.sha256,wanted->sha256))continue;
         stats->matched++;
-        int fd=existing_archive(dir,identity,n);
-        char hash[65];if(fd>=0) {if(pscloud_file_hash_checked(fd,hash,&stats->hash_phase))stats->hash_failed++;else if(!strcmp(hash,wanted->sha256))same=1;else stats->different++;close(fd);}else stats->missing++;
-        if(same)break;
+        char archive[256];int fd=existing_archive(dir,identity,n,archive);
+        char hash[65];if(fd>=0) {if(pscloud_file_hash_checked(fd,hash,&stats->hash_phase))stats->hash_failed++;else if(!strcmp(hash,wanted->sha256)) {same=1;if(s.created>=newest) {newest=s.created;strcpy(stats->archive,archive);}}else stats->different++;close(fd);}else stats->missing++;
     }
     closedir(d);return same;
 }
 int pscloud_snapshot_exists(int dir,const struct pscloud_snapshot *wanted) {
     struct pscloud_dedup_stats stats;return pscloud_snapshot_exists_checked(dir,wanted,&stats);
+}
+int pscloud_snapshot_requeue(int dir,const char *archive) {
+    size_t n=strlen(archive);
+    if(n<10 || n>=256 || strchr(archive,'/') || strchr(archive,'\\'))return -1;
+    if(!strcmp(archive+n-6,".ready"))return 0;
+    if(strcmp(archive+n-5,".sent"))return -1;
+    char ready[256];snprintf(ready,sizeof ready,"%.*s.ready",(int)n-5,archive);
+    int scan=openat(dir,".",O_RDONLY | O_DIRECTORY | O_NOFOLLOW);if(scan<0)return -1;
+    DIR *d=fdopendir(scan);if(!d) {close(scan);return -1;}
+    struct dirent *entry;int present=0;
+    while((entry=readdir(d)))if(!strcmp(entry->d_name,ready)) {present=1;break;}
+    closedir(d);
+    if(present)return 0;
+    return renameat(dir,archive,dir,ready) || fsync(dir)?-1:0;
 }
 int pscloud_snapshot_folder(const struct pscloud_snapshot *s,char *folder,unsigned size) {
     if(!pscloud_snapshot_valid(s))return -1;

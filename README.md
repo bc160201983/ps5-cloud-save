@@ -1,4 +1,15 @@
-# PS5 Cloud Save — development milestone 0.6.2
+# PS5 Cloud Save — development milestone 0.6.3
+
+### 0.6.3 cloud-aware unchanged backups
+
+Backing up an unchanged save queues its verified existing archive for a cloud
+presence check. If both its identity commit and archive are still present, no
+ZIP is uploaded. If either was deleted, the same local archive is re-uploaded
+without creating a new version. Authentication/network/server errors retain the
+retry job and report pending upload rather than pretending the cloud copy exists.
+Only the selected matching snapshot is reconsidered; deleted historical versions
+are not all resurrected. This applies to whole-game and per-slot dashboard backups.
+Host and live console validation of this release are pending.
 
 ### 0.6.2 uploaded-archive deduplication
 
