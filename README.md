@@ -10,9 +10,12 @@
 - Browser startup can load its page during another operation and waits using the
   lightweight health endpoint. Old game-list responses cannot overwrite a newer
   game selection. No automatic background uploads or save operations are added.
-- v0.11.0 passed all 96 host tests and native PS5 builds. New corruption/retry
-  fixtures and v0.11.1 builds are pending. No live saves/cloud files have been
-  modified or new payload deployed during this development work.
+- v0.11.1 passed all 99 host tests and native PS5 builds. Corrupt upload retention,
+  no identity commit on corruption and repair of an existing corrupt cloud copy
+  passed HTTPS fixtures. Browser preview verified Google settings, game navigation,
+  cached versions and explicit refresh. No live saves/cloud files were modified
+  and no new payload was deployed during this work. Native threading and Google
+  approval remain hardware/real-account unverified.
 
 ## Version 0.11.0 — responsive requests and Google sign-in foundation
 
