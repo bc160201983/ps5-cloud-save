@@ -1,4 +1,13 @@
-# PS5 Cloud Save — development milestone 0.12.1
+# PS5 Cloud Save — development milestone 0.12.2
+
+## Version 0.12.2 — live restore commit hardening (host-tested only)
+
+Generic live restore now re-checks that no save is mounted immediately before the
+restore journal is written, discards its temporary `.pscloud-*.new` copies from the
+live save directory on any failure, and verifies that the imported payload tree
+contains exactly the package files (no stale leftovers). Rollback copies and the
+journal behavior are unchanged. These changes are covered by host tests only; they
+have not been run on a console, and generic live restore in-game remains unverified.
 
 ## Version 0.12.1 — metadata-independent sharing and compact cloud backups
 
