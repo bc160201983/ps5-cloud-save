@@ -14,8 +14,10 @@
   folded under "Options".
 - The finished-upload notice hides itself after 15 seconds.
 
-Verified in a local preview with this console's real game list; console deployment
-and checks are recorded below when done. Save-container creation research:
+Verified in a local preview with the 11.40 console's real game list, then deployed
+to both consoles: both dashboards report v0.14.0 and load without script errors;
+11.40 lists 25 game cards (14 labelled not installed), 7.00 lists Crash. The new
+receive flow has not yet been run end to end on a console. Save-container creation research:
 inspection of /system_data/savedata/<user>/db/user/savedata.db was not performed.
 
 ## Version 0.13.0 — universal game-data sharing options (host-tested only)
