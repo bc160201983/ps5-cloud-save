@@ -22,8 +22,13 @@ removes the remaining blanket refusals, each behind an explicit choice:
 Still required: the receiver profile must already have a save for the game (create
 one by playing once); creating new save containers is not implemented. Game-level
 account binding can still stop a save from loading. Verified so far: host tests
-only for these options; the earlier 11.40 to 7.00 Crash staged check used the strict
-defaults. No live restore was performed by the developer tooling.
+for these options plus these 2026-10-10 console checks: v0.13.0 deployed on 11.40
+and 7.00 and both dashboards render. A three-slot Crash package from 11.40 imported
+on 7.00 (two slots) was refused by the strict check with the specific reason
+"no save slot PlayerSaveSlot3Save", and passed the staged check with "skip missing
+slots" (live saves unchanged). Hades, whose game is not installed on 11.40, now
+exports. No live restore was performed by the developer tooling; live restore and
+in-game loading are left to the user.
 
 ## Version 0.12.5 — fix blank dashboard in 0.12.4
 
