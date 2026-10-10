@@ -331,15 +331,18 @@ class DashboardTests(unittest.TestCase):
         self.process.terminate();self.process.communicate(timeout=5);self.start_server()
         self.assertFalse(self.request('/api/google/status')[1]['configured'])
 
-    def test_preferences_persist_and_unavailable_automation_rejected(self):
+    def test_preferences_persist_and_invalid_values_rejected(self):
         self.assertTrue(self.request('/api/preferences')[1]['auto_upload'])
         self.assertEqual(self.request('/api/preferences',{'auto_upload':'0','activity_refresh':'0'})[0],200)
         self.assertEqual(self.request('/api/preferences',{'auto_upload':'yes','activity_refresh':'0'})[0],400)
-        self.assertEqual(self.request('/api/preferences',{'auto_upload':'1','activity_refresh':'1','game_close_backup':'1'})[0],400)
+        self.assertEqual(self.request('/api/preferences',{'auto_upload':'0','activity_refresh':'0','game_close_backup':'yes'})[0],400)
         self.process.terminate();self.process.communicate(timeout=5);self.start_server()
         prefs=self.request('/api/preferences')[1]
         self.assertFalse(prefs['auto_upload']);self.assertFalse(prefs['activity_refresh'])
-        self.assertFalse(prefs['game_close_available']);self.assertTrue(prefs['sharing_available'])
+        self.assertTrue(prefs['game_close_available']);self.assertFalse(prefs['game_close_backup']);self.assertTrue(prefs['sharing_available'])
+        self.assertEqual(self.request('/api/preferences',{'auto_upload':'0','activity_refresh':'0','game_close_backup':'1'})[0],200)
+        self.process.terminate();self.process.communicate(timeout=5);self.start_server()
+        self.assertTrue(self.request('/api/preferences')[1]['game_close_backup'])
 
     def test_sharing_routes_require_closure_and_staged_proof(self):
         self.assertEqual(self.request('/api/share-export',self.selected())[0],400)
@@ -367,7 +370,13 @@ class DashboardTests(unittest.TestCase):
         fixture=self.fixture.root/'compact';test_portable.PortableTests.sfo(self,fixture/SLOT,SLOT,b'\x44'*8)
         metadata=self.root/'appmeta/PPSA02433';metadata.mkdir(parents=True);(metadata/'param.json').write_text(json.dumps({'contentVersion':'01.000.002'}))
         self.start_server(PSCLOUD_TEST_GENERIC_PAYLOADS=str(fixture),PSCLOUD_TEST_WATCH_SECONDS='1')
-        def queue():return self.request('/api/queue')[1]['items']
+        def queue():
+            # While the watcher's backup holds the operation lock the API answers "busy".
+            for _ in range(60):
+                data=self.request('/api/queue')[1]
+                if 'items' in data:return data['items']
+                time.sleep(0.5)
+            self.fail('dashboard stayed busy')
         def wait_for(check,seconds):
             deadline=time.monotonic()+seconds
             while time.monotonic()<deadline:
