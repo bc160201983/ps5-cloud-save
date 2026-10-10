@@ -22,6 +22,12 @@ jobs:
           SDK="/opt/ps5-payload-sdk"
           test -f "$SDK/toolchain/prospero.mk"
           echo "PS5_PAYLOAD_SDK=$SDK" >> "$GITHUB_ENV"
+      - name: List save-related SDK stub symbols (informational)
+        run: |
+          for f in $(find "$PS5_PAYLOAD_SDK" \( -iname '*SceFsInternalForVsh*' -o -iname '*SceSaveData*' -o -iname '*SceRegMgr*' \) -type f); do
+            echo "== $f"
+            grep -a -o -E '(sce|kernel_)[A-Za-z0-9_]{4,}' "$f" | sort -u | grep -i -E 'savedata|pfs|ppr|sealed|regmgr|mountsave|keystone' || true
+          done
       - name: Build direct uploader
         run: make -C ps5 upload recovery backup dashboard share
       - name: Package uploader and trusted CA bundle
