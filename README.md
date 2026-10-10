@@ -27,7 +27,10 @@ Per-game first-save hints live in `FIRST_SAVE_HINTS` in `ps5/ui.html`
 report when a game first saves and it will be added.
 
 Verified: host tests and a local preview of the full flow with simulated console
-responses. Console verification is recorded below when done.
+responses. Deployed to both consoles (v0.15.0, pages load without script errors);
+`/api/users` lists every profile, including those without saves (11.40: two
+profiles without a Crash save; 7.00: one), and `/api/save-status` reports their
+empty slot lists. A real first-save receive has not been run yet.
 
 ## Receiver saves: findings (2026-10-10)
 
