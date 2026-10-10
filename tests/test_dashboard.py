@@ -82,6 +82,22 @@ class DashboardTests(unittest.TestCase):
 
     def selected(self,**extra):return dict(dict(user='1eb70483',title='PPSA02433',slot=SLOT),**extra)
 
+    def test_users_and_save_status_are_read_only_and_cover_profiles_without_saves(self):
+        empty=self.home/'1eb70485';empty.mkdir();(empty/'username.dat').write_bytes(b'Guest\0\0\0')
+        (self.home/'1eb70483/username.dat').write_bytes(b'Main')
+        (self.root/'appmeta/PPSA02433').mkdir(parents=True);(self.root/'appmeta/PPSA02433/param.json').write_text('{"contentVersion":"01.000.000"}')
+        before=self.image.read_bytes()
+        status,data=self.request('/api/users');self.assertEqual(status,200)
+        self.assertEqual(sorted((u['user'],u['name']) for u in data['users']),[('1eb70483','Main'),('1eb70485','Guest')])
+        status,data=self.request('/api/save-status?user=1eb70483&title=PPSA02433');self.assertEqual(status,200)
+        self.assertEqual((data['installed'],data['mounted'],data['slots']),(True,False,['PlayerSaveSlot0Save']))
+        status,data=self.request('/api/save-status?user=1eb70485&title=PPSA02433');self.assertEqual(status,200)
+        self.assertEqual(data['slots'],[])
+        status,data=self.request('/api/save-status?user=1eb70485&title=PPSA99999');self.assertFalse(data['installed'])
+        for bad in ('user=../x&title=PPSA02433','user=1eb70483&title=CUSA00001','title=PPSA02433'):
+            with self.subTest(bad=bad):self.assertEqual(self.request('/api/save-status?'+bad)[0],400)
+        self.assertEqual(self.image.read_bytes(),before)
+
     def test_idle_browser_connection_does_not_block_dashboard(self):
         idle=http.client.HTTPConnection('127.0.0.1',self.port,timeout=5);idle.connect()
         try:

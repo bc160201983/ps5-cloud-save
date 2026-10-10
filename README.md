@@ -1,4 +1,33 @@
-# PS5 Cloud Save — development milestone 0.14.0
+# PS5 Cloud Save — development milestone 0.15.0
+
+## Version 0.15.0 — guided receive for profiles without a save
+
+"Receive a shared save" on the My games page accepts a sharing ZIP even when the
+chosen profile has never played that game. The page reads the package's game from
+the ZIP, then guides and waits:
+
+1. Install the game (re-checked every 5 s).
+2. Start it on that profile and play until it saves once (re-checked every 4 s).
+   A per-game hint is shown when one is known; otherwise a general hint.
+3. Close the game (re-checked every 3 s; a mounted save means it is still running).
+4. The shared save is received and staged-checked automatically. Slots the game has
+   not created yet are skipped automatically; import the same ZIP again later to
+   add them. A version mismatch offers "Allow this game version and check again".
+
+It then opens the game page with the checked save ready. Replacing the live save
+still requires ticking "I have fully closed this game" and the replace
+confirmation. The automatic check sends the game-closed flag only after the
+console reports no mounted save; checks never change saves.
+
+New read-only endpoints: `/api/users` (profiles and names) and `/api/save-status`
+(installed, mounted, existing slots for one profile and game).
+
+Per-game first-save hints live in `FIRST_SAVE_HINTS` in `ps5/ui.html`
+(`'PPSAxxxxx':'when the game first saves'`). It is empty until games are tested;
+report when a game first saves and it will be added.
+
+Verified: host tests and a local preview of the full flow with simulated console
+responses. Console verification is recorded below when done.
 
 ## Receiver saves: findings (2026-10-10)
 

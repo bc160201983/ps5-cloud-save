@@ -269,6 +269,49 @@ static void games(int sock) {
     }
     closedir(users);close(dir);snprintf(json+pos,sizeof json-pos,"],\"truncated\":%s}",count>=256?"true":"false");cache_store(games_cache,sizeof games_cache,json);respond(sock,200,"application/json",json,strlen(json));
 }
+/* Read-only: console profiles so a receiver without any saves can still be chosen. */
+static void users(int sock) {
+    char json[8192]="{\"users\":[";size_t pos=strlen(json);unsigned count=0;
+    int dir=pscloud_open_directory(home);if(dir<0) {message(sock,500,"User folders unavailable");return;}
+    int scan=openat(dir,".",O_RDONLY | O_DIRECTORY);DIR *list=scan>=0?fdopendir(scan):NULL;
+    if(!list) {if(scan>=0)close(scan);close(dir);message(sock,500,"User enumeration failed");return;}
+    struct dirent *u;
+    while((u=readdir(list)) && count<32) {
+        if(!safe_word(u->d_name,16))continue;
+        struct stat st;if(fstatat(dir,u->d_name,&st,AT_SYMLINK_NOFOLLOW) || !S_ISDIR(st.st_mode))continue;
+        char name[64]={0},escaped_name[400];char path[1400];snprintf(path,sizeof path,"%s/username.dat",u->d_name);
+        int fd=openat(dir,path,O_RDONLY | O_NOFOLLOW | O_NONBLOCK);
+        if(fd>=0) {ssize_t got=read(fd,name,sizeof name-1);close(fd);if(got<0)got=0;name[got]=0;for(ssize_t i=0;i<got;i++)if((unsigned char)name[i]<32)name[i]=0;}
+        escaped(escaped_name,sizeof escaped_name,name);
+        int written=snprintf(json+pos,sizeof json-pos,"%s{\"user\":\"%s\",\"name\":\"%s\"}",count?",":"",u->d_name,escaped_name);
+        if(written<0 || (size_t)written>=sizeof json-pos-4)break;
+        pos+=(size_t)written;count++;
+    }
+    closedir(list);close(dir);snprintf(json+pos,sizeof json-pos,"]}");respond(sock,200,"application/json",json,strlen(json));
+}
+/* Read-only: whether a profile already has saves for a game, which slots exist,
+ * whether the game is installed and whether any save is mounted (game likely running). */
+static void save_status(int sock,const char *query) {
+    char user[32],title[16];
+    if(parameter(query,"user",user,sizeof user) || !safe_word(user,16) || parameter(query,"title",title,sizeof title) || !pscloud_title_valid(title)) {message(sock,400,"Choose a profile and game");return;}
+    char version[32],name[256],escaped_name[1536];int installed=!pscloud_app_version(appmeta,title,version,sizeof version);
+    pscloud_app_name(appmeta,title,name,sizeof name);escaped(escaped_name,sizeof escaped_name,name);
+    char json[16384];int pos=snprintf(json,sizeof json,"{\"title\":\"%s\",\"name\":\"%s\",\"installed\":%s,\"mounted\":%s,\"slots\":[",title,escaped_name,installed?"true":"false",pscloud_no_foreign_mount()?"true":"false");
+    char path[1400];snprintf(path,sizeof path,"%s/%s/savedata_prospero/%s",home,user,title);
+    int fd=pscloud_open_directory(path);DIR *slots=fd>=0?fdopendir(fd):NULL;unsigned count=0;
+    if(!slots&&fd>=0)close(fd);
+    if(slots) {
+        struct dirent *e;
+        while((e=readdir(slots)) && count<128) {
+            if(strncmp(e->d_name,"sdimg_",6) || !strncmp(e->d_name,"sdimg_sce_bu_",13) || !safe_word(e->d_name+6,63))continue;
+            int written=snprintf(json+pos,sizeof json-(size_t)pos,"%s\"%s\"",count?",":"",e->d_name+6);
+            if(written<0 || (size_t)written>=sizeof json-(size_t)pos-4)break;
+            pos+=written;count++;
+        }
+        closedir(slots);
+    }
+    snprintf(json+pos,sizeof json-(size_t)pos,"]}");respond(sock,200,"application/json",json,strlen(json));
+}
 static void backups(int sock,const char *query) {
     struct pscloud_snapshot chosen;struct settings cloud={0};
     if(selection(query,&chosen) || pscloud_configure(cloudpath,&cloud)) {message(sock,400,"Select a supported save and connect Nextcloud first");return;}
@@ -964,6 +1007,8 @@ static void serve(int sock,int *locked) {
        (!strcmp(method,"POST") && (!strcmp(url,"/api/google/begin") || !strcmp(url,"/api/google/poll")))) {google_action(sock,url,body);return;}
     if(!strcmp(url,"/api/preferences") && (!strcmp(method,"GET") || !strcmp(method,"POST"))) {preferences(sock,!strcmp(method,"POST")?body:NULL);return;}
     if(!strcmp(method,"GET") && !strcmp(url,"/api/games")) {games(sock);return;}
+    if(!strcmp(method,"GET") && !strcmp(url,"/api/users")) {users(sock);return;}
+    if(!strcmp(method,"GET") && !strcmp(url,"/api/save-status")) {save_status(sock,query);return;}
     if(!strcmp(method,"GET") && !strcmp(url,"/api/icon")) {game_icon(sock,query);return;}
     if(!strcmp(method,"GET") && !strcmp(url,"/api/backups")) {backups(sock,query);return;}
     if(!strcmp(method,"GET") && !strcmp(url,"/api/queue")) {queue_list(sock);return;}
