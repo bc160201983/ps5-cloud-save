@@ -1,4 +1,22 @@
-# PS5 Cloud Save — development milestone 0.13.0
+# PS5 Cloud Save — development milestone 0.14.0
+
+## Version 0.14.0 — simpler dashboard for sharing
+
+- Library: search box, installed games listed first, plain wording ("2 save
+  slots"), and games without installed app data are labelled "Game not installed ·
+  saves only" instead of only showing a title ID.
+- Game page: one "I have fully closed this game" confirmation covers backup,
+  export, check and replace. The sharing section is open by default and split into
+  "Send this save" and "Receive a save" with numbered steps.
+- Receiving: "Check this save" uploads and runs the staged check in one step. When a
+  check is refused for a fixable reason (missing slots, different game version) a
+  "Fix and check again" button applies the matching option. Advanced options are
+  folded under "Options".
+- The finished-upload notice hides itself after 15 seconds.
+
+Verified in a local preview with this console's real game list; console deployment
+and checks are recorded below when done. Save-container creation research:
+inspection of /system_data/savedata/<user>/db/user/savedata.db was not performed.
 
 ## Version 0.13.0 — universal game-data sharing options (host-tested only)
 
