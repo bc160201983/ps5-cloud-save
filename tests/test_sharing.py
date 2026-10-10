@@ -180,3 +180,6 @@ class GenericSharingTests(unittest.TestCase):
                 self.assertEqual(result!=0,failure)
                 self.assertEqual(len(list(f[1].glob('portable-stage-*/before-*.img'))),2)
                 self.assertFalse((f[1]/'.restore-active').exists())
+                self.assertEqual(list(f[3].glob('.pscloud-*')),[])
+                if failure:
+                    for slot in ('save1','profile'):self.assertEqual((f[3]/('sdimg_'+slot)).read_bytes(),b'\x02'+b'\0'*8191)

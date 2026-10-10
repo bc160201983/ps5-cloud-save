@@ -130,6 +130,21 @@ static int clear_payload(int dir,unsigned depth) {
     }
     closedir(d);return bad?-1:fsync(dir);
 }
+/* Counts regular files outside the local metadata namespace; anything else is an error. */
+static int count_payload(int dir,unsigned depth,unsigned long *total) {
+    if(depth>32)return -1;
+    int scan=openat(dir,".",O_RDONLY|O_DIRECTORY|O_NOFOLLOW);DIR *d=scan<0?NULL:fdopendir(scan);if(!d) {if(scan>=0)close(scan);return -1;}
+    struct dirent *e;int bad=0;
+    while((e=readdir(d))) {
+        if(!strcmp(e->d_name,".")||!strcmp(e->d_name,"..")||(!depth&&!strcmp(e->d_name,"sce_sys")))continue;
+        struct stat st;if(fstatat(dir,e->d_name,&st,AT_SYMLINK_NOFOLLOW)) {bad=1;break;}
+        if(S_ISDIR(st.st_mode)) {int child=openat(dir,e->d_name,O_RDONLY|O_DIRECTORY|O_NOFOLLOW);bad=child<0||count_payload(child,depth+1,total);if(child>=0)close(child);}
+        else if(S_ISREG(st.st_mode))(*total)++;
+        else bad=1;
+        if(bad)break;
+    }
+    closedir(d);return bad?-1:0;
+}
 static int existing_attributes(int dir,const char *path,struct stat *st) {
     char copy[1024];strcpy(copy,path);char *save=NULL,*part=strtok_r(copy,"/",&save);int current=dup(dir);
     if(current<0)return -1;
@@ -149,7 +164,8 @@ static int extract_payload(int dir,const struct entry *archive) {
     for(unsigned i=0;!bad&&i<count;i++) {
         if(existing_attributes(dir,files[i].name,&attributes[i])) {attributes[i]=owner;attributes[i].st_mode=0600;}
     }
-    if(!bad)bad=clear_payload(dir,0);
+    unsigned long leftover=0;
+    if(!bad)bad=clear_payload(dir,0)||count_payload(dir,0,&leftover)||leftover;
     for(unsigned i=0;!bad&&i<count;i++) {
         char name[1024];strcpy(name,files[i].name);char *last=strrchr(name,'/');int target=dup(dir);
         if(target<0) {bad=1;break;}
@@ -169,6 +185,9 @@ static int extract_payload(int dir,const struct entry *archive) {
         if(fsync(target))bad=1;
         close(target);
     }
+    /* The finished tree must contain exactly the package files and nothing else. */
+    unsigned long present=0;
+    if(!bad)bad=count_payload(dir,0,&present)||present!=count;
     free(attributes);free(files);return bad?-1:fsync(dir);
 }
 static int order(const void *a,const void *b) {return strcmp(a,b);}
@@ -205,7 +224,7 @@ static int inventory(int source,struct package *p) {
 }
 /* A journal is durable before the first rename. Retained stage before-N.img
  * files are immutable recovery copies. Interrupted transactions block retries. */
-static int commit(int parent,int source,int stage,struct package *p,struct stat *before,char baseline[][65],const char *id,const char *stage_path,const char *user,const char *title,const char *sha) {
+static int commit_run(int parent,int source,int stage,struct package *p,struct stat *before,char baseline[][65],const char *id,const char *stage_path,const char *user,const char *title,const char *sha) {
     char journal[30000];int length=snprintf(journal,sizeof journal,"FORMAT=PSCLOUD_GENERIC_RESTORE_V1\nUSER_ID=%s\nTITLE=%s\nPACKAGE_SHA256=%s\nSTAGE=%s\nSLOTS=%u\n",user,title,sha,stage_path,p->count);
     for(unsigned i=0;i<p->count;i++) {
         char image[48],part[96];snprintf(image,sizeof image,"image-%u.img",i);snprintf(part,sizeof part,".pscloud-%s-%u.new",id,i);
@@ -221,6 +240,8 @@ static int commit(int parent,int source,int stage,struct package *p,struct stat 
         int bad=fd<0||fstat(fd,&st)||st.st_ino!=before[i].st_ino||st.st_dev!=before[i].st_dev||pscloud_file_hash(fd,hash)||strcmp(hash,baseline[i]);if(fd>=0)close(fd);if(bad)return -1;
         snprintf(name,sizeof name,"before-%u.img",i);fd=openat(stage,name,O_RDONLY|O_NOFOLLOW);bad=fd<0||pscloud_file_hash(fd,hash)||strcmp(hash,baseline[i]);if(fd>=0)close(fd);if(bad)return -1;
     }
+    /* Staging is slow; confirm again that no save is mounted before the point of no return. */
+    if(pscloud_no_foreign_mount())return -1;
     if(write_bytes(parent,".restore-active",(const unsigned char *)journal,(size_t)length)||fsync(parent))return -1;
     unsigned changed=0;int failed=0;
     for(unsigned i=0;i<p->count;i++) {
@@ -242,6 +263,12 @@ static int commit(int parent,int source,int stage,struct package *p,struct stat 
     }
     if(unlinkat(parent,".restore-active",0)||fsync(parent))return -1;
     return failed?-1:0;
+}
+/* Unrenamed .new copies are never needed for recovery (before-N.img is), so any failure discards them. */
+static int commit(int parent,int source,int stage,struct package *p,struct stat *before,char baseline[][65],const char *id,const char *stage_path,const char *user,const char *title,const char *sha) {
+    int result=commit_run(parent,source,stage,p,before,baseline,id,stage_path,user,title,sha);
+    if(result)for(unsigned i=0;i<p->count;i++) {char part[96];snprintf(part,sizeof part,".pscloud-%s-%u.new",id,i);(void)unlinkat(source,part,0);}
+    return result;
 }
 int pscloud_share_game(const char *home,const char *root,const char *appmeta,const char *user,const char *title,int mode,const unsigned char *archive,size_t size,char published[128],char checksum[65]) {
     published[0]=0;checksum[0]=0;
