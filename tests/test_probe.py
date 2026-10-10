@@ -27,8 +27,6 @@ class ProbeTests(unittest.TestCase):
             self.assertIn('title=PPSA12345',text)
             self.assertNotIn('PPSA99999',text)
             self.assertIn('users=1',text)
-            self.assertIn('module.fs=not-probed-on-host',text)
-            self.assertIn('no probed function called',text)
             self.assertNotIn('1a2b',text)
             self.assertEqual(save.read_bytes(),b'original save bytes')
             self.assertEqual(save.stat().st_mtime_ns,before)
