@@ -1,4 +1,28 @@
-# PS5 Cloud Save — development milestone 0.15.0
+# PS5 Cloud Save — development milestone 0.16.0
+
+## Version 0.16.0 — back up on game close, clearer receive
+
+**Back up automatically when a game closes** (Cloud settings, off by default). While
+the PSCloud dashboard runs on the PS5, a watcher checks the profiles' save
+containers every 10 seconds. When a game's save files change, that game is marked;
+once no save is mounted (the game has closed) and its files have been unchanged for
+two checks (about 20-30 seconds), the normal backup runs for that game: compact
+when Compact cloud backups is on, otherwise the encrypted whole-game backup (11.40
+only). A PS5 notification confirms it, and it uploads in the background when
+automatic upload is on. Only changes made while the option is on are backed up; it
+waits while another operation runs and retries a failed backup up to three times.
+Backups read staged copies and refuse a save that changes while being copied. The
+setting is stored as GAME_CLOSE_BACKUP in preferences.conf (older files still load).
+Detection relies on file timestamps and the mounted-save check; it has not been
+verified with a running game yet.
+
+**Receive a shared save** now accepts drag and drop, shows the package's game,
+slot count, game version, sender firmware and size, marks steps as done/current/
+upcoming with a "waiting N min" timer, and flags the browser tab when the save is
+checked and ready.
+
+Verified: host tests (including an automatic game-close backup on a changed save,
+and no backup while the option is off) and a local preview of the new receive panel.
 
 ## Version 0.15.0 — guided receive for profiles without a save
 

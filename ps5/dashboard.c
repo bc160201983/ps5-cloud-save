@@ -44,6 +44,7 @@ static _Atomic int cloud_status;
 static _Atomic int auto_upload=1,activity_refresh=1;
 static _Atomic int local_keep_latest;
 static _Atomic int compact_backups;
+static _Atomic int game_close_backup;
 static void prune_local_history(void);
 static struct pscloud_google google,google_pending;
 static char googlepath[1200];
@@ -168,22 +169,20 @@ static void preferences(int sock,const char *form) {
            (strcmp(upload,"0") && strcmp(upload,"1")) || (strcmp(refresh,"0") && strcmp(refresh,"1"))) {
             message(sock,400,"Preferences require explicit on/off values");return;
         }
-        char unavailable[8];
-        if(!parameter(form,"game_close_backup",unavailable,sizeof unavailable) && strcmp(unavailable,"0")) {
-            message(sock,400,"Automatic game-close backup is not available yet");return;
-        }
+        char close_value[8];int on_close=game_close_backup;
+        if(!parameter(form,"game_close_backup",close_value,sizeof close_value)) {if(strcmp(close_value,"0")&&strcmp(close_value,"1")) {message(sock,400,"Invalid game-close backup option");return;}on_close=!strcmp(close_value,"1");}
         char keep[8];int latest=local_keep_latest;
         if(!parameter(form,"local_keep_latest",keep,sizeof keep)) {if(strcmp(keep,"0")&&strcmp(keep,"1")) {message(sock,400,"Invalid local retention option");return;}latest=!strcmp(keep,"1");}
         char compact[8];int data_only=compact_backups;
         if(!parameter(form,"compact_backups",compact,sizeof compact)) {if(strcmp(compact,"0")&&strcmp(compact,"1")) {message(sock,400,"Invalid backup format option");return;}data_only=!strcmp(compact,"1");}
-        char file[1200],text[128];snprintf(file,sizeof file,"%s/preferences.conf",root);
-        snprintf(text,sizeof text,"AUTO_UPLOAD=%s\nACTIVITY_REFRESH=%s\nLOCAL_KEEP_LATEST=%d\nCOMPACT_BACKUPS=%d\n",upload,refresh,latest,data_only);
+        char file[1200],text[160];snprintf(file,sizeof file,"%s/preferences.conf",root);
+        snprintf(text,sizeof text,"AUTO_UPLOAD=%s\nACTIVITY_REFRESH=%s\nLOCAL_KEEP_LATEST=%d\nCOMPACT_BACKUPS=%d\nGAME_CLOSE_BACKUP=%d\n",upload,refresh,latest,data_only,on_close);
         if(atomic_config(file,text)) {message(sock,500,"Preferences could not be saved");return;}
         auto_upload=!strcmp(upload,"1");activity_refresh=!strcmp(refresh,"1");
-        local_keep_latest=latest;compact_backups=data_only;if(latest)prune_local_history();
-        pscloud_log("EVENT","Preferences saved: automatic upload %s; activity refresh %s",auto_upload?"on":"off",activity_refresh?"on":"off");
+        local_keep_latest=latest;compact_backups=data_only;game_close_backup=on_close;if(latest)prune_local_history();
+        pscloud_log("EVENT","Preferences saved: automatic upload %s; activity refresh %s; back up on game close %s",auto_upload?"on":"off",activity_refresh?"on":"off",game_close_backup?"on":"off");
     }
-    char json[512];snprintf(json,sizeof json,"{\"auto_upload\":%s,\"activity_refresh\":%s,\"local_keep_latest\":%s,\"compact_backups\":%s,\"game_close_backup\":false,\"game_close_available\":false,\"sharing_available\":true,\"message\":\"Preferences saved on this PS5\"}",auto_upload?"true":"false",activity_refresh?"true":"false",local_keep_latest?"true":"false",compact_backups?"true":"false");
+    char json[512];snprintf(json,sizeof json,"{\"auto_upload\":%s,\"activity_refresh\":%s,\"local_keep_latest\":%s,\"compact_backups\":%s,\"game_close_backup\":%s,\"game_close_available\":true,\"sharing_available\":true,\"message\":\"Preferences saved on this PS5\"}",auto_upload?"true":"false",activity_refresh?"true":"false",local_keep_latest?"true":"false",compact_backups?"true":"false",game_close_backup?"true":"false");
     respond(sock,200,"application/json",json,strlen(json));
 }
 static void load_preferences(void) {
@@ -193,13 +192,14 @@ static void load_preferences(void) {
     closedir(dir);if(!exists)return;
     auto_upload=0; /* Existing but unreadable preferences must not enable uploads. */
     char path[1200];snprintf(path,sizeof path,"%s/preferences.conf",root);
-    int fd=open(path,O_RDONLY | O_NOFOLLOW | O_NONBLOCK);struct stat st;char data[129]={0};
+    int fd=open(path,O_RDONLY | O_NOFOLLOW | O_NONBLOCK);struct stat st;char data[161]={0};
     if(fd<0)return;
-    if(!fstat(fd,&st) && S_ISREG(st.st_mode) && st.st_size>0 && st.st_size<129) {
-        ssize_t n=read(fd,data,128);
+    if(!fstat(fd,&st) && S_ISREG(st.st_mode) && st.st_size>0 && st.st_size<161) {
+        ssize_t n=read(fd,data,160);
         if(n>0) {
-            int upload,refresh,keep,compact,used=0;
-            if(sscanf(data,"AUTO_UPLOAD=%d\nACTIVITY_REFRESH=%d\nLOCAL_KEEP_LATEST=%d\nCOMPACT_BACKUPS=%d\n%n",&upload,&refresh,&keep,&compact,&used)==4&&used==(int)strlen(data)&&upload>=0&&upload<=1&&refresh>=0&&refresh<=1&&keep>=0&&keep<=1&&compact>=0&&compact<=1) {auto_upload=upload;activity_refresh=refresh;local_keep_latest=keep;compact_backups=compact;}
+            int upload,refresh,keep,compact,on_close,used=0;
+            if(sscanf(data,"AUTO_UPLOAD=%d\nACTIVITY_REFRESH=%d\nLOCAL_KEEP_LATEST=%d\nCOMPACT_BACKUPS=%d\nGAME_CLOSE_BACKUP=%d\n%n",&upload,&refresh,&keep,&compact,&on_close,&used)==5&&used==(int)strlen(data)&&upload>=0&&upload<=1&&refresh>=0&&refresh<=1&&keep>=0&&keep<=1&&compact>=0&&compact<=1&&on_close>=0&&on_close<=1) {auto_upload=upload;activity_refresh=refresh;local_keep_latest=keep;compact_backups=compact;game_close_backup=on_close;}
+            else if(sscanf(data,"AUTO_UPLOAD=%d\nACTIVITY_REFRESH=%d\nLOCAL_KEEP_LATEST=%d\nCOMPACT_BACKUPS=%d\n%n",&upload,&refresh,&keep,&compact,&used)==4&&used==(int)strlen(data)&&upload>=0&&upload<=1&&refresh>=0&&refresh<=1&&keep>=0&&keep<=1&&compact>=0&&compact<=1) {auto_upload=upload;activity_refresh=refresh;local_keep_latest=keep;compact_backups=compact;}
             else if(sscanf(data,"AUTO_UPLOAD=%d\nACTIVITY_REFRESH=%d\nLOCAL_KEEP_LATEST=%d\n%n",&upload,&refresh,&keep,&used)==3 && used==(int)strlen(data) && upload>=0 && upload<=1 && refresh>=0 && refresh<=1 && keep>=0 && keep<=1) {auto_upload=upload;activity_refresh=refresh;local_keep_latest=keep;}
             else if(!strcmp(data,"AUTO_UPLOAD=0\nACTIVITY_REFRESH=0\n")) {auto_upload=0;activity_refresh=0;}
             else if(!strcmp(data,"AUTO_UPLOAD=0\nACTIVITY_REFRESH=1\n")) {auto_upload=0;activity_refresh=1;}
@@ -433,6 +433,16 @@ static void *background_upload(void *arg) {
     free(job);background_active=0;
     pthread_mutex_lock(&clients_mutex);clients--;pthread_cond_broadcast(&clients_done);pthread_mutex_unlock(&clients_mutex);return NULL;
 }
+/* Starts the upload thread for a prepared job; frees the job on failure. */
+static int launch_background(struct background_job *job) {
+    /* Freeze this job's filenames: later PC imports are never auto-uploaded. */
+    background_result=0;background_cancelled=0;pscloud_worker_prepare();background_active=1;
+    pthread_mutex_lock(&clients_mutex);clients++;pthread_mutex_unlock(&clients_mutex);
+    pthread_t thread;pthread_attr_t attr;pthread_attr_init(&attr);pthread_attr_setstacksize(&attr,4U*1024*1024);
+    int bad=pthread_create(&thread,&attr,background_upload,job);pthread_attr_destroy(&attr);
+    if(bad) {background_active=0;free(job);pthread_mutex_lock(&clients_mutex);clients--;pthread_mutex_unlock(&clients_mutex);return -1;}
+    pthread_detach(thread);return 0;
+}
 static void start_background(int sock,const char *form) {
     if(background_active) {message(sock,409,"A background upload is already running");return;}
     struct background_job *job=calloc(1,sizeof *job);if(!job) {message(sock,500,"Not enough memory");return;}
@@ -456,13 +466,7 @@ static void start_background(int sock,const char *form) {
         }closedir(d);}else bad=1;
         if(bad || !job->count) {free(job);message(sock,400,bad?"Queue unavailable or exceeds 256 jobs; upload individual backups":"No queued backups to upload");return;}
     }
-    /* Freeze this job's filenames: later PC imports are never auto-uploaded. */
-    background_result=0;background_cancelled=0;pscloud_worker_prepare();background_active=1;
-    pthread_mutex_lock(&clients_mutex);clients++;pthread_mutex_unlock(&clients_mutex);
-    pthread_t thread;pthread_attr_t attr;pthread_attr_init(&attr);pthread_attr_setstacksize(&attr,4U*1024*1024);
-    int bad=pthread_create(&thread,&attr,background_upload,job);pthread_attr_destroy(&attr);
-    if(bad) {background_active=0;free(job);pthread_mutex_lock(&clients_mutex);clients--;pthread_mutex_unlock(&clients_mutex);message(sock,500,"Could not start background upload; local backups retained");return;}
-    pthread_detach(thread);
+    if(launch_background(job)) {message(sock,500,"Could not start background upload; local backups retained");return;}
     const char *json="{\"ok\":true,\"background\":true,\"message\":\"Background upload started; you can leave this page\"}";
     respond(sock,202,"application/json",json,strlen(json));
 }
@@ -1030,6 +1034,102 @@ static void *client_main(void *arg) {
     if(locked)pthread_mutex_unlock(&operation_mutex);
     close(sock);pthread_mutex_lock(&clients_mutex);clients--;pthread_cond_broadcast(&clients_done);pthread_mutex_unlock(&clients_mutex);return NULL;
 }
+/* Back up on game close. A game whose save containers changed is backed up once no
+ * save is mounted and its files have been unchanged for two checks. The normal
+ * backup path runs under the operation lock (skipped and retried while another
+ * operation runs); backups read staged copies and refuse saves that change while
+ * being copied. Only changes made while this option is on are backed up. */
+struct watched_save {char user[17],title[10];time_t mtime;unsigned stable,attempts;int pending;};
+static struct watched_save watched[512];static unsigned watched_count;static int watch_ready;
+static time_t newest_container(int titledir) {
+    int scan=dup(titledir);DIR *d=scan<0?NULL:fdopendir(scan);if(!d) {if(scan>=0)close(scan);return 0;}
+    time_t newest=0;struct dirent *e;
+    while((e=readdir(d))) {
+        if(strncmp(e->d_name,"sdimg_",6) || !strncmp(e->d_name,"sdimg_sce_bu_",13) || !safe_word(e->d_name+6,63))continue;
+        struct stat st;if(!fstatat(titledir,e->d_name,&st,AT_SYMLINK_NOFOLLOW) && S_ISREG(st.st_mode) && st.st_mtime>newest)newest=st.st_mtime;
+    }
+    closedir(d);return newest;
+}
+static void watch_scan(void) {
+    int dir=pscloud_open_directory(home);DIR *users=NULL;if(dir>=0) {int scan=dup(dir);users=scan<0?NULL:fdopendir(scan);if(!users&&scan>=0)close(scan);}
+    if(!users) {if(dir>=0)close(dir);return;}
+    struct dirent *u;
+    while((u=readdir(users))) {
+        if(!safe_word(u->d_name,16))continue;
+        char path[1400];snprintf(path,sizeof path,"%s/%s/savedata_prospero",home,u->d_name);
+        int saves=pscloud_open_directory(path);if(saves<0)continue;
+        int scan=dup(saves);DIR *titles=scan<0?NULL:fdopendir(scan);if(!titles) {if(scan>=0)close(scan);close(saves);continue;}
+        struct dirent *t;
+        while((t=readdir(titles))) {
+            if(!pscloud_title_valid(t->d_name))continue;
+            int titledir=openat(saves,t->d_name,O_RDONLY | O_DIRECTORY | O_NOFOLLOW);if(titledir<0)continue;
+            time_t newest=newest_container(titledir);close(titledir);if(!newest)continue;
+            struct watched_save *w=NULL;
+            for(unsigned i=0;i<watched_count;i++)if(!strcmp(watched[i].user,u->d_name)&&!strcmp(watched[i].title,t->d_name))w=&watched[i];
+            if(!w) {
+                if(watched_count==sizeof watched/sizeof watched[0])continue;
+                w=&watched[watched_count++];memset(w,0,sizeof *w);snprintf(w->user,sizeof w->user,"%s",u->d_name);snprintf(w->title,sizeof w->title,"%s",t->d_name);
+                w->mtime=newest;w->pending=watch_ready; /* A save that appears later is a new first save. */
+                if(w->pending)pscloud_log("INFO","New save for %s; backup after the game closes",w->title);
+                continue;
+            }
+            if(newest!=w->mtime) {
+                w->mtime=newest;w->stable=0;
+                if(!w->pending) {w->pending=1;w->attempts=0;pscloud_log("INFO","Save changed for %s; backup after the game closes",w->title);}
+            } else if(w->pending)w->stable++;
+        }
+        closedir(titles);close(saves);
+    }
+    closedir(users);close(dir);
+}
+static void watch_backup(struct watched_save *w) {
+    struct pscloud_snapshot s={0};snprintf(s.user,sizeof s.user,"%s",w->user);snprintf(s.title,sizeof s.title,"%s",w->title);
+    strcpy(s.slot,"WholeGame");memset(s.sha256,'0',64);if(!pscloud_snapshot_valid(&s)) {w->pending=0;return;}
+    char name[256];pscloud_app_name(appmeta,w->title,name,sizeof name);
+    pscloud_log_open(logpath);pscloud_log("EVENT","Game closed: backing up %s automatically",name);
+    char published[144]={0};int bad;
+    if(compact_backups)bad=compact_backup(&s,published);
+    else {
+#ifndef PSCLOUD_HOST_TEST
+        if((kernel_get_fw_version()&0xffff0000U)!=0x11400000U) {pscloud_log("WARN","Automatic backup of %s skipped: turn on Compact cloud backups on this firmware",name);w->pending=0;return;}
+#endif
+        bad=pscloud_game_backup_named(home,root,w->user,w->title,published);
+    }
+    pscloud_log_open(logpath);
+    if(bad) {
+        w->stable=0;
+        if(++w->attempts>=3) {w->pending=0;pscloud_log("WARN","Automatic backup of %s failed 3 times; it will retry after the game saves again",name);}
+        else pscloud_log("WARN","Automatic backup of %s failed; retrying shortly",name);
+        return;
+    }
+    w->pending=0;pscloud_notify("Saved a backup of %s after you closed it",name);
+    if(!auto_upload||background_active)return;
+    struct background_job *job=calloc(1,sizeof *job);if(!job)return;
+    if(pscloud_configure(cloudpath,&job->settings)) {free(job);return;}
+    snprintf(job->files[0],sizeof job->files[0],"%s",published);job->count=1;snprintf(job->spool,sizeof job->spool,"%s/spool",root);
+    pthread_mutex_lock(&cache_mutex);snprintf(background_name,sizeof background_name,"%s",name);pthread_mutex_unlock(&cache_mutex);
+    if(launch_background(job))pscloud_log("WARN","Automatic upload of %s could not start; backup stays queued",name);
+}
+static void *game_close_watch(void *unused) {
+    (void)unused;unsigned seconds=0,interval=10;
+#ifdef PSCLOUD_HOST_TEST
+    if(getenv("PSCLOUD_TEST_WATCH_SECONDS"))interval=(unsigned)strtoul(getenv("PSCLOUD_TEST_WATCH_SECONDS"),NULL,10);
+    if(!interval)interval=1;
+#endif
+    while(!stopped) {
+        sleep(1);if(++seconds%interval)continue;
+        if(!game_close_backup) {watch_ready=0;watched_count=0;continue;}
+        watch_scan();
+        if(!watch_ready) {watch_ready=1;continue;}
+        if(pscloud_no_foreign_mount())continue; /* A mounted save means a game is still running. */
+        for(unsigned i=0;i<watched_count&&!stopped;i++) {
+            if(!watched[i].pending||watched[i].stable<2)continue;
+            if(pthread_mutex_trylock(&operation_mutex))break;
+            watch_backup(&watched[i]);pthread_mutex_unlock(&operation_mutex);
+        }
+    }
+    pthread_mutex_lock(&clients_mutex);clients--;pthread_cond_broadcast(&clients_done);pthread_mutex_unlock(&clients_mutex);return NULL;
+}
 int main(int argc,char **argv) {
     unsigned port=8082;
 #ifdef PSCLOUD_HOST_TEST
@@ -1074,6 +1174,13 @@ int main(int argc,char **argv) {
     socklen_t length=sizeof address;getsockname(server,(struct sockaddr *)&address,&length);
     printf("PSCLOUD_DASHBOARD_PORT=%u\nPSCLOUD_DASHBOARD_READY=1\n",ntohs(address.sin_port));fflush(stdout);
     pscloud_notify("PSCloud dashboard ready on port %u - open in your browser",ntohs(address.sin_port));
+    {
+        pthread_t watcher;pthread_attr_t attr;pthread_attr_init(&attr);pthread_attr_setstacksize(&attr,4U*1024*1024);
+        pthread_mutex_lock(&clients_mutex);clients++;pthread_mutex_unlock(&clients_mutex);
+        if(pthread_create(&watcher,&attr,game_close_watch,NULL)) {pthread_mutex_lock(&clients_mutex);clients--;pthread_mutex_unlock(&clients_mutex);pscloud_log("WARN","Game-close backup watcher could not start");}
+        else pthread_detach(watcher);
+        pthread_attr_destroy(&attr);
+    }
     while(!stopped) {
         fd_set readset;FD_ZERO(&readset);FD_SET(server,&readset);struct timeval wait={1,0};
         int ready=select(server+1,&readset,NULL,NULL,&wait);if(ready<=0)continue;

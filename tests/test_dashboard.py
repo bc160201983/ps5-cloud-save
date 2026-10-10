@@ -361,6 +361,32 @@ class DashboardTests(unittest.TestCase):
         status,result=self.request('/api/restore-check',dict(selected,file=queue[0]['file'],confirm='yes'));self.assertEqual(status,200,result)
         self.assertEqual(self.image.read_bytes(),self.original)
 
+    def test_game_close_backup_only_when_enabled_and_after_save_changes(self):
+        import test_portable
+        self.process.terminate();self.process.communicate(timeout=5)
+        fixture=self.fixture.root/'compact';test_portable.PortableTests.sfo(self,fixture/SLOT,SLOT,b'\x44'*8)
+        metadata=self.root/'appmeta/PPSA02433';metadata.mkdir(parents=True);(metadata/'param.json').write_text(json.dumps({'contentVersion':'01.000.002'}))
+        self.start_server(PSCLOUD_TEST_GENERIC_PAYLOADS=str(fixture),PSCLOUD_TEST_WATCH_SECONDS='1')
+        def queue():return self.request('/api/queue')[1]['items']
+        def wait_for(check,seconds):
+            deadline=time.monotonic()+seconds
+            while time.monotonic()<deadline:
+                if check():return True
+                time.sleep(0.5)
+            return check()
+        def touch(offset):t=time.time()+offset;os.utime(self.image,(t,t))
+        status,prefs=self.request('/api/preferences',{'auto_upload':'0','activity_refresh':'1','compact_backups':'1'})
+        self.assertEqual(status,200);self.assertTrue(prefs['game_close_available']);self.assertFalse(prefs['game_close_backup'])
+        touch(100);time.sleep(4);self.assertEqual(queue(),[])
+        status,prefs=self.request('/api/preferences',{'auto_upload':'0','activity_refresh':'1','compact_backups':'1','game_close_backup':'1'})
+        self.assertTrue(prefs['game_close_backup']);self.assertIn('GAME_CLOSE_BACKUP=1',(self.root/'preferences.conf').read_text())
+        time.sleep(3);self.assertEqual(queue(),[])  # enabling records a baseline; earlier changes are not backed up
+        touch(200)
+        self.assertTrue(wait_for(lambda:len(queue())==1,15),queue())
+        self.assertTrue(queue()[0]['file'].startswith('portable-PPSA02433-'))
+        self.assertEqual(self.image.read_bytes(),self.original)
+        self.assertIn('Game closed: backing up',(self.root/'pscloud.log').read_text())
+
     def test_generic_dashboard_import_check_and_download(self):
         import test_sharing
         import test_portable

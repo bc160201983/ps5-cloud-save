@@ -27,7 +27,7 @@ class Handler(BaseHTTPRequestHandler):
             self.send({'version':(ROOT/'VERSION').read_text().strip(),'configured':True,'connected':True,
                        'url':'https://your-nextcloud.example/remote.php/dav/files/you/PS5Backups','username':'Your Nextcloud account'})
         elif path=='/api/preferences':
-            self.send({'auto_upload':True,'activity_refresh':True,'game_close_available':False,'sharing_available':False})
+            self.send({'auto_upload':True,'activity_refresh':True,'game_close_available':True,'game_close_backup':False,'sharing_available':True})
         elif path=='/api/health':self.send({'busy':False})
         elif path=='/api/google/status':self.send({'configured':False,'authorized':False,'pending':False,'transfers_available':False})
         elif path=='/api/queue':
