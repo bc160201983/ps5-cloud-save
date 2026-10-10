@@ -30,6 +30,11 @@ slots" (live saves unchanged). Hades, whose game is not installed on 11.40, now
 exports. No live restore was performed by the developer tooling; live restore and
 in-game loading are left to the user.
 
+User-confirmed on 2026-10-10: a Marvel's Wolverine save shared from the 11.40 console
+to the 7.00 console with v0.13.0 restored live and works in-game. This is the first
+in-game confirmation of the generic live restore path; it is evidence for this game
+and this pair of consoles, not a guarantee for every game.
+
 ## Version 0.12.5 — fix blank dashboard in 0.12.4
 
 Version 0.12.4 shipped a JavaScript syntax error in the busy-banner code, which
