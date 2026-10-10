@@ -1,4 +1,11 @@
-# PS5 Cloud Save — development milestone 0.12.4
+# PS5 Cloud Save — development milestone 0.12.5
+
+## Version 0.12.5 — fix blank dashboard in 0.12.4
+
+Version 0.12.4 shipped a JavaScript syntax error in the busy-banner code, which
+left the whole dashboard page blank on both consoles. Fixed, and a host test now
+syntax-checks the complete embedded script. Page load verified in a browser after
+deployment (see below if recorded); live restore remains unverified.
 
 ## Version 0.12.4 — responsive busy page and all-games export measurement
 

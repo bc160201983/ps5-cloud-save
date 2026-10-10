@@ -43,3 +43,15 @@ const source=html.slice(html.indexOf('async function api('),html.indexOf('\nfunc
 })().catch(e=>{console.error(e);process.exit(1);});
 """
         subprocess.run([node,'-e',script],cwd=ROOT,check=True,timeout=15)
+
+    def test_embedded_script_has_valid_syntax(self):
+        """A syntax error anywhere leaves the whole dashboard blank, so check the full script."""
+        import re,tempfile
+        node=shutil.which('node')
+        if not node:self.skipTest('Node.js is required for the UI fixture')
+        html=(ROOT/'ps5/ui.html').read_text(encoding='utf-8')
+        script=max(re.findall(r'<script[^>]*>(.*?)</script>',html,re.S),key=len)
+        with tempfile.TemporaryDirectory() as tmp:
+            path=Path(tmp)/'ui.js';path.write_text(script,encoding='utf-8')
+            result=subprocess.run([node,'--check',str(path)],capture_output=True,text=True)
+        self.assertEqual(result.returncode,0,result.stderr)
