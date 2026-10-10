@@ -1068,7 +1068,8 @@ static void watch_scan(void) {
             for(unsigned i=0;i<watched_count;i++)if(!strcmp(watched[i].user,u->d_name)&&!strcmp(watched[i].title,t->d_name))w=&watched[i];
             if(!w) {
                 if(watched_count==sizeof watched/sizeof watched[0])continue;
-                w=&watched[watched_count++];memset(w,0,sizeof *w);snprintf(w->user,sizeof w->user,"%s",u->d_name);snprintf(w->title,sizeof w->title,"%s",t->d_name);
+                /* Lengths are already validated (user <=16, title exactly 9). */
+                w=&watched[watched_count++];memset(w,0,sizeof *w);snprintf(w->user,sizeof w->user,"%.16s",u->d_name);snprintf(w->title,sizeof w->title,"%.9s",t->d_name);
                 w->mtime=newest;w->pending=watch_ready; /* A save that appears later is a new first save. */
                 if(w->pending)pscloud_log("INFO","New save for %s; backup after the game closes",w->title);
                 continue;
@@ -1107,7 +1108,7 @@ static void watch_backup(struct watched_save *w) {
     struct background_job *job=calloc(1,sizeof *job);if(!job)return;
     if(pscloud_configure(cloudpath,&job->settings)) {free(job);return;}
     snprintf(job->files[0],sizeof job->files[0],"%s",published);job->count=1;snprintf(job->spool,sizeof job->spool,"%s/spool",root);
-    pthread_mutex_lock(&cache_mutex);snprintf(background_name,sizeof background_name,"%s",name);pthread_mutex_unlock(&cache_mutex);
+    pthread_mutex_lock(&cache_mutex);pscloud_app_name(appmeta,w->title,background_name,sizeof background_name);pthread_mutex_unlock(&cache_mutex);
     if(launch_background(job))pscloud_log("WARN","Automatic upload of %s could not start; backup stays queued",name);
 }
 static void *game_close_watch(void *unused) {
