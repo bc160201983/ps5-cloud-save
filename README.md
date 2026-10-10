@@ -1,4 +1,16 @@
-# PS5 Cloud Save — development milestone 0.12.3
+# PS5 Cloud Save — development milestone 0.12.4
+
+## Version 0.12.4 — responsive busy page and all-games export measurement
+
+While the console is running an operation the dashboard now shows a banner with
+the latest activity line and retries every 1.5 s, instead of a blank page.
+
+Measured on the 11.40 console (read-only staged exports of every game save, user
+with 24 titles): all 11 installed games exported; the other 13 were refused with
+"requires readable installed game version" because they have no /user/appmeta
+entry (saves of uninstalled games). Package sizes were 0.00–4.00 MiB except
+TEKKEN 8 at 229.93 MiB (ghost/replay slots; use slot selection). No imports or
+live restores were run for these packages. Cross-console results are pending.
 
 ## Version 0.12.3 — selective slot export for large saves (host-tested only)
 
