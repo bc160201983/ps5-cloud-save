@@ -1,4 +1,29 @@
-# PS5 Cloud Save — development milestone 0.12.5
+# PS5 Cloud Save — development milestone 0.13.0
+
+## Version 0.13.0 — universal game-data sharing options (host-tested only)
+
+Sharing moves only game data; the receiver keeps its own save keys and metadata,
+so the same path is used for every game with no per-game code. This release
+removes the remaining blanket refusals, each behind an explicit choice:
+
+- Slot selection in the dashboard export (untick large replay/ghost slots).
+- "Skip package slots this profile does not have": imports the slots the receiver
+  has and leaves the rest; refused when none match.
+- "Allow a package from an older or unknown game version": a package from a newer
+  game version is always refused ("update the game first").
+- A smaller receiver container no longer refuses up front; the data is written into
+  the disposable copy and the import is refused only if it does not fit.
+- Saves of games that are not installed on the source can be exported; the package
+  records GAME_VERSION=unknown and the receiver must allow it explicitly. The
+  receiver must have the game installed.
+- Refusals now return the specific reason to the dashboard instead of a generic
+  message.
+
+Still required: the receiver profile must already have a save for the game (create
+one by playing once); creating new save containers is not implemented. Game-level
+account binding can still stop a save from loading. Verified so far: host tests
+only for these options; the earlier 11.40 to 7.00 Crash staged check used the strict
+defaults. No live restore was performed by the developer tooling.
 
 ## Version 0.12.5 — fix blank dashboard in 0.12.4
 

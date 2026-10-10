@@ -27,8 +27,16 @@
 #ifndef PSCLOUD_HOST_TEST
 #include <ps5/kernel.h>
 #endif
+#include <stdarg.h>
 #define SLOTS 128
 #define FILES 4096
+/* Save operations are serialized by the caller, so one shared reason buffer suffices. */
+static char share_error[200];
+const char *pscloud_share_error(void) {return share_error;}
+static void refuse(const char *format,...) {
+    va_list args;va_start(args,format);vsnprintf(share_error,sizeof share_error,format,args);va_end(args);
+    pscloud_log("ERROR","%s",share_error);
+}
 struct entry {char name[1024];const unsigned char *data;size_t size;};
 struct package {unsigned count,fw;char version[32];char slots[SLOTS][64];size_t capacity[SLOTS];struct entry entries[SLOTS+1];};
 static unsigned u16(const unsigned char *p) {return p[0]|((unsigned)p[1]<<8);}
@@ -287,8 +295,23 @@ static int commit(int parent,int source,int stage,struct package *p,struct stat 
     if(result)for(unsigned i=0;i<p->count;i++) {char part[96];snprintf(part,sizeof part,".pscloud-%s-%u.new",id,i);(void)unlinkat(source,part,0);}
     return result;
 }
-int pscloud_share_game(const char *home,const char *root,const char *appmeta,const char *user,const char *title,int mode,const unsigned char *archive,size_t size,const char *only,char published[128],char checksum[65]) {
-    published[0]=0;checksum[0]=0;
+/* Numeric dotted comparison (-1 a older, 0 equal, 1 a newer); -2 when either is not a dotted version. */
+static int version_compare(const char *a,const char *b) {
+    for(;;) {
+        if(*a<'0'||*a>'9'||*b<'0'||*b>'9')return -2;
+        char *ea,*eb;unsigned long x=strtoul(a,&ea,10),y=strtoul(b,&eb,10);
+        if(x!=y)return x<y?-1:1;
+        if(!*ea&&!*eb)return 0;
+        if(*ea&&*ea!='.')return -2;
+        if(*eb&&*eb!='.')return -2;
+        if(!*ea)return -1;
+        if(!*eb)return 1;
+        a=ea+1;b=eb+1;
+    }
+}
+int pscloud_share_game(const char *home,const char *root,const char *appmeta,const char *user,const char *title,int mode,const unsigned char *archive,size_t size,const struct pscloud_share_options *options,char published[128],char checksum[65]) {
+    published[0]=0;checksum[0]=0;share_error[0]=0;
+    const char *only=options?options->only:NULL;int allow_version=options&&options->allow_version,skip_missing=options&&options->skip_missing;
     struct pscloud_snapshot identity={0};if(strlen(user)>=sizeof identity.user||strlen(title)>=sizeof identity.title)return -1;
     strcpy(identity.user,user);strcpy(identity.title,title);strcpy(identity.slot,"WholeGame");memset(identity.sha256,'0',64);
     if(!pscloud_snapshot_valid(&identity)||mode<0||mode>2)return -1;
@@ -302,18 +325,49 @@ int pscloud_share_game(const char *home,const char *root,const char *appmeta,con
     char path[1800],stage_path[1600]={0},mount[1800]={0},id[33],stage_name[80],version[32];
     struct pscloud_mount_state state={0};struct pscloud_save_meta first={0};
     struct stat before[SLOTS];char baseline[SLOTS][65];int original[SLOTS];for(unsigned i=0;i<SLOTS;i++)original[i]=-1;
-    if(mode&&only&&*only) {pscloud_log("ERROR","Slot selection applies to export only");goto done;}
-    if(pscloud_app_version(appmeta,title,version,sizeof version)) {pscloud_log("ERROR","Sharing requires readable installed game version");goto done;}
-    if(mode) {if(!archive||package_parse(archive,size,title,p)||strcmp(p->version,version)||digest(archive,size,checksum)) {pscloud_log("ERROR","Sharing package corrupt, wrong game or installed version mismatch");goto done;}}
+    if(mode&&only&&*only) {refuse("Slot selection applies to export only");goto done;}
+    if(pscloud_app_version(appmeta,title,version,sizeof version)) {
+        /* Receiver must have the game installed; an uninstalled source may still export. */
+        if(mode) {refuse("Install this game on this console before importing its saves");goto done;}
+        strcpy(version,"unknown");pscloud_log("WARN","Installed game version unreadable; package records GAME_VERSION=unknown");
+    }
+    if(mode) {
+        if(!archive||package_parse(archive,size,title,p)||digest(archive,size,checksum)) {refuse("Package is damaged or belongs to another game");goto done;}
+        if(strcmp(p->version,version)) {
+            int order=version_compare(p->version,version);
+            if(order==1) {refuse("Package is from game version %s but this console has %s; update the game first",p->version,version);goto done;}
+            if(!allow_version) {refuse("Package is from game version %s, this console has %s; allow a different game version to continue",p->version,version);goto done;}
+            pscloud_log("WARN","Game version differs (package %s, installed %s); continuing by request",p->version,version);
+        }
+    }
     else {p->fw=fw;strcpy(p->version,version);}
     parent=pscloud_open_directory(root);if(parent<0)goto done;
-    lock=openat(parent,".mount.lock",O_CREAT|O_RDWR|O_NOFOLLOW,0600);if(lock<0||flock(lock,LOCK_EX|LOCK_NB)||pscloud_active_marker(parent)||pscloud_no_foreign_mount())goto done;
-    snprintf(path,sizeof path,"%s/%s/savedata_prospero/%s",home,user,title);source=pscloud_open_directory(path);if(source<0||(!mode&&(inventory(source,p)||select_slots(p,only))))goto done;
+    lock=openat(parent,".mount.lock",O_CREAT|O_RDWR|O_NOFOLLOW,0600);if(lock<0||flock(lock,LOCK_EX|LOCK_NB)||pscloud_active_marker(parent)||pscloud_no_foreign_mount()) {refuse("A save is mounted or another save operation is active; close the game and retry");goto done;}
+    snprintf(path,sizeof path,"%s/%s/savedata_prospero/%s",home,user,title);source=pscloud_open_directory(path);
+    if(source<0) {refuse("This profile has no saves for this game; play it once to create a save");goto done;}
+    if(!mode&&inventory(source,p)) {refuse("No exportable save slots found for this game");goto done;}
+    if(!mode&&select_slots(p,only)) {refuse("Selected slots are invalid or no longer exist");goto done;}
+    if(mode) {
+        /* Optionally drop package slots this profile lacks; entries stay aligned with slots. */
+        unsigned kept=0;
+        for(unsigned i=0;i<p->count;i++) {
+            char name[80];struct stat st;snprintf(name,sizeof name,"sdimg_%s",p->slots[i]);
+            if(fstatat(source,name,&st,AT_SYMLINK_NOFOLLOW)) {
+                if(!skip_missing) {refuse("This profile has no save slot %s; play further to create it or skip missing slots",p->slots[i]);goto done;}
+                pscloud_log("WARN","Receiver has no slot %s; skipped by request",p->slots[i]);continue;
+            }
+            if(kept!=i) {memcpy(p->slots[kept],p->slots[i],sizeof p->slots[0]);p->capacity[kept]=p->capacity[i];p->entries[kept+1]=p->entries[i+1];}
+            kept++;
+        }
+        if(!kept) {refuse("None of the package save slots exist in this profile; play the game once to create a save");goto done;}
+        p->count=kept;
+    }
     size_t total=0;
     for(unsigned i=0;i<p->count;i++) {
         char name[80];snprintf(name,sizeof name,"sdimg_%s",p->slots[i]);original[i]=openat(source,name,O_RDONLY|O_NOFOLLOW|O_NONBLOCK);
-        if(original[i]<0||fstat(original[i],&before[i])||!S_ISREG(before[i].st_mode)||before[i].st_nlink!=1||before[i].st_size<0x860||before[i].st_size>PSCLOUD_SHARE_LIMIT||pscloud_file_hash(original[i],baseline[i]))goto done;
-        if(mode&&(size_t)before[i].st_size<p->capacity[i]) {pscloud_log("ERROR","Recipient slot %s is missing or smaller than source container",p->slots[i]);goto done;}
+        if(original[i]<0||fstat(original[i],&before[i])||!S_ISREG(before[i].st_mode)||before[i].st_nlink!=1||before[i].st_size<0x860||before[i].st_size>PSCLOUD_SHARE_LIMIT||pscloud_file_hash(original[i],baseline[i])) {refuse("Save slot %s could not be read safely",p->slots[i]);goto done;}
+        /* A smaller receiver container is tried on the disposable copy; a payload that does not fit fails there. */
+        if(mode&&(size_t)before[i].st_size<p->capacity[i])pscloud_log("WARN","Receiver slot %s is smaller than the source container; checking whether the data fits",p->slots[i]);
         if(!mode)p->capacity[i]=(size_t)before[i].st_size;
         total+=(size_t)before[i].st_size;if(total>PSCLOUD_SHARE_LIMIT)goto done;
     }
@@ -333,10 +387,12 @@ int pscloud_share_game(const char *home,const char *root,const char *appmeta,con
 #endif
         int dir=pscloud_open_directory(payload);struct pscloud_save_meta meta;char metadata[65],after[65];
         bad=dir<0||metadata_read(dir,title,p->slots[i],&meta,metadata);
-        if(!bad&&meta.account_size&&first.account_size)bad=meta.account_size!=first.account_size||memcmp(meta.account,first.account,meta.account_size);
+        if(bad)refuse("Save slot %s metadata does not belong to this game and profile",p->slots[i]);
+        if(!bad&&meta.account_size&&first.account_size&&(meta.account_size!=first.account_size||memcmp(meta.account,first.account,meta.account_size))) {bad=1;refuse("Save slot %s belongs to a different account than the other slots",p->slots[i]);}
         if(!bad&&meta.account_size&&!first.account_size)first=meta;
-        if(!bad&&mode)bad=extract_payload(dir,&p->entries[i+1])||metadata_read(dir,title,p->slots[i],&meta,after)||strcmp(metadata,after);
-        if(!bad&&!mode) {unsigned files=0;unsigned long long bytes=0;snprintf(path,sizeof path,"%s/slot-%u.zip",stage_path,i);bad=pscloud_zip_export(dir,path,&files,&bytes);}
+        if(!bad&&mode&&extract_payload(dir,&p->entries[i+1])) {bad=1;refuse("Slot %s data could not be written into this console's save container (too large or unsafe)",p->slots[i]);}
+        if(!bad&&mode&&(metadata_read(dir,title,p->slots[i],&meta,after)||strcmp(metadata,after))) {bad=1;refuse("Slot %s metadata changed during import; nothing was replaced",p->slots[i]);}
+        if(!bad&&!mode) {unsigned files=0;unsigned long long bytes=0;snprintf(path,sizeof path,"%s/slot-%u.zip",stage_path,i);bad=pscloud_zip_export(dir,path,&files,&bytes);if(bad)refuse("Slot %s could not be exported",p->slots[i]);}
         if(dir>=0)close(dir);
         if(bad)goto done;
         if(pscloud_mount_end(&state,mount))goto done;
@@ -368,7 +424,7 @@ int pscloud_share_game(const char *home,const char *root,const char *appmeta,con
         if(share>=0)close(share);
         free(verified);if(bad) {published[0]=0;goto done;}
     }
-    if(mode==2&&commit(parent,source,stage,p,before,baseline,id,stage_path,user,title,checksum))goto done;
+    if(mode==2&&commit(parent,source,stage,p,before,baseline,id,stage_path,user,title,checksum)) {refuse("Live replacement stopped; rollback copies are in %s. Check Activity before retrying",stage_path);goto done;}
     pscloud_log("EVENT",mode==2?"GENERIC_RESTORE_COMMITTED=yes; rollback=%s":"LIVE_SAVES_UNCHANGED=yes; generic sharing passed; stage=%s",stage_path);result=0;
     if(mode!=2&&!marker&&!state.mounted&&!state.credentials_saved)discard_completed_stage(parent,stage,stage_name,p->count,!mode);
 done:

@@ -32,6 +32,9 @@ def portable(inner=None,slots=('save1','profile'),title='PPSA10528',version='01.
     for i,slot in enumerate(slots):manifest+=f'SLOT={i}:{slot}:8192:{hashlib.sha256(inner).hexdigest()}\n'
     return zip_bytes([('manifest.txt',manifest.encode())]+[(f'slot-{i}.zip',inner) for i in range(len(slots))])
 
+class ShareOptions(ctypes.Structure):
+    _fields_=[('only',ctypes.c_char_p),('allow_version',ctypes.c_int),('skip_missing',ctypes.c_int)]
+
 class GenericSharingTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -39,7 +42,8 @@ class GenericSharingTests(unittest.TestCase):
         subprocess.run(['cc','-O2','-std=c11','-Wall','-Wextra','-Werror','-fPIC','-shared','-DPSCLOUD_HOST_TEST','-DPSCLOUD_BACKUP_EMBEDDED',*[str(ROOT/p) for p in sources],'-o',str(ROOT/'sharing-host.so'),'-lcrypto'],check=True)
         cls.lib=ctypes.CDLL(str(ROOT/'sharing-host.so'))
         cls.lib.pscloud_share_validate.argtypes=[ctypes.c_void_p,ctypes.c_size_t,ctypes.c_char_p]
-        cls.lib.pscloud_share_game.argtypes=[ctypes.c_char_p]*5+[ctypes.c_int,ctypes.c_void_p,ctypes.c_size_t,ctypes.c_char_p,ctypes.c_void_p,ctypes.c_void_p]
+        cls.lib.pscloud_share_game.argtypes=[ctypes.c_char_p]*5+[ctypes.c_int,ctypes.c_void_p,ctypes.c_size_t,ctypes.c_void_p,ctypes.c_void_p,ctypes.c_void_p]
+        cls.lib.pscloud_share_error.restype=ctypes.c_char_p
 
     def validate(self,data,title=b'PPSA10528'):
         return self.lib.pscloud_share_validate(ctypes.create_string_buffer(data),len(data),title)
@@ -69,12 +73,13 @@ class GenericSharingTests(unittest.TestCase):
             (payload/slot/'stale-file').write_bytes(b'not shared')
         return home,root,base/'meta',live,payload,metadata
 
-    def run_share(self,fixture,mode,data=None,only=None):
+    def run_share(self,fixture,mode,data=None,only=None,allow_version=False,skip_missing=False):
         home,root,meta,live,payload,_=fixture
         old=os.environ.get('PSCLOUD_TEST_GENERIC_PAYLOADS');os.environ['PSCLOUD_TEST_GENERIC_PAYLOADS']=str(payload)
         try:
             published=ctypes.create_string_buffer(128);sha=ctypes.create_string_buffer(65);buf=ctypes.create_string_buffer(data) if data else None
-            result=self.lib.pscloud_share_game(str(home).encode(),str(root).encode(),str(meta).encode(),b'179a0cd8',b'PPSA10528',mode,buf,len(data) if data else 0,only,published,sha)
+            options=ShareOptions(only,int(allow_version),int(skip_missing)) if (only or allow_version or skip_missing) else None
+            result=self.lib.pscloud_share_game(str(home).encode(),str(root).encode(),str(meta).encode(),b'179a0cd8',b'PPSA10528',mode,buf,len(data) if data else 0,ctypes.byref(options) if options else None,published,sha)
             return result,published.value.decode(),sha.value.decode()
         finally:
             if old is None:os.environ.pop('PSCLOUD_TEST_GENERIC_PAYLOADS',None)
@@ -95,11 +100,61 @@ class GenericSharingTests(unittest.TestCase):
             self.assertFalse((f[1]/'.mount-active').exists())
             self.assertFalse(list(f[1].glob('portable-stage-*')))
 
-    def test_version_missing_slot_and_capacity_mismatch_refused_before_mount(self):
-        for kwargs in ({'version':'02.000.000'},{'slots':('save1',)},{'capacity':4096}):
+    def test_version_and_missing_slot_refused_before_mount_by_default(self):
+        for kwargs,reason in (({'version':'02.000.000'},b'allow a different game version'),({'slots':('save1',)},b'no save slot profile')):
             with self.subTest(kwargs=kwargs),tempfile.TemporaryDirectory() as tmp:
                 f=self.fixture(Path(tmp),**kwargs);self.assertNotEqual(self.run_share(f,1,portable())[0],0)
+                self.assertIn(reason,self.lib.pscloud_share_error())
                 self.assertFalse(list(f[1].glob('portable-stage-*')))
+
+    def test_smaller_receiver_container_is_tried_on_staged_copy(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            f=self.fixture(Path(tmp),capacity=4096);self.assertEqual(self.run_share(f,1,portable())[0],0)
+            for slot in ('save1','profile'):self.assertEqual((f[3]/('sdimg_'+slot)).read_bytes(),b'\x02'+b'\0'*4095)
+
+    def test_older_package_version_allowed_only_on_request_newer_never(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            f=self.fixture(Path(tmp),version='02.000.000')
+            self.assertNotEqual(self.run_share(f,1,portable())[0],0)
+            self.assertEqual(self.run_share(f,1,portable(),allow_version=True)[0],0)
+        with tempfile.TemporaryDirectory() as tmp:
+            f=self.fixture(Path(tmp),version='01.000.001')
+            self.assertNotEqual(self.run_share(f,1,portable(),allow_version=True)[0],0)
+            self.assertIn(b'update the game first',self.lib.pscloud_share_error())
+
+    def test_skip_missing_slots_imports_the_rest_and_refuses_when_none_match(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            f=self.fixture(Path(tmp),slots=('save1',))
+            self.assertEqual(self.run_share(f,1,portable(),skip_missing=True)[0],0)
+            self.assertEqual((f[4]/'save1/folder/progress.bin').read_bytes(),b'shared')
+            self.assertFalse((f[4]/'profile').exists())
+        with tempfile.TemporaryDirectory() as tmp:
+            f=self.fixture(Path(tmp),slots=('other',))
+            self.assertNotEqual(self.run_share(f,1,portable(),skip_missing=True)[0],0)
+            self.assertIn(b'None of the package save slots',self.lib.pscloud_share_error())
+            self.assertFalse(list(f[1].glob('portable-stage-*')))
+
+    def test_skip_missing_live_restore_replaces_only_present_slots(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            f=self.fixture(Path(tmp),slots=('save1',))
+            self.assertEqual(self.run_share(f,2,portable(),skip_missing=True)[0],0)
+            self.assertFalse((f[1]/'.restore-active').exists())
+            self.assertEqual(list(f[3].glob('.pscloud-*')),[])
+            self.assertEqual(sorted(p.name for p in f[3].iterdir()),['sdimg_save1'])
+
+    def test_uninstalled_source_exports_unknown_version_that_needs_permission(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            f=self.fixture(Path(tmp));(f[2]/'PPSA10528/param.json').unlink()
+            result,file,_=self.run_share(f,0);self.assertEqual(result,0)
+            data=(f[1]/'share'/file).read_bytes();self.assertEqual(self.validate(data),0)
+            with zipfile.ZipFile(io.BytesIO(data)) as z:self.assertIn(b'GAME_VERSION=unknown\n',z.read('manifest.txt'))
+            self.assertNotEqual(self.run_share(f,1,data)[0],0)
+            self.assertIn(b'Install this game',self.lib.pscloud_share_error())
+        with tempfile.TemporaryDirectory() as tmp:
+            f=self.fixture(Path(tmp))
+            self.assertNotEqual(self.run_share(f,1,data)[0],0)
+            self.assertIn(b'unknown',self.lib.pscloud_share_error())
+            self.assertEqual(self.run_share(f,1,data,allow_version=True)[0],0)
 
     def test_export_inventory_and_no_foreign_metadata(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -648,12 +648,21 @@ static void action(int sock,const char *path,const char *form) {
             int fd=openat(dir,proof,O_RDONLY|O_NOFOLLOW|O_NONBLOCK);int valid=fd>=0&&read(fd,checked,64)==64&&!strcmp(checked,expected);if(fd>=0)close(fd);
             if(!valid||parameter(form,"confirm",confirm,sizeof confirm)||strcmp(confirm,"yes")) {free(data);close(dir);message(sock,400,"Run the staged check for this profile and confirm live replacement first");return;}
         }
-        char published[128],only[1024]={0};int has_slots=exporting&&strstr(form,"slots=");
+        char published[128],only[1024]={0},flag[8];int has_slots=exporting&&strstr(form,"slots=");
         if(has_slots&&parameter(form,"slots",only,sizeof only)) {free(data);if(dir>=0)close(dir);message(sock,400,"Invalid slot selection");return;}
-        int bad=pscloud_share_game(home,root,appmeta,chosen.user,chosen.title,exporting?0:checking?1:2,data,size,only,published,sha);free(data);
+        struct pscloud_share_options options={only,0,0};
+        if(!exporting) {
+            options.allow_version=!parameter(form,"allow_version",flag,sizeof flag)&&!strcmp(flag,"yes");
+            options.skip_missing=!parameter(form,"skip_missing",flag,sizeof flag)&&!strcmp(flag,"yes");
+        }
+        int bad=pscloud_share_game(home,root,appmeta,chosen.user,chosen.title,exporting?0:checking?1:2,data,size,&options,published,sha);free(data);
         if(!bad&&checking) {char proof[240],proofpath[1800];snprintf(proof,sizeof proof,"%s.check-%s",file,chosen.user);snprintf(proofpath,sizeof proofpath,"%s/%s",directory,proof);bad=atomic_config(proofpath,sha);}
         if(dir>=0)close(dir);
-        if(bad) {message(sock,400,"Sharing refused or failed. Requires matching game version, existing same-named receiver slots of sufficient size, valid metadata and clean mounts. Live restores retain rollback; inspect Activity before retrying");return;}
+        if(bad) {
+            char reason[300];const char *why=pscloud_share_error();
+            snprintf(reason,sizeof reason,"Sharing refused: %s",*why?why:"see Activity for details. Live restores retain rollback");
+            message(sock,400,reason);return;
+        }
         char json[640];snprintf(json,sizeof json,"{\"ok\":true,\"file\":\"%s\",\"sha256\":\"%s\",\"message\":\"%s\"}",exporting?published:file,sha,exporting?"Shared package ready to download; live saves unchanged":checking?"Staged check passed; live saves unchanged. In-game compatibility is not guaranteed":"Shared save restored; rollback copies retained. Check progress in-game");respond(sock,200,"application/json",json,strlen(json));return;
     }
     if(!strcmp(path,"/api/delete-cloud")) {
