@@ -22,6 +22,13 @@ Read-only findings on the 11.40 console (details in
 - Sharing replaces container contents only and keeps the receiver's registry row,
   so the system menu may show the old slot title until the game saves again; the
   game loads the shared progress (Wolverine, 11.40 to 7.00, confirmed in-game).
+- Save keys: every container is encrypted with a key that is sealed to the console
+  that owns it. PSCloud only uses the system's own unsealing (see
+  `ps5/common/mount.c`) to open an existing container on the same console, works
+  on a staged copy, and never exports, imports or converts keys. Portable packages
+  contain only game files; the receiver's container, sealed key and `sce_sys`
+  metadata stay its own. This is why sharing works across consoles and accounts,
+  and also why a receiver without its own save cannot be supplied one.
 - When the game has created only some slots, "Skip save slots this profile does
   not have" imports the rest; missing slots can be imported later.
 

@@ -38,6 +38,16 @@ Other locations seen:
 - `/user/home/<user>/savedata_prospero_for_cloud`: used by the system's own cloud
   feature (only a small settings file on the test profile).
 
+## Save keys
+
+Every container is encrypted with a key that is sealed to the console
+that owns it. PSCloud only uses the system's own unsealing (see
+`ps5/common/mount.c`) to open an existing container on the same console, works
+on a staged copy, and never exports, imports or converts keys. Portable packages
+contain only game files; the receiver's container, sealed key and `sce_sys`
+metadata stay its own. This is why sharing works across consoles and accounts,
+and also why a receiver without its own save cannot be supplied one.
+
 ## Effects on sharing
 
 - A shared restore replaces only container contents. The receiver's registry row
