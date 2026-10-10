@@ -450,13 +450,13 @@ static int archive_valid(const unsigned char *data,size_t size,const struct pscl
 }
 static int restore_game_data(const struct pscloud_snapshot *s,const unsigned char *data,size_t size,int check,int smart) {
     if(!pscloud_share_validate(data,size,s->title)) {
-        char published[128],hash[65];return pscloud_share_game(home,root,appmeta,s->user,s->title,check?1:2,data,size,published,hash)?6:0;
+        char published[128],hash[65];return pscloud_share_game(home,root,appmeta,s->user,s->title,check?1:2,data,size,NULL,published,hash)?6:0;
     }
     return check?pscloud_bundle_restore_check(home,root,s,data,size):smart?pscloud_bundle_restore_smart(home,root,s,data,size):pscloud_bundle_restore(home,root,s,data,size);
 }
 static int compact_backup(const struct pscloud_snapshot *chosen,char published[144]) {
     char file[128],hash[65];published[0]=0;
-    if(pscloud_share_game(home,root,appmeta,chosen->user,chosen->title,0,NULL,0,file,hash))return -1;
+    if(pscloud_share_game(home,root,appmeta,chosen->user,chosen->title,0,NULL,0,NULL,file,hash))return -1;
     char shared[1400],spool[1400];snprintf(shared,sizeof shared,"%s/share",root);snprintf(spool,sizeof spool,"%s/spool",root);
     int share=pscloud_open_directory(shared),parent=pscloud_open_directory(root),dir=-1,lock=-1,result=-1;
     unsigned char *data=NULL;size_t size=0;struct pscloud_snapshot s=*chosen;strcpy(s.sha256,hash);s.created=(long long)time(NULL);
@@ -648,7 +648,9 @@ static void action(int sock,const char *path,const char *form) {
             int fd=openat(dir,proof,O_RDONLY|O_NOFOLLOW|O_NONBLOCK);int valid=fd>=0&&read(fd,checked,64)==64&&!strcmp(checked,expected);if(fd>=0)close(fd);
             if(!valid||parameter(form,"confirm",confirm,sizeof confirm)||strcmp(confirm,"yes")) {free(data);close(dir);message(sock,400,"Run the staged check for this profile and confirm live replacement first");return;}
         }
-        char published[128];int bad=pscloud_share_game(home,root,appmeta,chosen.user,chosen.title,exporting?0:checking?1:2,data,size,published,sha);free(data);
+        char published[128],only[1024]={0};int has_slots=exporting&&strstr(form,"slots=");
+        if(has_slots&&parameter(form,"slots",only,sizeof only)) {free(data);if(dir>=0)close(dir);message(sock,400,"Invalid slot selection");return;}
+        int bad=pscloud_share_game(home,root,appmeta,chosen.user,chosen.title,exporting?0:checking?1:2,data,size,only,published,sha);free(data);
         if(!bad&&checking) {char proof[240],proofpath[1800];snprintf(proof,sizeof proof,"%s.check-%s",file,chosen.user);snprintf(proofpath,sizeof proofpath,"%s/%s",directory,proof);bad=atomic_config(proofpath,sha);}
         if(dir>=0)close(dir);
         if(bad) {message(sock,400,"Sharing refused or failed. Requires matching game version, existing same-named receiver slots of sufficient size, valid metadata and clean mounts. Live restores retain rollback; inspect Activity before retrying");return;}

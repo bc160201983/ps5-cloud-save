@@ -39,7 +39,7 @@ class GenericSharingTests(unittest.TestCase):
         subprocess.run(['cc','-O2','-std=c11','-Wall','-Wextra','-Werror','-fPIC','-shared','-DPSCLOUD_HOST_TEST','-DPSCLOUD_BACKUP_EMBEDDED',*[str(ROOT/p) for p in sources],'-o',str(ROOT/'sharing-host.so'),'-lcrypto'],check=True)
         cls.lib=ctypes.CDLL(str(ROOT/'sharing-host.so'))
         cls.lib.pscloud_share_validate.argtypes=[ctypes.c_void_p,ctypes.c_size_t,ctypes.c_char_p]
-        cls.lib.pscloud_share_game.argtypes=[ctypes.c_char_p]*5+[ctypes.c_int,ctypes.c_void_p,ctypes.c_size_t,ctypes.c_void_p,ctypes.c_void_p]
+        cls.lib.pscloud_share_game.argtypes=[ctypes.c_char_p]*5+[ctypes.c_int,ctypes.c_void_p,ctypes.c_size_t,ctypes.c_char_p,ctypes.c_void_p,ctypes.c_void_p]
 
     def validate(self,data,title=b'PPSA10528'):
         return self.lib.pscloud_share_validate(ctypes.create_string_buffer(data),len(data),title)
@@ -69,12 +69,12 @@ class GenericSharingTests(unittest.TestCase):
             (payload/slot/'stale-file').write_bytes(b'not shared')
         return home,root,base/'meta',live,payload,metadata
 
-    def run_share(self,fixture,mode,data=None):
+    def run_share(self,fixture,mode,data=None,only=None):
         home,root,meta,live,payload,_=fixture
         old=os.environ.get('PSCLOUD_TEST_GENERIC_PAYLOADS');os.environ['PSCLOUD_TEST_GENERIC_PAYLOADS']=str(payload)
         try:
             published=ctypes.create_string_buffer(128);sha=ctypes.create_string_buffer(65);buf=ctypes.create_string_buffer(data) if data else None
-            result=self.lib.pscloud_share_game(str(home).encode(),str(root).encode(),str(meta).encode(),b'179a0cd8',b'PPSA10528',mode,buf,len(data) if data else 0,published,sha)
+            result=self.lib.pscloud_share_game(str(home).encode(),str(root).encode(),str(meta).encode(),b'179a0cd8',b'PPSA10528',mode,buf,len(data) if data else 0,only,published,sha)
             return result,published.value.decode(),sha.value.decode()
         finally:
             if old is None:os.environ.pop('PSCLOUD_TEST_GENERIC_PAYLOADS',None)
@@ -109,6 +109,21 @@ class GenericSharingTests(unittest.TestCase):
                 self.assertEqual(z.namelist(),['manifest.txt','slot-0.zip','slot-1.zip'])
                 for slot in z.namelist()[1:]:
                     with zipfile.ZipFile(io.BytesIO(z.read(slot))) as inner:self.assertFalse(any('sce_sys' in n for n in inner.namelist()))
+
+    def test_export_can_select_slots_and_refuses_bad_selection(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            f=self.fixture(Path(tmp));result,file,_=self.run_share(f,0,only=b'profile');self.assertEqual(result,0)
+            data=(f[1]/'share'/file).read_bytes();self.assertEqual(self.validate(data),0)
+            with zipfile.ZipFile(io.BytesIO(data)) as z:
+                self.assertEqual(z.namelist(),['manifest.txt','slot-0.zip'])
+                self.assertIn(b'SLOT=0:profile:',z.read('manifest.txt'))
+                self.assertNotIn(b'save1',z.read('manifest.txt'))
+        for only in (b'missing',b'save1,save1',b'save1,../x',b',',b'save1,missing'):
+            with self.subTest(only=only),tempfile.TemporaryDirectory() as tmp:
+                f=self.fixture(Path(tmp));self.assertNotEqual(self.run_share(f,0,only=only)[0],0)
+                self.assertEqual(list((f[1]/'share').glob('portable-*.zip')) if (f[1]/'share').exists() else [],[])
+        with tempfile.TemporaryDirectory() as tmp:
+            f=self.fixture(Path(tmp));self.assertNotEqual(self.run_share(f,1,portable(),only=b'save1')[0],0)
 
     def test_failed_unmount_retains_marker(self):
         with tempfile.TemporaryDirectory() as tmp:

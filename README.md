@@ -1,4 +1,17 @@
-# PS5 Cloud Save — development milestone 0.12.2
+# PS5 Cloud Save — development milestone 0.12.3
+
+## Version 0.12.3 — selective slot export for large saves (host-tested only)
+
+Sharing export accepts an optional `slots` list (dashboard `/api/share-export`
+parameter, comma-separated slot names) so only chosen slots are packaged. Unknown,
+duplicate or malformed names refuse the export; check/restore never accept a
+selection and import exactly what the package contains, leaving other receiver
+slots untouched. Measured on the 11.40 console (read-only staged exports): a
+342 MiB Alan Wake 2 container set packaged to 1.58 MiB because containers are
+mostly unused space, while TEKKEN 8 stays 230 MiB (already-compressed Unreal
+files; ghost/replay slots are about 165 MiB of it), which is what the selection
+is for. Not yet verified on a console; there is no UI control yet and no
+compression.
 
 ## Version 0.12.2 — live restore commit hardening (host-tested only)
 
@@ -542,7 +555,7 @@ their live console checks remain pending.
 
 ## Version 0.5.0
 
-- Responsive embedded dashboard on PS5 port 8082, with pairing-code protection.
+- Responsive embedded dashboard on PS5 port 8082, (manual pairing was removed; keep it on a trusted LAN).
 - Nextcloud app-password connection check and private on-console settings.
 - Game cards, separate user/save-slot selection, committed cloud version listing,
   verified download, backup/upload from one button, and recent activity.

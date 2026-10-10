@@ -222,6 +222,23 @@ static int inventory(int source,struct package *p) {
         if(!word(e->d_name+6,63)||p->count==SLOTS) {bad=1;break;}strcpy(p->slots[p->count++],e->d_name+6);}
     closedir(d);if(bad||!p->count)return -1;qsort(p->slots,p->count,sizeof p->slots[0],order);return 0;
 }
+/* Keeps only the named slots (export). Unknown, duplicate or malformed names refuse the export. */
+static int select_slots(struct package *p,const char *only) {
+    if(!only||!*only)return 0;
+    char copy[1024],keep[SLOTS][64];unsigned n=0;if(strlen(only)>=sizeof copy)return -1;
+    strcpy(copy,only);char *save=NULL;
+    for(char *token=strtok_r(copy,",",&save);token;token=strtok_r(NULL,",",&save)) {
+        if(!word(token,63)||n==SLOTS)return -1;
+        unsigned found=0;for(unsigned i=0;i<p->count;i++)if(!strcmp(p->slots[i],token))found=1;
+        for(unsigned j=0;j<n;j++)if(!strcmp(keep[j],token))return -1;
+        if(!found)return -1;
+        strcpy(keep[n++],token);
+    }
+    if(!n)return -1;
+    unsigned out=0;
+    for(unsigned i=0;i<p->count;i++)for(unsigned j=0;j<n;j++)if(!strcmp(p->slots[i],keep[j])) {if(out!=i)memcpy(p->slots[out],p->slots[i],sizeof p->slots[0]);out++;break;}
+    p->count=out;return out?0:-1;
+}
 /* A journal is durable before the first rename. Retained stage before-N.img
  * files are immutable recovery copies. Interrupted transactions block retries. */
 static int commit_run(int parent,int source,int stage,struct package *p,struct stat *before,char baseline[][65],const char *id,const char *stage_path,const char *user,const char *title,const char *sha) {
@@ -270,7 +287,7 @@ static int commit(int parent,int source,int stage,struct package *p,struct stat 
     if(result)for(unsigned i=0;i<p->count;i++) {char part[96];snprintf(part,sizeof part,".pscloud-%s-%u.new",id,i);(void)unlinkat(source,part,0);}
     return result;
 }
-int pscloud_share_game(const char *home,const char *root,const char *appmeta,const char *user,const char *title,int mode,const unsigned char *archive,size_t size,char published[128],char checksum[65]) {
+int pscloud_share_game(const char *home,const char *root,const char *appmeta,const char *user,const char *title,int mode,const unsigned char *archive,size_t size,const char *only,char published[128],char checksum[65]) {
     published[0]=0;checksum[0]=0;
     struct pscloud_snapshot identity={0};if(strlen(user)>=sizeof identity.user||strlen(title)>=sizeof identity.title)return -1;
     strcpy(identity.user,user);strcpy(identity.title,title);strcpy(identity.slot,"WholeGame");memset(identity.sha256,'0',64);
@@ -285,12 +302,13 @@ int pscloud_share_game(const char *home,const char *root,const char *appmeta,con
     char path[1800],stage_path[1600]={0},mount[1800]={0},id[33],stage_name[80],version[32];
     struct pscloud_mount_state state={0};struct pscloud_save_meta first={0};
     struct stat before[SLOTS];char baseline[SLOTS][65];int original[SLOTS];for(unsigned i=0;i<SLOTS;i++)original[i]=-1;
+    if(mode&&only&&*only) {pscloud_log("ERROR","Slot selection applies to export only");goto done;}
     if(pscloud_app_version(appmeta,title,version,sizeof version)) {pscloud_log("ERROR","Sharing requires readable installed game version");goto done;}
     if(mode) {if(!archive||package_parse(archive,size,title,p)||strcmp(p->version,version)||digest(archive,size,checksum)) {pscloud_log("ERROR","Sharing package corrupt, wrong game or installed version mismatch");goto done;}}
     else {p->fw=fw;strcpy(p->version,version);}
     parent=pscloud_open_directory(root);if(parent<0)goto done;
     lock=openat(parent,".mount.lock",O_CREAT|O_RDWR|O_NOFOLLOW,0600);if(lock<0||flock(lock,LOCK_EX|LOCK_NB)||pscloud_active_marker(parent)||pscloud_no_foreign_mount())goto done;
-    snprintf(path,sizeof path,"%s/%s/savedata_prospero/%s",home,user,title);source=pscloud_open_directory(path);if(source<0||(!mode&&inventory(source,p)))goto done;
+    snprintf(path,sizeof path,"%s/%s/savedata_prospero/%s",home,user,title);source=pscloud_open_directory(path);if(source<0||(!mode&&(inventory(source,p)||select_slots(p,only))))goto done;
     size_t total=0;
     for(unsigned i=0;i<p->count;i++) {
         char name[80];snprintf(name,sizeof name,"sdimg_%s",p->slots[i]);original[i]=openat(source,name,O_RDONLY|O_NOFOLLOW|O_NONBLOCK);

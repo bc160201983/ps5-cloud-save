@@ -36,7 +36,7 @@ int main(int argc,char **argv) {
         int bad=dir<0||pscloud_read_archive(dir,package,&data,&size);if(dir>=0)close(dir);if(bad)return 2;
     }
     char log[1400],published[128],hash[65];snprintf(log,sizeof log,"%s/share-game.log",root);pscloud_log_open(log);
-    int result=pscloud_share_game(home,root,meta,user,title,checking,data,size,published,hash);free(data);
+    int result=pscloud_share_game(home,root,meta,user,title,checking,data,size,NULL,published,hash);free(data);
     if(!result&&!checking)pscloud_log("EVENT","PORTABLE_PACKAGE=%s/share/%s; SHA256=%s",root,published,hash);
     pscloud_log_close();return result?1:0;
 }
