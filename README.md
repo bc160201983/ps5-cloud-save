@@ -23,6 +23,9 @@ checked and ready.
 
 Verified: host tests (including an automatic game-close backup on a changed save,
 and no backup while the option is off) and a local preview of the new receive panel.
+Deployed to both consoles: pages load without script errors, existing preferences
+were kept, and game-close backup is available but off until enabled in Cloud
+settings. A real game-close backup has not been observed on a console yet.
 
 ## Version 0.15.0 — guided receive for profiles without a save
 
