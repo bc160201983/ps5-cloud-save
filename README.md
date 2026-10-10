@@ -1,5 +1,30 @@
 # PS5 Cloud Save — development milestone 0.14.0
 
+## Receiver saves: findings (2026-10-10)
+
+The receiving profile must already have a save for the game: start the game once
+so the game creates its own save, close it, then import. PSCloud does not create
+save containers, because that would mean handling the console's save encryption
+outside the system's own save process. This is a deliberate decision, not a
+pending feature.
+
+Read-only findings on the 11.40 console (details in
+[ps5/SAVE_CREATION.md](ps5/SAVE_CREATION.md)):
+
+- Each PS5 save slot is an encrypted container
+  (`/user/home/<user>/savedata_prospero/<title>/sdimg_<slot>`), one row in the
+  per-user SQLite registry
+  `/system_data/savedata_prospero/<user>/db/user/savedata.db`, and a menu icon in
+  `savedata_prospero_meta`. The registry row mirrors the container's titles, size,
+  account ID and user ID.
+- `/system_data/savedata/<user>/db/user/savedata.db` is the separate PS4/legacy
+  registry and is not used for PS5 saves.
+- Sharing replaces container contents only and keeps the receiver's registry row,
+  so the system menu may show the old slot title until the game saves again; the
+  game loads the shared progress (Wolverine, 11.40 to 7.00, confirmed in-game).
+- When the game has created only some slots, "Skip save slots this profile does
+  not have" imports the rest; missing slots can be imported later.
+
 ## Version 0.14.0 — simpler dashboard for sharing
 
 - Library: search box, installed games listed first, plain wording ("2 save
