@@ -14,6 +14,10 @@ and switch profiles, and Cloud settings and Activity stay shared for the console
 
 Verified: page script syntax check and a local preview with two sample profiles
 (switching filters games and queue; the choice survives a reload).
+CI passed. Deployed on 2026-10-11 to both consoles. On 11.40 (profiles M-Bilal,
+User2, fat) switching showed 24 games for M-Bilal and 2 for User2, with the one
+queued backup listed only under its own profile; no script errors. 7.00 lists
+profiles User1 and bilal.
 
 
 ## Version 0.17.0 — every jailbroken PS5 firmware
