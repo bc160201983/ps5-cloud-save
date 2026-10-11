@@ -118,9 +118,9 @@ int pscloud_app_version(const char *root,const char *title,char *version,size_t 
     free(json);return bad?-1:0;
 }
 
-/* Two text fields of a save's param.sfo (MAINTITLE and SAVEDATA_DIRECTORY). */
-static int sfo_texts(const char *path,char *title,size_t title_max,char *slot,size_t slot_max) {
-    title[0]=slot[0]=0;
+/* Text fields of a save's param.sfo, by key. Missing fields come back empty. */
+static int sfo_fields(const char *path,const char *const wanted[],char *const outs[],const size_t maxes[],unsigned count_keys) {
+    for(unsigned k=0;k<count_keys;k++)outs[k][0]=0;
     int fd=open(path,O_RDONLY | O_NOFOLLOW | O_NONBLOCK);if(fd<0)return -1;
     struct stat st;if(fstat(fd,&st) || !S_ISREG(st.st_mode) || st.st_size<20 || st.st_size>65536) {close(fd);return -1;}
     size_t size=(size_t)st.st_size;unsigned char *d=malloc(size);if(!d) {close(fd);return -1;}
@@ -134,15 +134,14 @@ static int sfo_texts(const char *path,char *title,size_t title_max,char *slot,si
         const unsigned char *e=d+20+16*i;size_t ko=R16(e),length=R32(e+4),offset=R32(e+12);
         if(ko>=values-keys||offset>size-values||length>size-values-offset)break;
         const char *key=(const char *)d+keys+ko;if(!memchr(key,0,values-keys-ko))break;
-        int which=!strcmp(key,"MAINTITLE")?1:!strcmp(key,"SAVEDATA_DIRECTORY")?2:0;
-        if(!which||R16(e+2)!=0x0204||!length)continue;
+        unsigned which=count_keys;for(unsigned k=0;k<count_keys;k++)if(!strcmp(key,wanted[k]))which=k;
+        if(which==count_keys||R16(e+2)!=0x0204||!length)continue;
         const unsigned char *v=d+values+offset,*end=memchr(v,0,length);size_t n=end?(size_t)(end-v):length;
-        char *out=which==1?title:slot;size_t max=which==1?title_max:slot_max;
-        if(n&&n<max) {memcpy(out,v,n);out[n]=0;}
+        if(n&&n<maxes[which]) {memcpy(outs[which],v,n);outs[which][n]=0;}
     }
     #undef R16
     #undef R32
-    free(d);return bad||!title[0]?-1:0;
+    free(d);return bad?-1:0;
 }
 static int generic_label(const char *label) {
     static const char *const generic[]={"save data","saved data","savedata","game data","gamedata","data","save","saves","settings",
@@ -151,6 +150,18 @@ static int generic_label(const char *label) {
     for(size_t i=0;i<=n;i++)lower[i]=(char)((label[i]>='A'&&label[i]<='Z')?label[i]+32:label[i]);
     for(unsigned i=0;generic[i];i++)if(!strcmp(lower,generic[i]))return 1;
     return 0;
+}
+static int sfo_texts(const char *path,char *title,size_t title_max,char *slot,size_t slot_max) {
+    static const char *const keys[]={"MAINTITLE","SAVEDATA_DIRECTORY"};char *const outs[]={title,slot};const size_t maxes[]={title_max,slot_max};
+    return sfo_fields(path,keys,outs,maxes,2)||!title[0]?-1:0;
+}
+/* What the PS5 shows for one save slot: its title, subtitle and detail lines. */
+int pscloud_save_slot_info(const char *home,const char *user,const char *title,const char *slot,char *main,size_t main_max,char *sub,size_t sub_max,char *detail,size_t detail_max) {
+    main[0]=sub[0]=detail[0]=0;
+    if(!pscloud_title_valid(title)||strchr(user,'/')||strlen(user)>16||strchr(slot,'/')||strlen(slot)>63)return -1;
+    char path[1600];if(snprintf(path,sizeof path,"%s/%s/savedata_prospero_meta/user/%s/sce_bu_%s.sfo",home,user,title,slot)>=(int)sizeof path)return -1;
+    static const char *const keys[]={"MAINTITLE","SUBTITLE","DETAIL"};char *const outs[]={main,sub,detail};const size_t maxes[]={main_max,sub_max,detail_max};
+    return sfo_fields(path,keys,outs,maxes,3);
 }
 int pscloud_save_title_name(const char *home,const char *user,const char *title,char *name,size_t max) {
     if(!max||!pscloud_title_valid(title)||strchr(user,'/')||strlen(user)>16)return -1;

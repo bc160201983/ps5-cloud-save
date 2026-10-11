@@ -577,6 +577,61 @@ class DashboardTests(unittest.TestCase):
         self.assertEqual(list((self.root/'share').glob('portable-*.zip')),[])
         self.assertEqual(self.image.read_bytes(),self.original)
 
+    def test_slot_labels_and_pictures_come_from_the_consoles_save_info(self):
+        meta=self.home/'1eb70483/savedata_prospero_meta/user/PPSA02433';meta.mkdir(parents=True)
+        (meta/('sce_bu_'+SLOT+'.sfo')).write_bytes(self.save_sfo({'MAINTITLE':'Slot 1 [Auto] A Debt Repaid','SUBTITLE':'Chapter 3','DETAIL':'2h 14m','SAVEDATA_DIRECTORY':SLOT}))
+        (meta/(SLOT+'_icon0.png')).write_bytes(b'\x89PNG\r\n\x1a\n'+b'\0'*16)
+        slot=next(g for g in self.request('/api/games')[1]['games'] if g['slot']==SLOT)
+        self.assertEqual((slot['label'],slot['sub'],slot['detail']),('Slot 1 [Auto] A Debt Repaid','Chapter 3','2h 14m'))
+        query=urllib.parse.urlencode({'user':'1eb70483','title':'PPSA02433','slot':SLOT})
+        self.assertEqual(self.binary('/api/slot-icon?'+query)[0],200)
+        self.assertEqual(self.binary('/api/slot-icon?'+urllib.parse.urlencode({'user':'1eb70483','title':'PPSA02433','slot':'../x'}))[0],400)
+
+    def test_per_game_settings_are_saved_and_default_to_on(self):
+        self.assertEqual(self.request('/api/game-settings?title=PPSA02433')[1],{'title':'PPSA02433','close_backup':True,'backup_all':True})
+        status,_=self.request('/api/game-settings',{'title':'PPSA02433','close_backup':'0','backup_all':'1'});self.assertEqual(status,200)
+        self.assertEqual(self.request('/api/game-settings?title=PPSA02433')[1]['close_backup'],False)
+        self.assertIn('PPSA02433 CLOSE=0 ALL=1',(self.root/'games.conf').read_text())
+        self.assertEqual(self.request('/api/game-settings',{'title':'../x','close_backup':'0','backup_all':'1'})[0],400)
+
+    def batch_fixture(self,**extra):
+        import test_portable
+        self.process.terminate();self.process.communicate(timeout=5)
+        fixture=self.fixture.root/'compact';test_portable.PortableTests.sfo(self,fixture/SLOT,SLOT,b'\x44'*8)
+        metadata=self.root/'appmeta/PPSA02433';metadata.mkdir(parents=True);(metadata/'param.json').write_text(json.dumps({'contentVersion':'01.000.002'}))
+        self.start_server(PSCLOUD_TEST_GENERIC_PAYLOADS=str(fixture),**extra)
+        self.request('/api/preferences',{'auto_upload':'0','activity_refresh':'1','compact_backups':'1'})
+
+    def wait_batch(self):
+        deadline=time.monotonic()+30
+        while time.monotonic()<deadline:
+            data=self.request('/api/backup-all')[1]
+            if not data['running'] and data['finished']:return data
+            time.sleep(0.3)
+        self.fail('Back up all games did not finish')
+
+    def test_back_up_all_games_counts_new_unchanged_and_switched_off_games(self):
+        self.batch_fixture()
+        self.assertEqual(self.request('/api/backup-all-start',{'user':'1eb70483'})[0],200)
+        data=self.wait_batch();self.assertEqual((data['total'],data['backed'],data['unchanged'],data['failed']),(1,1,0,0))
+        ready=list((self.root/'spool').glob('*.ready'));self.assertEqual(len(ready),1)
+        self.assertEqual(self.request('/api/backup-all-start',{})[0],200)
+        data=self.wait_batch();self.assertEqual((data['backed'],data['unchanged']),(0,1))
+        self.assertEqual(list((self.root/'spool').glob('*.ready')),ready)  # unchanged: not queued again
+        self.request('/api/game-settings',{'title':'PPSA02433','close_backup':'1','backup_all':'0'})
+        self.request('/api/backup-all-start',{});self.assertEqual(self.wait_batch()['skipped'],1)
+        self.assertEqual(self.request('/api/backup-all-start',{'user':'../x'})[0],400)
+        self.assertEqual(self.image.read_bytes(),self.original)
+
+    def test_nightly_schedule_runs_once_a_day(self):
+        self.batch_fixture(PSCLOUD_TEST_SCHEDULE_NOW='1')
+        self.assertEqual(self.request('/api/schedule',{'hour':'25'})[0],400)
+        self.assertEqual(self.request('/api/schedule',{'hour':'3'})[0],200)
+        self.assertIn('HOUR=3',(self.root/'schedule.conf').read_text())
+        data=self.wait_batch();self.assertEqual(data['backed'],1);self.assertTrue(data['schedule_last'])
+        time.sleep(2);self.assertEqual(self.request('/api/backup-all')[1]['started'],data['started'])  # not again today
+        self.assertEqual(self.request('/api/schedule',{'hour':'-1'})[0],200)
+
     def test_game_close_backup_waits_while_the_game_is_still_running(self):
         import test_portable
         self.process.terminate();self.process.communicate(timeout=5)

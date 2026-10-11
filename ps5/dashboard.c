@@ -124,6 +124,17 @@ static int legacy_firmware(void) {return firmware_id==0x11400000U;}
 static int firmware_tested(void) {return firmware_id==0x11400000U||firmware_id==0x07000000U;}
 static int compact_effective(void) {return compact_backups||!legacy_firmware();}
 static void prune_local_history(void);
+/* Per-game choices, in <root>/games.conf as "PPSA03671 CLOSE=1 ALL=1". Missing = on. */
+struct game_setting {char title[10];int close_backup,backup_all;};
+static struct game_setting game_settings[512];static unsigned game_settings_count;
+static pthread_mutex_t settings_mutex=PTHREAD_MUTEX_INITIALIZER;
+static void game_settings_load(void);
+static int game_setting(const char *title,int which);
+static void batch_json(int sock);
+static int batch_start(const char *user);
+static int schedule_save(void);
+static void schedule_load(void);
+static int schedule_hour;
 static struct pscloud_google google,google_pending;
 static char googlepath[1200];
 static pthread_mutex_t operation_mutex=PTHREAD_MUTEX_INITIALIZER;
@@ -132,7 +143,7 @@ static pthread_cond_t clients_done=PTHREAD_COND_INITIALIZER;
 static unsigned clients;
 static _Atomic int background_active,background_result,background_cancelled;
 static pthread_mutex_t cache_mutex=PTHREAD_MUTEX_INITIALIZER;
-static char games_cache[131072],queue_cache[65536];
+static char games_cache[262144],queue_cache[65536];
 static char background_name[256];
 static void cache_store(char *cache,size_t cap,const char *json) {
     pthread_mutex_lock(&cache_mutex);snprintf(cache,cap,"%s",json);pthread_mutex_unlock(&cache_mutex);
@@ -288,6 +299,37 @@ static void load_preferences(void) {
     } else {auto_upload=0;pscloud_log("WARN","Unreadable preferences; automatic upload paused");}
     close(fd);
 }
+static void game_settings_load(void) {
+    char path[1400];snprintf(path,sizeof path,"%s/games.conf",root);FILE *f=fopen(path,"r");if(!f)return;
+    pthread_mutex_lock(&settings_mutex);game_settings_count=0;char line[128];
+    while(fgets(line,sizeof line,f)&&game_settings_count<512) {
+        struct game_setting g={{0},1,1};if(sscanf(line,"%9s CLOSE=%d ALL=%d",g.title,&g.close_backup,&g.backup_all)!=3||!pscloud_title_valid(g.title))continue;
+        g.close_backup=g.close_backup!=0;g.backup_all=g.backup_all!=0;game_settings[game_settings_count++]=g;
+    }
+    pthread_mutex_unlock(&settings_mutex);fclose(f);
+}
+/* which: 0 = back up when closed, 1 = include in Back up all */
+static int game_setting(const char *title,int which) {
+    int value=1;pthread_mutex_lock(&settings_mutex);
+    for(unsigned i=0;i<game_settings_count;i++)if(!strcmp(game_settings[i].title,title))value=which?game_settings[i].backup_all:game_settings[i].close_backup;
+    pthread_mutex_unlock(&settings_mutex);return value;
+}
+static int game_settings_save(const char *title,int close_backup,int backup_all) {
+    pthread_mutex_lock(&settings_mutex);unsigned i=0;
+    while(i<game_settings_count&&strcmp(game_settings[i].title,title))i++;
+    if(i==game_settings_count) {if(i==512) {pthread_mutex_unlock(&settings_mutex);return -1;}snprintf(game_settings[i].title,sizeof game_settings[i].title,"%.9s",title);game_settings_count++;}
+    game_settings[i].close_backup=close_backup;game_settings[i].backup_all=backup_all;
+    char *text=malloc(512*32);size_t n=0;
+    for(unsigned k=0;text&&k<game_settings_count;k++)if(!game_settings[k].close_backup||!game_settings[k].backup_all)n+=(size_t)snprintf(text+n,512*32-n,"%s CLOSE=%d ALL=%d\n",game_settings[k].title,game_settings[k].close_backup,game_settings[k].backup_all);
+    pthread_mutex_unlock(&settings_mutex);
+    char path[1400];snprintf(path,sizeof path,"%s/games.conf",root);
+    int bad=!text||atomic_config(path,n?text:"");free(text);return bad?-1:0;
+}
+static void game_settings_json(int sock,const char *query) {
+    char title[16];if(parameter(query,"title",title,sizeof title)||!pscloud_title_valid(title)) {reject(sock,400,"Invalid game");return;}
+    char json[160];snprintf(json,sizeof json,"{\"title\":\"%s\",\"close_backup\":%s,\"backup_all\":%s}",title,game_setting(title,0)?"true":"false",game_setting(title,1)?"true":"false");
+    respond(sock,200,"application/json",json,strlen(json));
+}
 static void escaped(char *out,size_t max,const char *input) {
     size_t n=0;
     while(*input && n+7<max) {
@@ -315,10 +357,11 @@ static int remote_snapshot(const struct settings *cloud,const struct pscloud_sna
     return 0;
 }
 static void games(int sock) {
-    char json[131072]="{\"games\":[";size_t pos=strlen(json);unsigned count=0;
-    int dir=pscloud_open_directory(home);if(dir<0) {message(sock,500,"User save folders unavailable");return;}
+    const size_t cap=262144;char *json=malloc(cap);if(!json) {message(sock,500,"Out of memory");return;}
+    snprintf(json,cap,"{\"games\":[");size_t pos=strlen(json);unsigned count=0;
+    int dir=pscloud_open_directory(home);if(dir<0) {free(json);message(sock,500,"User save folders unavailable");return;}
     int scan=openat(dir,".",O_RDONLY | O_DIRECTORY);DIR *users=scan>=0?fdopendir(scan):NULL;
-    if(!users) {if(scan>=0)close(scan);close(dir);message(sock,500,"User enumeration failed");return;}
+    if(!users) {if(scan>=0)close(scan);close(dir);free(json);message(sock,500,"User enumeration failed");return;}
     struct dirent *u;
     for(unsigned priority=0;priority<2;priority++) {
     rewinddir(users);
@@ -338,8 +381,11 @@ static void games(int sock) {
             while((e=readdir(slots)) && count<256) {
                 if(strncmp(e->d_name,"sdimg_",6) || !strncmp(e->d_name,"sdimg_sce_bu_",13) || !safe_word(e->d_name+6,63))continue;
                 int supported=safe_word(e->d_name+6,63);
-                int written=snprintf(json+pos,sizeof json-pos,"%s{\"user\":\"%s\",\"title\":\"%s\",\"slot\":\"%s\",\"name\":\"%s\",\"icon\":\"/api/icon?title=%s\",\"installed\":%s,\"supported\":%s}",count?",":"",u->d_name,t->d_name,e->d_name+6,escaped_name,t->d_name,installed?"true":"false",supported?"true":"false");
-                if(written<0 || (size_t)written>=sizeof json-pos-4)break;
+                char main[128],sub[128],detail[256],emain[800],esub[800],edetail[1600];
+                pscloud_save_slot_info(home,u->d_name,t->d_name,e->d_name+6,main,sizeof main,sub,sizeof sub,detail,sizeof detail);
+                escaped(emain,sizeof emain,main);escaped(esub,sizeof esub,sub);escaped(edetail,sizeof edetail,detail);
+                int written=snprintf(json+pos,cap-pos,"%s{\"user\":\"%s\",\"title\":\"%s\",\"slot\":\"%s\",\"name\":\"%s\",\"icon\":\"/api/icon?title=%s\",\"installed\":%s,\"supported\":%s,\"label\":\"%s\",\"sub\":\"%s\",\"detail\":\"%s\"}",count?",":"",u->d_name,t->d_name,e->d_name+6,escaped_name,t->d_name,installed?"true":"false",supported?"true":"false",emain,esub,edetail);
+                if(written<0 || (size_t)written>=cap-pos-4)break;
                 pos+=(size_t)written;count++;
             }
             closedir(slots);
@@ -347,7 +393,7 @@ static void games(int sock) {
         closedir(titles);
     }
     }
-    closedir(users);close(dir);snprintf(json+pos,sizeof json-pos,"],\"truncated\":%s}",count>=256?"true":"false");cache_store(games_cache,sizeof games_cache,json);respond(sock,200,"application/json",json,strlen(json));
+    closedir(users);close(dir);snprintf(json+pos,cap-pos,"],\"truncated\":%s}",count>=256?"true":"false");cache_store(games_cache,sizeof games_cache,json);respond(sock,200,"application/json",json,strlen(json));free(json);
 }
 /* Read-only: console profiles so a receiver without any saves can still be chosen. */
 static void users(int sock) {
@@ -995,7 +1041,8 @@ static int restore_game_data(const struct pscloud_snapshot *s,const unsigned cha
     }
     return check?pscloud_bundle_restore_check(home,root,s,data,size):smart?pscloud_bundle_restore_smart(home,root,s,data,size):pscloud_bundle_restore(home,root,s,data,size);
 }
-static int compact_backup(const struct pscloud_snapshot *chosen,char published[144]) {
+static int compact_backup_ex(const struct pscloud_snapshot *chosen,char published[144],int requeue,int *unchanged) {
+    if(unchanged)*unchanged=0;
     char file[128],hash[65];published[0]=0;
     if(pscloud_share_game(home,root,appmeta,chosen->user,chosen->title,0,NULL,0,NULL,file,hash))return -1;
     char shared[1400],spool[1400];snprintf(shared,sizeof shared,"%s/share",root);snprintf(spool,sizeof spool,"%s/spool",root);
@@ -1006,6 +1053,8 @@ static int compact_backup(const struct pscloud_snapshot *chosen,char published[1
     struct pscloud_dedup_stats duplicate;int found=pscloud_snapshot_exists_checked(dir,&s,&duplicate);
     if(found<0||(!found&&duplicate.hash_failed))goto done;
     if(found) {
+        if(unchanged)*unchanged=1;
+        if(!requeue) {published[0]=0;result=0;goto done;}
         if(pscloud_snapshot_requeue(dir,duplicate.archive))goto done;
         size_t length=strlen(duplicate.archive),suffix=!strcmp(duplicate.archive+length-6,".ready")?6:5;
         snprintf(published,144,"%.*s.ready",(int)(length-suffix),duplicate.archive);result=0;goto done;
@@ -1028,6 +1077,7 @@ done:
     if(!result&&share>=0) {if(unlinkat(share,file,0)||fsync(share))pscloud_log("WARN","Compact backup queued; temporary export retained");}
     free(data);if(lock>=0)close(lock);if(dir>=0)close(dir);if(share>=0)close(share);return result;
 }
+static int compact_backup(const struct pscloud_snapshot *chosen,char published[144]) {return compact_backup_ex(chosen,published,1,NULL);}
 static int local_restore_copy(const char *file,const struct pscloud_snapshot *s,unsigned char **data,size_t *size) {
     char directory[1400],name[144];
     for(unsigned i=0;i<3;i++) {
@@ -1175,6 +1225,24 @@ static void action(int sock,const char *path,const char *form) {
     if(!strcmp(path,"/api/usb-copy-all")) {usb_copy_all(sock,form);return;}
     if(!strcmp(path,"/api/usb-delete")) {usb_delete(sock,form);return;}
     if(!strcmp(path,"/api/cleanup")) {cleanup_apply(sock,form);return;}
+    if(!strcmp(path,"/api/backup-all-start")) {
+        char user[32]={0};int one=!parameter(form,"user",user,sizeof user);
+        if(one&&!safe_word(user,16)) {message(sock,400,"Invalid profile");return;}
+        int r=batch_start(one?user:NULL);
+        message(sock,r>0?409:r<0?400:200,r>0?"Back up all games is already running":r<0?"No games with saves were found":"Backing up all games");return;
+    }
+    if(!strcmp(path,"/api/schedule")) {
+        char hour[8];if(parameter(form,"hour",hour,sizeof hour)) {message(sock,400,"Choose an hour");return;}
+        int h=atoi(hour);if(h<-1||h>23||(h==0&&strcmp(hour,"0"))) {message(sock,400,"Choose an hour");return;}
+        schedule_hour=h;if(schedule_save()) {message(sock,500,"Schedule could not be saved");return;}
+        pscloud_log("EVENT","Nightly backup %s",h<0?"off":"scheduled");message(sock,200,h<0?"Nightly backup is off":"Nightly backup scheduled");return;
+    }
+    if(!strcmp(path,"/api/game-settings")) {
+        char title[16],close_value[8],all_value[8];
+        if(parameter(form,"title",title,sizeof title)||!pscloud_title_valid(title)||parameter(form,"close_backup",close_value,sizeof close_value)||parameter(form,"backup_all",all_value,sizeof all_value)) {message(sock,400,"Invalid game settings");return;}
+        if(game_settings_save(title,!strcmp(close_value,"1"),!strcmp(all_value,"1"))) {message(sock,500,"Game settings could not be saved");return;}
+        message(sock,200,"Game settings saved");return;
+    }
     if(!strcmp(path,"/api/sync")) {int result=upload_queue();message(sock,result?502:200,result?"Upload pending; local backups retained":"Queued backups uploaded");return;}
     if(!strcmp(path,"/api/sync-one")) {
         char file[128],ready[144];struct pscloud_snapshot s;
@@ -1356,6 +1424,19 @@ static void game_icon(int sock,const char *query) {
     else respond(sock,200,"image/png",(const char *)data,have);
     free(data);
 }
+/* The small picture the PS5 shows for one save slot. */
+static void slot_icon(int sock,const char *query) {
+    char user[32],title[16],slot[80],path[1600];
+    if(parameter(query,"user",user,sizeof user)||!safe_word(user,16)||parameter(query,"title",title,sizeof title)||!pscloud_title_valid(title)||parameter(query,"slot",slot,sizeof slot)||!safe_word(slot,63)) {reject(sock,400,"Invalid slot");return;}
+    snprintf(path,sizeof path,"%s/%s/savedata_prospero_meta/user/%s/%s_icon0.png",home,user,title,slot);
+    int fd=open(path,O_RDONLY|O_NOFOLLOW|O_NONBLOCK);struct stat st;
+    if(fd<0||fstat(fd,&st)||!S_ISREG(st.st_mode)||st.st_size<8||st.st_size>2*1024*1024) {if(fd>=0)close(fd);reject(sock,404,"No slot picture");return;}
+    unsigned char *data=malloc((size_t)st.st_size);size_t have=0;
+    while(data&&have<(size_t)st.st_size) {ssize_t n=read(fd,data+have,(size_t)st.st_size-have);if(n<=0)break;have+=(size_t)n;}
+    close(fd);
+    if(!data||have!=(size_t)st.st_size||memcmp(data,"\x89PNG\r\n\x1a\n",8))reject(sock,404,"No slot picture");else respond(sock,200,"image/png",(const char *)data,have);
+    free(data);
+}
 static void google_action(int sock,const char *url,const char *body) {
     if(!strcmp(url,"/api/google/status")) {
         char json[256];snprintf(json,sizeof json,"{\"configured\":%s,\"authorized\":%s,\"pending\":%s,\"transfers_available\":false}",*google.client?"true":"false",*google.refresh?"true":"false",google_pending.expires>time(NULL)?"true":"false");
@@ -1524,6 +1605,9 @@ static void serve(int sock,int *locked) {
     if(!strcmp(method,"GET") && !strcmp(url,"/api/games")) {games(sock);return;}
     if(!strcmp(method,"GET") && !strcmp(url,"/api/users")) {users(sock);return;}
     if(!strcmp(method,"GET") && !strcmp(url,"/api/save-status")) {save_status(sock,query);return;}
+    if(!strcmp(method,"GET") && !strcmp(url,"/api/slot-icon")) {slot_icon(sock,query);return;}
+    if(!strcmp(method,"GET") && !strcmp(url,"/api/game-settings")) {game_settings_json(sock,query);return;}
+    if(!strcmp(method,"GET") && !strcmp(url,"/api/backup-all")) {batch_json(sock);return;}
     if(!strcmp(method,"GET") && !strcmp(url,"/api/storage")) {storage_json(sock);return;}
     if(!strcmp(method,"GET") && !strcmp(url,"/api/cleanup")) {cleanup_preview(sock);return;}
     if(!strcmp(method,"GET") && !strcmp(url,"/api/usb")) {usb_list(sock);return;}
@@ -1629,6 +1713,103 @@ static void watch_backup(struct watched_save *w) {
     pthread_mutex_lock(&cache_mutex);pscloud_app_name(appmeta,w->title,background_name,sizeof background_name);pthread_mutex_unlock(&cache_mutex);
     if(launch_background(job))pscloud_log("WARN","Automatic upload of %s could not start; backup stays queued",name);
 }
+/* ---------- Back up all games ----------
+ * One game at a time, each under the operation lock (so the dashboard stays usable between
+ * games). Running games and games switched off for this are skipped; unchanged saves are
+ * counted, not re-queued. New backups upload together at the end when automatic upload is on. */
+static struct {_Atomic int running;unsigned total,done,backed,unchanged,skipped,failed;char current[256],scope[32];long long started,finished;} batch;
+static int schedule_hour=-1;static char schedule_last[16];
+static void schedule_load(void) {
+    char path[1400];snprintf(path,sizeof path,"%s/schedule.conf",root);FILE *f=fopen(path,"r");if(!f)return;
+    int hour=-1;char last[16]={0};if(fscanf(f,"HOUR=%d\nLAST=%15s",&hour,last)>=1&&hour>=-1&&hour<=23) {schedule_hour=hour;snprintf(schedule_last,sizeof schedule_last,"%s",last);}
+    fclose(f);
+}
+static int schedule_save(void) {
+    char path[1400],text[64];snprintf(path,sizeof path,"%s/schedule.conf",root);snprintf(text,sizeof text,"HOUR=%d\nLAST=%s\n",schedule_hour,*schedule_last?schedule_last:"-");
+    return atomic_config(path,text);
+}
+static void batch_json(int sock) {
+    char current[256],escaped_current[1536],json[2400];pthread_mutex_lock(&cache_mutex);snprintf(current,sizeof current,"%s",batch.current);pthread_mutex_unlock(&cache_mutex);
+    escaped(escaped_current,sizeof escaped_current,current);
+    snprintf(json,sizeof json,"{\"running\":%s,\"total\":%u,\"done\":%u,\"backed\":%u,\"unchanged\":%u,\"skipped\":%u,\"failed\":%u,\"current\":\"%s\",\"started\":%lld,\"finished\":%lld,\"schedule_hour\":%d,\"schedule_last\":\"%s\"}",
+        batch.running?"true":"false",batch.total,batch.done,batch.backed,batch.unchanged,batch.skipped,batch.failed,escaped_current,batch.started,batch.finished,schedule_hour,schedule_last);
+    respond(sock,200,"application/json",json,strlen(json));
+}
+/* Back up one game the way the game-close backup does. 0 ok, -1 failed. */
+static int backup_one(const char *user,const char *title,char published[144],int *unchanged) {
+    struct pscloud_snapshot s={0};snprintf(s.user,sizeof s.user,"%s",user);snprintf(s.title,sizeof s.title,"%s",title);
+    strcpy(s.slot,"WholeGame");memset(s.sha256,'0',64);published[0]=0;*unchanged=0;if(!pscloud_snapshot_valid(&s))return -1;
+    if(compact_effective())return compact_backup_ex(&s,published,0,unchanged);
+    return pscloud_game_backup_named(home,root,user,title,published);
+}
+struct batch_item {char user[17],title[10];};
+static void *batch_main(void *arg) {
+    struct batch_item *items=arg;unsigned n=batch.total;
+    struct background_job *job=calloc(1,sizeof *job);
+    for(unsigned i=0;i<n&&!stopped;i++) {
+        char name[256];pscloud_app_name(appmeta,items[i].title,name,sizeof name);
+        pthread_mutex_lock(&cache_mutex);snprintf(batch.current,sizeof batch.current,"%s",name);pthread_mutex_unlock(&cache_mutex);
+        if(!game_setting(items[i].title,1)||title_running(items[i].title)>0) {batch.skipped++;batch.done++;continue;}
+        pthread_mutex_lock(&operation_mutex);
+        char published[144];int unchanged=0;pscloud_log_open(logpath);int bad=backup_one(items[i].user,items[i].title,published,&unchanged);
+        pthread_mutex_unlock(&operation_mutex);
+        if(bad)batch.failed++;else if(unchanged)batch.unchanged++;else {batch.backed++;if(job&&*published&&job->count<256)snprintf(job->files[job->count++],sizeof job->files[0],"%s",published);}
+        batch.done++;
+    }
+    free(items);
+    pscloud_log_open(logpath);
+    pscloud_log("EVENT","Back up all games: %u backed up, %u unchanged, %u skipped, %u failed",batch.backed,batch.unchanged,batch.skipped,batch.failed);
+    pscloud_notify("PSCloud: %u games backed up, %u unchanged%s",batch.backed,batch.unchanged,batch.failed?"; some failed - see Activity":"");
+    if(job&&job->count&&auto_upload&&!background_active&&!pscloud_configure(cloudpath,&job->settings)) {
+        snprintf(job->spool,sizeof job->spool,"%s/spool",root);
+        pthread_mutex_lock(&cache_mutex);snprintf(background_name,sizeof background_name,"%u new backups",job->count);pthread_mutex_unlock(&cache_mutex);
+        pthread_mutex_lock(&operation_mutex);int bad=launch_background(job);pthread_mutex_unlock(&operation_mutex);
+        if(bad)pscloud_log("WARN","Uploading the new backups could not start; they stay queued");
+    } else free(job);
+    pthread_mutex_lock(&cache_mutex);batch.current[0]=0;pthread_mutex_unlock(&cache_mutex);
+    batch.finished=(long long)time(NULL);batch.running=0;
+    pthread_mutex_lock(&clients_mutex);clients--;pthread_cond_broadcast(&clients_done);pthread_mutex_unlock(&clients_mutex);
+    return NULL;
+}
+/* user: one profile, or NULL for every profile. */
+static int batch_start(const char *user) {
+    if(batch.running)return 1;
+    struct batch_item *items=calloc(512,sizeof *items);if(!items)return -1;unsigned n=0;
+    DIR *users=opendir(home);struct dirent *u;
+    while(users&&(u=readdir(users))&&n<512) {
+        if(!safe_word(u->d_name,16)||(user&&strcmp(user,u->d_name)))continue;
+        char path[1400];snprintf(path,sizeof path,"%s/%s/savedata_prospero",home,u->d_name);DIR *titles=opendir(path);struct dirent *t;
+        while(titles&&(t=readdir(titles))&&n<512) {
+            if(!pscloud_title_valid(t->d_name))continue;
+            char dir[1500];snprintf(dir,sizeof dir,"%s/%s",path,t->d_name);int fd=pscloud_open_directory(dir);if(fd<0)continue;
+            int has=newest_container(fd)!=0;close(fd);if(!has)continue;
+            snprintf(items[n].user,sizeof items[n].user,"%.16s",u->d_name);snprintf(items[n].title,sizeof items[n].title,"%.9s",t->d_name);n++;
+        }
+        if(titles)closedir(titles);
+    }
+    if(users)closedir(users);
+    if(!n) {free(items);return -1;}
+    memset(&batch,0,sizeof batch);batch.total=n;batch.started=(long long)time(NULL);batch.running=1;snprintf(batch.scope,sizeof batch.scope,"%s",user?user:"all");
+    pthread_t thread;pthread_attr_t attr;pthread_attr_init(&attr);pthread_attr_setstacksize(&attr,4U*1024*1024);
+    pthread_mutex_lock(&clients_mutex);clients++;pthread_mutex_unlock(&clients_mutex);
+    int bad=pthread_create(&thread,&attr,batch_main,items);pthread_attr_destroy(&attr);
+    if(bad) {pthread_mutex_lock(&clients_mutex);clients--;pthread_mutex_unlock(&clients_mutex);batch.running=0;free(items);return -1;}
+    pthread_detach(thread);pscloud_log("EVENT","Back up all games started (%u games, %s)",n,user?"one profile":"all profiles");return 0;
+}
+/* Nightly: at the chosen hour, once per day, when no game is running. */
+static void schedule_tick(void) {
+    if(schedule_hour<0||batch.running)return;
+    time_t now=time(NULL);struct tm local;localtime_r(&now,&local);
+    char today[16];strftime(today,sizeof today,"%Y-%m-%d",&local);
+#ifdef PSCLOUD_HOST_TEST
+    if(getenv("PSCLOUD_TEST_SCHEDULE_NOW"))local.tm_hour=schedule_hour;
+#endif
+    if(local.tm_hour!=schedule_hour||!strcmp(today,schedule_last))return;
+    char game[16];if(running_game(game)>0)return; /* try again next minute */
+    snprintf(schedule_last,sizeof schedule_last,"%s",today);schedule_save();
+    pscloud_log_open(logpath);pscloud_log("EVENT","Scheduled backup of all games");
+    if(batch_start(NULL)<0)pscloud_log("WARN","Scheduled backup found no games");
+}
 #ifndef PSCLOUD_HOST_TEST
 /* Versions up to 0.22 kept the log, cloud sign-in, CA bundle and tool settings beside the
  * folder as /data/pscloud*. Move them in once ("pscloud-x" becomes "x"); never overwrite. */
@@ -1660,7 +1841,13 @@ static void *game_close_watch(void *unused) {
     if(!interval)interval=1;
 #endif
     while(!stopped) {
-        sleep(1);if(++seconds%interval)continue;
+        sleep(1);++seconds;
+        if(!(seconds%60)
+#ifdef PSCLOUD_HOST_TEST
+           ||getenv("PSCLOUD_TEST_SCHEDULE_NOW")
+#endif
+          )schedule_tick();
+        if(seconds%interval)continue;
         if(!game_close_backup) {watch_ready=0;watched_count=0;continue;}
         watch_scan();
         if(!watch_ready) {watch_ready=1;continue;}
@@ -1668,6 +1855,7 @@ static void *game_close_watch(void *unused) {
         for(unsigned i=0;i<watched_count&&!stopped;i++) {
             struct watched_save *w=&watched[i];
             if(!w->pending||w->stable<2)continue;
+            if(!game_setting(w->title,0)) {w->pending=0;pscloud_log("INFO","%s: back up when closed is off for this game",w->title);continue;}
             int running=title_running(w->title);
             if(running>0) {if(!w->waiting) {w->waiting=1;pscloud_log("INFO","%s is still running; backup waits until it is closed",w->title);}continue;}
             /* Without a process list, only back up after five quiet minutes. */
@@ -1715,6 +1903,7 @@ int main(int argc,char **argv) {
     move_into_folder();
 #endif
     snprintf(googlepath,sizeof googlepath,"%s/google.conf",root);pscloud_google_load(googlepath,&google);
+    game_settings_load();schedule_load();
     pscloud_log_open(logpath);load_preferences();signal(SIGPIPE,SIG_IGN);signal(SIGTERM,stop_server);signal(SIGINT,stop_server);
     if(curl_global_init(CURL_GLOBAL_DEFAULT))return 2;
     int server=socket(AF_INET,SOCK_STREAM,0);if(server<0)return 2;
