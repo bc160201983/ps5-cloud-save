@@ -1,4 +1,16 @@
-# PS5 Cloud Save — development milestone 0.19.3
+# PS5 Cloud Save — development milestone 0.19.4
+
+## Version 0.19.4 — names for saves of games that are not installed
+
+Saves of games that are not installed showed only their ID. Following ProsperoMgr,
+which names saves from the console's save records, PSCloud now reads each save's
+unencrypted `param.sfo` copy in `/user/home/<user>/savedata_prospero_meta/user/<ID>/`
+(read-only) and uses its MAINTITLE when the game's saves agree on one label that is not
+just the slot folder name. For example "Hades" is used; a game whose saves are labelled
+"Settings" and "Slot 1" keeps its ID. The game list now also reports `installed`
+explicitly instead of the page guessing from the name. On 11.40, Ghost of Tsushima
+(v0.19.3) now appears by name. Verified by host tests.
+
 
 ## Version 0.19.3 — games that keep saves under another ID
 

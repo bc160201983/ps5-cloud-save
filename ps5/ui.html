@@ -161,7 +161,7 @@ async function loadGames(){
  if(!groups.size){grid.classList.remove('grid');grid.classList.add('empty');grid.textContent=currentUser?'No saves for '+profileName(currentUser)+' yet. Start a game on this profile once to create its save.':'No PS5 saves found. Start a game once to create its save.';return;}
  grid.classList.remove('empty');grid.classList.add('grid');
  /* A game whose name is only its ID has no installed app data on this console. */
- const games=[...groups.values()].map(g=>({...g,installed:g.name!==g.title})).sort((a,b)=>(b.installed-a.installed)||a.name.localeCompare(b.name));
+ const games=[...groups.values()].map(g=>({...g,installed:typeof g.installed==='boolean'?g.installed:g.name!==g.title})).sort((a,b)=>(b.installed-a.installed)||a.name.localeCompare(b.name));
  for(const g of games){
   const supported=g.slots.some(s=>s.supported);const card=document.createElement('article');card.className='game';
   const art=document.createElement('div');art.className='art generic';art.style.cssText='height:180px;padding:0;display:grid;place-items:center;';

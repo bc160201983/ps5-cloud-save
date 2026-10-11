@@ -145,6 +145,33 @@ class DashboardTests(unittest.TestCase):
         (own/'param.json').write_text(json.dumps({'titleId':'PPSA02433','contentVersion':'01.000.000','localizedParameters':{'en-US':{'titleName':'Crash Bandicoot 4'}}}))
         self.assertEqual(self.request('/api/save-status?user=1eb70483&title=PPSA02433')[1]['name'],'Crash Bandicoot 4')
 
+    @staticmethod
+    def save_sfo(fields):
+        import struct
+        keys=b'';values=b'';entries=b''
+        for k,v in fields.items():
+            raw=v.encode()+b'\0';entries+=struct.pack('<HHIII',len(keys),0x0204,len(raw),len(raw),len(values))
+            keys+=k.encode()+b'\0';values+=raw
+        key_offset=20+len(entries);value_offset=key_offset+len(keys)
+        return b'\0PSF'+struct.pack('<IIII',0x101,key_offset,value_offset,len(fields))+entries+keys+values
+
+    def test_uninstalled_game_is_named_by_the_title_its_saves_agree_on(self):
+        def add(title,slots):
+            live=self.home/'1eb70483/savedata_prospero'/title;live.mkdir(parents=True)
+            meta=self.home/'1eb70483/savedata_prospero_meta/user'/title;meta.mkdir(parents=True)
+            for slot,label in slots:
+                (live/('sdimg_'+slot)).write_bytes(b'\0'*64)
+                (meta/('sce_bu_'+slot+'.sfo')).write_bytes(self.save_sfo({'MAINTITLE':label,'SAVEDATA_DIRECTORY':slot}))
+        add('PPSA03355',[('HadesSaveDirectory','Hades')])
+        add('PPSA02100',[('Global','Settings'),('SlotsSlot1Data','Slot 1')])  # labels disagree: keep the ID
+        add('PPSA02343',[('ProfileData','ProfileData')])  # label is only the slot name: keep the ID
+        status,data=self.request('/api/games');self.assertEqual(status,200)
+        names={g['title']:(g['name'],g['installed']) for g in data['games']}
+        self.assertEqual(names['PPSA03355'],('Hades',False))
+        self.assertEqual(names['PPSA02100'],('PPSA02100',False))
+        self.assertEqual(names['PPSA02343'],('PPSA02343',False))
+        self.assertEqual(self.request('/api/save-status?user=1eb70483&title=PPSA03355')[1]['name'],'Hades')
+
     def test_idle_browser_connection_does_not_block_dashboard(self):
         idle=http.client.HTTPConnection('127.0.0.1',self.port,timeout=5);idle.connect()
         try:

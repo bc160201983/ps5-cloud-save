@@ -329,13 +329,15 @@ static void games(int sock) {
         while((t=readdir(titles)) && count<256) {
             if(strlen(t->d_name)!=9 || strncmp(t->d_name,"PPSA",4) || !safe_word(t->d_name,9))continue;
             if((!strcmp(t->d_name,"PPSA02433"))!=(priority==0))continue;
-            char name[256],escaped_name[1536];pscloud_app_name(appmeta,t->d_name,name,sizeof name);escaped(escaped_name,sizeof escaped_name,name);
+            char name[256],escaped_name[1536],meta[1400];int installed=!pscloud_app_meta_dir(appmeta,t->d_name,meta,sizeof meta);
+            pscloud_app_name(appmeta,t->d_name,name,sizeof name);if(!installed)pscloud_save_title_name(home,u->d_name,t->d_name,name,sizeof name);
+            escaped(escaped_name,sizeof escaped_name,name);
             int titlefd=openat(fd,t->d_name,O_RDONLY | O_DIRECTORY | O_NOFOLLOW);if(titlefd<0)continue;
             DIR *slots=fdopendir(titlefd);if(!slots) {close(titlefd);continue;}struct dirent *e;
             while((e=readdir(slots)) && count<256) {
                 if(strncmp(e->d_name,"sdimg_",6) || !strncmp(e->d_name,"sdimg_sce_bu_",13) || !safe_word(e->d_name+6,63))continue;
                 int supported=safe_word(e->d_name+6,63);
-                int written=snprintf(json+pos,sizeof json-pos,"%s{\"user\":\"%s\",\"title\":\"%s\",\"slot\":\"%s\",\"name\":\"%s\",\"icon\":\"/api/icon?title=%s\",\"supported\":%s}",count?",":"",u->d_name,t->d_name,e->d_name+6,escaped_name,t->d_name,supported?"true":"false");
+                int written=snprintf(json+pos,sizeof json-pos,"%s{\"user\":\"%s\",\"title\":\"%s\",\"slot\":\"%s\",\"name\":\"%s\",\"icon\":\"/api/icon?title=%s\",\"installed\":%s,\"supported\":%s}",count?",":"",u->d_name,t->d_name,e->d_name+6,escaped_name,t->d_name,installed?"true":"false",supported?"true":"false");
                 if(written<0 || (size_t)written>=sizeof json-pos-4)break;
                 pos+=(size_t)written;count++;
             }
@@ -372,7 +374,7 @@ static void save_status(int sock,const char *query) {
     char user[32],title[16];
     if(parameter(query,"user",user,sizeof user) || !safe_word(user,16) || parameter(query,"title",title,sizeof title) || !pscloud_title_valid(title)) {message(sock,400,"Choose a profile and game");return;}
     char version[32],name[256],escaped_name[1536];int installed=!pscloud_app_version(appmeta,title,version,sizeof version),running=title_running(title);
-    pscloud_app_name(appmeta,title,name,sizeof name);escaped(escaped_name,sizeof escaped_name,name);
+    pscloud_app_name(appmeta,title,name,sizeof name);if(!installed)pscloud_save_title_name(home,user,title,name,sizeof name);escaped(escaped_name,sizeof escaped_name,name);
     char json[16384];int pos=snprintf(json,sizeof json,"{\"title\":\"%s\",\"name\":\"%s\",\"installed\":%s,\"mounted\":%s,\"running\":%s,\"slots\":[",title,escaped_name,installed?"true":"false",pscloud_no_foreign_mount()?"true":"false",running>0?"true":running<0?"null":"false");
     char path[1400];snprintf(path,sizeof path,"%s/%s/savedata_prospero/%s",home,user,title);
     int fd=pscloud_open_directory(path);DIR *slots=fd>=0?fdopendir(fd):NULL;unsigned count=0;

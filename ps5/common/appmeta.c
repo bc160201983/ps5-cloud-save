@@ -117,3 +117,46 @@ int pscloud_app_version(const char *root,const char *title,char *version,size_t 
     }
     free(json);return bad?-1:0;
 }
+
+/* Two text fields of a save's param.sfo (MAINTITLE and SAVEDATA_DIRECTORY). */
+static int sfo_texts(const char *path,char *title,size_t title_max,char *slot,size_t slot_max) {
+    title[0]=slot[0]=0;
+    int fd=open(path,O_RDONLY | O_NOFOLLOW | O_NONBLOCK);if(fd<0)return -1;
+    struct stat st;if(fstat(fd,&st) || !S_ISREG(st.st_mode) || st.st_size<20 || st.st_size>65536) {close(fd);return -1;}
+    size_t size=(size_t)st.st_size;unsigned char *d=malloc(size);if(!d) {close(fd);return -1;}
+    size_t have=0;while(have<size) {ssize_t n=read(fd,d+have,size-have);if(n<=0)break;have+=(size_t)n;}close(fd);
+    #define R16(p) ((unsigned)(p)[0]|((unsigned)(p)[1]<<8))
+    #define R32(p) (R16(p)|((size_t)R16((p)+2)<<16))
+    int bad=have!=size||memcmp(d,"\0PSF",4);
+    size_t keys=bad?0:R32(d+8),values=bad?0:R32(d+12),count=bad?0:R32(d+16);
+    if(count>128||keys<20+16*count||keys>values||values>size)bad=1;
+    for(size_t i=0;!bad&&i<count;i++) {
+        const unsigned char *e=d+20+16*i;size_t ko=R16(e),length=R32(e+4),offset=R32(e+12);
+        if(ko>=values-keys||offset>size-values||length>size-values-offset)break;
+        const char *key=(const char *)d+keys+ko;if(!memchr(key,0,values-keys-ko))break;
+        int which=!strcmp(key,"MAINTITLE")?1:!strcmp(key,"SAVEDATA_DIRECTORY")?2:0;
+        if(!which||R16(e+2)!=0x0204||!length)continue;
+        const unsigned char *v=d+values+offset,*end=memchr(v,0,length);size_t n=end?(size_t)(end-v):length;
+        char *out=which==1?title:slot;size_t max=which==1?title_max:slot_max;
+        if(n&&n<max) {memcpy(out,v,n);out[n]=0;}
+    }
+    #undef R16
+    #undef R32
+    free(d);return bad||!title[0]?-1:0;
+}
+int pscloud_save_title_name(const char *home,const char *user,const char *title,char *name,size_t max) {
+    if(!max||!pscloud_title_valid(title)||strchr(user,'/')||strlen(user)>16)return -1;
+    char dir[1400];if(snprintf(dir,sizeof dir,"%s/%s/savedata_prospero_meta/user/%s",home,user,title)>=(int)sizeof dir)return -1;
+    DIR *d=opendir(dir);if(!d)return -1;
+    char agreed[256]={0};int conflict=0;unsigned files=0;struct dirent *e;
+    while((e=readdir(d))&&files<64) {
+        size_t n=strlen(e->d_name);if(n<5||strcmp(e->d_name+n-4,".sfo")||strchr(e->d_name,'/'))continue;
+        char path[1700],label[256],slot[96];if(snprintf(path,sizeof path,"%s/%s",dir,e->d_name)>=(int)sizeof path)continue;
+        files++;if(sfo_texts(path,label,sizeof label,slot,sizeof slot))continue;
+        if(!strcmp(label,slot))continue; /* "ProfileData" for ProfileData says nothing about the game */
+        if(!agreed[0])snprintf(agreed,sizeof agreed,"%s",label);else if(strcmp(agreed,label))conflict=1;
+    }
+    closedir(d);
+    if(!agreed[0]||conflict)return -1;
+    snprintf(name,max,"%s",agreed);return 0;
+}
