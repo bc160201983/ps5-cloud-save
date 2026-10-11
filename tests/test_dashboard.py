@@ -908,9 +908,10 @@ class DashboardTests(unittest.TestCase):
         import sqlite3
         folder=Path(root)/'system/system_data/savedata_prospero'/user/'db/user';folder.mkdir(parents=True,exist_ok=True)
         db=sqlite3.connect(str(folder/'savedata.db'))
-        db.execute('create table if not exists savedata (id INTEGER PRIMARY KEY, title_id TEXT, dir_name TEXT, main_title TEXT, sub_title TEXT, detail TEXT, tmp_dir_name TEXT, is_broken INTEGER, user_param INTEGER, blocks INTEGER, free_blocks INTEGER, size_kib INTEGER, mtime TEXT, fake_broken INTEGER)')
+        # The schema as read from savedata.db on the console (11.40 and 7.00).
+        db.execute('CREATE TABLE IF NOT EXISTS savedata (id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,title_id NOT NULL, dir_name NOT NULL, main_title NOT NULL, sub_title , detail , tmp_dir_name , is_broken , user_param , blocks , free_blocks , size_kib , mtime NOT NULL, fake_broken , account_id , user_id , faked_owner , cloud_icon_url , cloud_revision , game_title_id NOT NULL, system_blocks , convert_performance , account_id_in_usb_path )')
         db.execute('delete from savedata')
-        for slot,when in rows:db.execute('insert into savedata (title_id,dir_name,main_title,detail,mtime) values (?,?,?,?,?)',('PPSA02433',slot,'Label '+slot,'x'*3000,when))
+        for slot,when in rows:db.execute('insert into savedata (title_id,dir_name,main_title,sub_title,detail,tmp_dir_name,is_broken,user_param,blocks,free_blocks,size_kib,mtime,fake_broken,account_id,user_id,faked_owner,cloud_icon_url,cloud_revision,game_title_id,system_blocks,convert_performance,account_id_in_usb_path) values (?,?,?,?,?,?,0,0,48,4,3072,?,0,9138745278763343734,515310723,0,?,0,?,0,0,?)',('PPSA02433',slot,'Label '+slot,'',"x"*3000,'',when,'','PPSA02433','0000000000000000'))
         db.commit();db.close()
 
     def test_sync_compares_when_the_game_saved_each_slot(self):
