@@ -1,4 +1,4 @@
-# PS5 Cloud Save — development milestone 0.20.0
+# PS5 Cloud Save — development milestone 0.21.0
 
 ## Where PSCloud keeps your files
 
@@ -27,6 +27,23 @@ PSCloud/Shared saves/<Game name> (<ID>)/portable-<ID>-<snapshot>.zip
 Every copy is written to a temporary file first, then read back and compared by
 SHA-256 before it counts as copied. A shared save ZIP placed anywhere under `PSCloud/`
 on the drive can be received from the Storage page.
+
+## Version 0.21.0 — refreshed design
+
+A new look, following the design notes in docs/DESIGN_NOTES.md:
+- Deep navy background with soft colour glows, frosted-glass panels and sidebar, a
+  gradient primary button, rounder controls and consistent status pills.
+- Home banner greets the chosen profile ("Good evening · Welcome back, M-Bilal") and
+  shows live counts: games with saves, backups waiting to upload, and cloud status, next
+  to the Now playing card.
+- Game cards use the game's cover art full-bleed with an Installed / Saves only label,
+  lift on hover, fade in one after another, and the running game gets a green ring and
+  a "Playing" label.
+- The library comes first on the home page; Receive a shared save moved below it.
+- Messages appear in the top-right corner. Motion is turned off for people who ask
+  their system for reduced motion.
+
+Behaviour is unchanged. Verified with a local preview and the page script check.
 
 ## Version 0.20.0 — Storage page and USB drives
 
