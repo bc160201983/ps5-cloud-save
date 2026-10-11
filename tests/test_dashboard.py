@@ -98,6 +98,16 @@ class DashboardTests(unittest.TestCase):
             with self.subTest(bad=bad):self.assertEqual(self.request('/api/save-status?'+bad)[0],400)
         self.assertEqual(self.image.read_bytes(),before)
 
+    def test_any_firmware_starts_untested_ones_are_flagged_and_always_use_compact(self):
+        status,data=self.request('/api/state');self.assertEqual((data['firmware'],data['firmware_tested']),('11.40',True))
+        self.assertFalse(self.request('/api/preferences')[1]['compact_required'])
+        self.process.terminate();self.process.communicate(timeout=5)
+        self.start_server(PSCLOUD_TEST_FIRMWARE='09600000')
+        status,data=self.request('/api/state');self.assertEqual(status,200)
+        self.assertEqual((data['firmware'],data['firmware_tested']),('9.60',False))
+        status,data=self.request('/api/preferences',{'auto_upload':'0','activity_refresh':'1','compact_backups':'0'});self.assertEqual(status,200)
+        self.assertEqual((data['compact_backups'],data['compact_required']),(True,True))
+
     def test_idle_browser_connection_does_not_block_dashboard(self):
         idle=http.client.HTTPConnection('127.0.0.1',self.port,timeout=5);idle.connect()
         try:

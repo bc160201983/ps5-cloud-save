@@ -21,4 +21,5 @@ int pscloud_share_game(const char *home,const char *root,const char *appmeta,
 int pscloud_share_validate(const unsigned char *archive,size_t size,const char *title);
 /* Reason for the last refusal (empty when none was recorded). */
 const char *pscloud_share_error(void);
+int pscloud_firmware_valid(unsigned fw);
 #endif

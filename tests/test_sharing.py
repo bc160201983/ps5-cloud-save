@@ -26,9 +26,9 @@ def zip_bytes(files):
         name,extra,comment=struct.unpack_from('<HHH',data,pos+28);pos+=46+name+extra+comment
     return bytes(data)
 
-def portable(inner=None,slots=('save1','profile'),title='PPSA10528',version='01.000.002'):
+def portable(inner=None,slots=('save1','profile'),title='PPSA10528',version='01.000.002',firmware='07000000'):
     inner=inner if inner is not None else zip_bytes([('folder/progress.bin',b'shared'),('settings.dat',b'config'),('empty',b'')])
-    manifest=f'FORMAT=PSCLOUD_PORTABLE_GAME_V1\nTITLE={title}\nSOURCE_FIRMWARE=07000000\nGAME_VERSION={version}\nSLOTS={len(slots)}\n'
+    manifest=f'FORMAT=PSCLOUD_PORTABLE_GAME_V1\nTITLE={title}\nSOURCE_FIRMWARE={firmware}\nGAME_VERSION={version}\nSLOTS={len(slots)}\n'
     for i,slot in enumerate(slots):manifest+=f'SLOT={i}:{slot}:8192:{hashlib.sha256(inner).hexdigest()}\n'
     return zip_bytes([('manifest.txt',manifest.encode())]+[(f'slot-{i}.zip',inner) for i in range(len(slots))])
 
@@ -164,6 +164,30 @@ class GenericSharingTests(unittest.TestCase):
                 self.assertEqual(z.namelist(),['manifest.txt','slot-0.zip','slot-1.zip'])
                 for slot in z.namelist()[1:]:
                     with zipfile.ZipFile(io.BytesIO(z.read(slot))) as inner:self.assertFalse(any('sce_sys' in n for n in inner.namelist()))
+
+    def test_packages_from_any_firmware_accepted_and_malformed_firmware_rejected(self):
+        for firmware in ('01000000','04510000','09600000','11400000','13600000'):
+            with self.subTest(firmware=firmware):self.assertEqual(self.validate(portable(firmware=firmware)),0)
+        for firmware in ('00000000','1a000000','091a0000','11400001'):
+            with self.subTest(firmware=firmware):self.assertNotEqual(self.validate(portable(firmware=firmware)),0)
+
+    def test_untested_firmware_exports_and_checks_with_its_own_firmware_recorded(self):
+        old=os.environ.get('PSCLOUD_TEST_FIRMWARE')
+        try:
+            os.environ['PSCLOUD_TEST_FIRMWARE']='09600000'
+            with tempfile.TemporaryDirectory() as tmp:
+                f=self.fixture(Path(tmp));result,file,_=self.run_share(f,0);self.assertEqual(result,0)
+                with zipfile.ZipFile(io.BytesIO((f[1]/'share'/file).read_bytes())) as z:self.assertIn('SOURCE_FIRMWARE=09600000\n',z.read('manifest.txt').decode())
+            with tempfile.TemporaryDirectory() as tmp:
+                f=self.fixture(Path(tmp));self.assertEqual(self.run_share(f,1,portable(firmware='13600000'))[0],0)
+                self.assertEqual((f[3]/'sdimg_save1').read_bytes(),b'\x02'+b'\0'*8191)
+            os.environ['PSCLOUD_TEST_FIRMWARE']='1a000000'
+            with tempfile.TemporaryDirectory() as tmp:
+                f=self.fixture(Path(tmp));self.assertNotEqual(self.run_share(f,0)[0],0)
+                self.assertIn(b'firmware',self.lib.pscloud_share_error())
+        finally:
+            if old is None:os.environ.pop('PSCLOUD_TEST_FIRMWARE',None)
+            else:os.environ['PSCLOUD_TEST_FIRMWARE']=old
 
     def test_export_can_select_slots_and_refuses_bad_selection(self):
         with tempfile.TemporaryDirectory() as tmp:

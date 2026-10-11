@@ -22,6 +22,16 @@ jobs:
           SDK="/opt/ps5-payload-sdk"
           test -f "$SDK/toolchain/prospero.mk"
           echo "PS5_PAYLOAD_SDK=$SDK" >> "$GITHUB_ENV"
+      - name: Report firmware coverage of the pinned SDK (informational)
+        run: |
+          # The SDK kernel helpers only start on firmware listed in its switch; PSCloud accepts all of them.
+          python3 - "$PS5_PAYLOAD_SDK" <<'EOF'
+          import pathlib,sys
+          blob=b''.join(p.read_bytes() for p in pathlib.Path(sys.argv[1]).rglob('*') if p.is_file() and p.suffix in ('.a','.o','.c'))
+          for fw in (0x1000000,0x4510000,0x7000000,0x9600000,0x10010000,0x11400000,0x12700000,0x13000000,0x13600000):
+              found=fw.to_bytes(4,'little') in blob or (b'0x%x'%fw) in blob
+              print('%x.%02x' % (fw>>24,(fw>>16)&255), 'present' if found else 'NOT FOUND')
+          EOF
       - name: List save-related SDK stub symbols (informational)
         run: |
           for f in $(find "$PS5_PAYLOAD_SDK" \( -iname '*SceFsInternalForVsh*' -o -iname '*SceSaveData*' -o -iname '*SceRegMgr*' \) -type f); do

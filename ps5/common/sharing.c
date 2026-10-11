@@ -37,6 +37,12 @@ static void refuse(const char *format,...) {
     va_list args;va_start(args,format);vsnprintf(share_error,sizeof share_error,format,args);va_end(args);
     pscloud_log("ERROR","%s",share_error);
 }
+/* Any PS5 firmware the SDK runs on, stored as 0xMMmm0000 in BCD (11.40 = 0x11400000).
+ * The format carries no firmware-specific data, so packages move between all of them. */
+int pscloud_firmware_valid(unsigned fw) {
+    unsigned major=fw>>24,minor=(fw>>16)&255;
+    return !(fw&0xffffU)&&major&&(major>>4)<10&&(major&15)<10&&(minor>>4)<10&&(minor&15)<10;
+}
 struct entry {char name[1024];const unsigned char *data;size_t size;};
 struct package {unsigned count,fw;char version[32];char slots[SLOTS][64];size_t capacity[SLOTS];struct entry entries[SLOTS+1];};
 static unsigned u16(const unsigned char *p) {return p[0]|((unsigned)p[1]<<8);}
@@ -83,7 +89,7 @@ static int package_parse(const unsigned char *a,size_t size,const char *title,st
     char text[30001],expected[30001];memcpy(text,p->entries[0].data,p->entries[0].size);text[p->entries[0].size]=0;
     if(strlen(text)!=p->entries[0].size)return -1;
     char parsed_title[10];unsigned count=0;int used=0;
-    if(sscanf(text,"FORMAT=PSCLOUD_PORTABLE_GAME_V1\nTITLE=%9s\nSOURCE_FIRMWARE=%8x\nGAME_VERSION=%31s\nSLOTS=%u\n%n",parsed_title,&p->fw,p->version,&count,&used)!=4||!used||strcmp(parsed_title,title)||!count||count>SLOTS||count+1!=n||(p->fw!=0x07000000U&&p->fw!=0x11400000U))return -1;
+    if(sscanf(text,"FORMAT=PSCLOUD_PORTABLE_GAME_V1\nTITLE=%9s\nSOURCE_FIRMWARE=%8x\nGAME_VERSION=%31s\nSLOTS=%u\n%n",parsed_title,&p->fw,p->version,&count,&used)!=4||!used||strcmp(parsed_title,title)||!count||count>SLOTS||count+1!=n||!pscloud_firmware_valid(p->fw))return -1;
     int length=snprintf(expected,sizeof expected,"FORMAT=PSCLOUD_PORTABLE_GAME_V1\nTITLE=%s\nSOURCE_FIRMWARE=%08x\nGAME_VERSION=%s\nSLOTS=%u\n",title,p->fw,p->version,count);
     if(length!=used||memcmp(expected,text,(size_t)used))return -1;
     const char *line=text+used;
@@ -318,8 +324,10 @@ int pscloud_share_game(const char *home,const char *root,const char *appmeta,con
     unsigned fw=0x11400000U;
 #ifndef PSCLOUD_HOST_TEST
     fw=kernel_get_fw_version()&0xffff0000U;
+#else
+    if(getenv("PSCLOUD_TEST_FIRMWARE"))fw=(unsigned)strtoul(getenv("PSCLOUD_TEST_FIRMWARE"),NULL,16);
 #endif
-    if(fw!=0x11400000U&&fw!=0x07000000U)return -1;
+    if(!pscloud_firmware_valid(fw)) {refuse("Unrecognised firmware version %08x",fw);return -1;}
     struct package *p=calloc(1,sizeof *p);if(!p)return -1;
     int result=-1,parent=-1,lock=-1,source=-1,stage=-1,marker=0,attempted=0,unmounted=0;
     char path[1800],stage_path[1600]={0},mount[1800]={0},id[33],stage_name[80],version[32];

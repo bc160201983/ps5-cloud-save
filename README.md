@@ -1,4 +1,36 @@
-# PS5 Cloud Save — development milestone 0.16.0
+# PS5 Cloud Save — development milestone 0.17.0
+
+## Version 0.17.0 — every jailbroken PS5 firmware
+
+**Supported firmware.** The dashboard now starts on any firmware the PS5 payload
+SDK runs on (the pinned SDK v0.43 lists 1.00 through 13.60; CI prints the coverage
+of the SDK copy used for the dashboard build). Before, it refused everything except
+7.00 and 11.40. Shared save ZIPs record the sender's firmware and are accepted from
+any valid firmware, so saves move between all of them.
+
+| Firmware | Status |
+|---|---|
+| 11.40 | Tested on a console: compact and encrypted backups, sharing both ways |
+| 7.00 | Tested on a console: compact backups, sharing both ways |
+| Every other firmware the SDK supports | Implemented, **not tested on a console** |
+
+On untested firmware the dashboard shows an "untested" notice and writes a warning
+to Activity. The same safety rules apply on every firmware: a replace only runs
+after the shared save passes the check on a temporary copy of this console's own
+save in the same operation (using the console's real save mounting), the game must
+be closed, and rollback copies of the original are kept. If a firmware handled
+saves differently, the check on the temporary copy is expected to fail before any
+live save is touched, but this has not been proven on other firmware.
+
+Encrypted (legacy) whole-game backup and restore stays 11.40-only. On every other
+firmware, backups always use the compact format and the setting is locked on. The
+standalone legacy tools (pscloud-backup, -restore, -export, -upload, -download,
+-share) keep their 11.40 checks; the dashboard is the supported path.
+
+Verified: host tests, including packages from 1.00 to 13.60, rejection of malformed
+firmware values, export and staged check while simulating firmware 9.60, and the
+dashboard forcing compact backups and reporting "untested" on 9.60.
+
 
 ## Version 0.16.0 — back up on game close, clearer receive
 

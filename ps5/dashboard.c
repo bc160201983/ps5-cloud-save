@@ -45,6 +45,12 @@ static _Atomic int auto_upload=1,activity_refresh=1;
 static _Atomic int local_keep_latest;
 static _Atomic int compact_backups;
 static _Atomic int game_close_backup;
+/* Firmware is read once at start. Every firmware the SDK runs on is accepted; encrypted
+ * (legacy) backup/restore stays limited to 11.40, so other firmware always uses compact. */
+static unsigned firmware_id=0x11400000U;
+static int legacy_firmware(void) {return firmware_id==0x11400000U;}
+static int firmware_tested(void) {return firmware_id==0x11400000U||firmware_id==0x07000000U;}
+static int compact_effective(void) {return compact_backups||!legacy_firmware();}
 static void prune_local_history(void);
 static struct pscloud_google google,google_pending;
 static char googlepath[1200];
@@ -182,7 +188,7 @@ static void preferences(int sock,const char *form) {
         local_keep_latest=latest;compact_backups=data_only;game_close_backup=on_close;if(latest)prune_local_history();
         pscloud_log("EVENT","Preferences saved: automatic upload %s; activity refresh %s; back up on game close %s",auto_upload?"on":"off",activity_refresh?"on":"off",game_close_backup?"on":"off");
     }
-    char json[512];snprintf(json,sizeof json,"{\"auto_upload\":%s,\"activity_refresh\":%s,\"local_keep_latest\":%s,\"compact_backups\":%s,\"game_close_backup\":%s,\"game_close_available\":true,\"sharing_available\":true,\"message\":\"Preferences saved on this PS5\"}",auto_upload?"true":"false",activity_refresh?"true":"false",local_keep_latest?"true":"false",compact_backups?"true":"false",game_close_backup?"true":"false");
+    char json[512];snprintf(json,sizeof json,"{\"auto_upload\":%s,\"activity_refresh\":%s,\"local_keep_latest\":%s,\"compact_backups\":%s,\"compact_required\":%s,\"game_close_backup\":%s,\"game_close_available\":true,\"sharing_available\":true,\"message\":\"Preferences saved on this PS5\"}",auto_upload?"true":"false",activity_refresh?"true":"false",local_keep_latest?"true":"false",compact_effective()?"true":"false",legacy_firmware()?"false":"true",game_close_backup?"true":"false");
     respond(sock,200,"application/json",json,strlen(json));
 }
 static void load_preferences(void) {
@@ -727,15 +733,12 @@ static void action(int sock,const char *path,const char *form) {
         if(parameter(form,"closed",closed,sizeof closed) || strcmp(closed,"yes")) {message(sock,400,"Close the game and confirm before backup");return;}
         if(!strcmp(chosen.slot,"WholeGame")) {
             pscloud_log_open(logpath);
-            if(compact_backups) {
+            if(compact_effective()) {
                 char published[144];
                 if(compact_backup(&chosen,published)) {message(sock,500,"Compact backup failed; live saves untouched. Check Activity for metadata, slot, version or mount errors");return;}
                 if(!auto_upload) {message(sock,200,"Compact game-data backup saved in local queue; automatic upload is off");return;}
                 upload_created(sock,published,background);return;
             }
-#ifndef PSCLOUD_HOST_TEST
-            if((kernel_get_fw_version()&0xffff0000U)!=0x11400000U) {message(sock,400,"Whole-game backup requires validated firmware 11.40");return;}
-#endif
             char published[144];
             if(pscloud_game_backup_named(home,root,chosen.user,chosen.title,published)) {message(sock,500,"Whole-game backup failed; originals untouched. Check Activity for invalid/changing files, slot or size limits, or an active restore marker");return;}
             if(!auto_upload) {message(sock,200,"Whole-game backup saved in local queue; automatic upload is off");return;}
@@ -941,12 +944,9 @@ static void serve(int sock,int *locked) {
         struct settings s={0};int configured=pscloud_configure(cloudpath,&s)==0;
         char address[6144],username[512],json[8192];escaped(address,sizeof address,s.url);escaped(username,sizeof username,s.user);
         int status=cloud_status;
-        unsigned firmware=0x11400000U;
-#ifndef PSCLOUD_HOST_TEST
-        firmware=kernel_get_fw_version()&0xffff0000U;
-#endif
+        unsigned firmware=firmware_id;
         char firmware_text[16];snprintf(firmware_text,sizeof firmware_text,"%x.%02x",firmware>>24,(firmware>>16)&255);
-        snprintf(json,sizeof json,"{\"version\":\"%s\",\"firmware\":\"%s\",\"pid\":%ld,\"cloud_http\":%d,\"configured\":%s,\"connected\":%s,\"url\":\"%s\",\"username\":\"%s\"}",PSCLOUD_VERSION,firmware_text,(long)getpid(),status,configured?"true":"false",status==200 || status==207?"true":"false",address,username);
+        snprintf(json,sizeof json,"{\"version\":\"%s\",\"firmware\":\"%s\",\"firmware_tested\":%s,\"pid\":%ld,\"cloud_http\":%d,\"configured\":%s,\"connected\":%s,\"url\":\"%s\",\"username\":\"%s\"}",PSCLOUD_VERSION,firmware_text,firmware_tested()?"true":"false",(long)getpid(),status,configured?"true":"false",status==200 || status==207?"true":"false",address,username);
         respond(sock,200,"application/json",json,strlen(json));return;
     }
     if(!strcmp(method,"GET") && !strcmp(url,"/api/log")) {
@@ -1089,13 +1089,8 @@ static void watch_backup(struct watched_save *w) {
     char name[256];pscloud_app_name(appmeta,w->title,name,sizeof name);
     pscloud_log_open(logpath);pscloud_log("EVENT","Game closed: backing up %s automatically",name);
     char published[144]={0};int bad;
-    if(compact_backups)bad=compact_backup(&s,published);
-    else {
-#ifndef PSCLOUD_HOST_TEST
-        if((kernel_get_fw_version()&0xffff0000U)!=0x11400000U) {pscloud_log("WARN","Automatic backup of %s skipped: turn on Compact cloud backups on this firmware",name);w->pending=0;return;}
-#endif
-        bad=pscloud_game_backup_named(home,root,w->user,w->title,published);
-    }
+    if(compact_effective())bad=compact_backup(&s,published);
+    else bad=pscloud_game_backup_named(home,root,w->user,w->title,published);
     pscloud_log_open(logpath);
     if(bad) {
         w->stable=0;
@@ -1135,11 +1130,11 @@ int main(int argc,char **argv) {
     unsigned port=8082;
 #ifdef PSCLOUD_HOST_TEST
     if(argc!=4)return 2;
+    if(getenv("PSCLOUD_TEST_FIRMWARE"))firmware_id=(unsigned)strtoul(getenv("PSCLOUD_TEST_FIRMWARE"),NULL,16);
     snprintf(root,sizeof root,"%s",argv[1]);snprintf(home,sizeof home,"%s",argv[2]);port=(unsigned)strtoul(argv[3],NULL,10);
 #else
     (void)argc;(void)argv;
-    unsigned fw=kernel_get_fw_version()&0xffff0000U;
-    if(fw!=0x11400000U&&fw!=0x07000000U)return 2;
+    firmware_id=kernel_get_fw_version()&0xffff0000U;
     strcpy(root,"/data/pscloud");strcpy(home,"/user/home");
 #endif
     snprintf(appmeta,sizeof appmeta,
@@ -1175,6 +1170,7 @@ int main(int argc,char **argv) {
     socklen_t length=sizeof address;getsockname(server,(struct sockaddr *)&address,&length);
     printf("PSCLOUD_DASHBOARD_PORT=%u\nPSCLOUD_DASHBOARD_READY=1\n",ntohs(address.sin_port));fflush(stdout);
     pscloud_notify("PSCloud dashboard ready on port %u - open in your browser",ntohs(address.sin_port));
+    if(!firmware_tested()) {pscloud_log_open(logpath);pscloud_log("WARN","Firmware %x.%02x has not been tested with PSCloud yet; every replace still runs the staged check first and keeps a rollback copy",firmware_id>>24,(firmware_id>>16)&255);}
     {
         pthread_t watcher;pthread_attr_t attr;pthread_attr_init(&attr);pthread_attr_setstacksize(&attr,4U*1024*1024);
         pthread_mutex_lock(&clients_mutex);clients++;pthread_mutex_unlock(&clients_mutex);
