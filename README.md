@@ -1,4 +1,24 @@
-# PS5 Cloud Save — development milestone 0.29.1
+# PS5 Cloud Save — development milestone 0.29.2
+
+## Version 0.29.2 — "in sync" means both hold the same save
+
+**Bug found on the consoles:** Marvel's Wolverine showed "In sync" on 11.40 while 7.00 held
+an older save. 11.40 only checked that its own save had not changed since its own last
+backup. Now each console reports over the network which save it holds right now: the save
+it last received from the other PS5 if it has not been played since (even if backed up
+again, because a backup of the same data made on another console is arranged differently),
+otherwise its last backup if not played since. **In sync** requires both to hold the same
+save. Otherwise the more recently played side is newer, or "both changed" if both were
+played after the last sync. A linked profile whose other PS5 has no copy shows **Only on
+this PS5**. Receiving a save records which save it was (`sync/<profile>-<ID>`: WHEN, SHA).
+
+**Clearer names:** the game page shows "Profile: M-Bilal" (the ID is in the tooltip), and
+the sync banner names the other console, e.g. "Profile M-Bilal on your PS5 11.40
+(192.168.0.193) has newer progress". The page now retries profile and status requests while
+the dashboard is briefly busy, so names no longer fall back to "Profile 179a0cd8".
+
+Verified by host tests with two PSCloud instances (in sync after receiving, then "This PS5
+is newer" after playing here).
 
 ## Version 0.29.1 — per-game sync, send to the other PS5, honest sync status
 
