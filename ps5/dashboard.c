@@ -1633,6 +1633,12 @@ static void encryption_load(void) {
     fclose(f);line[strcspn(line,"\n")]=0;
     pscloud_encryption_set(!strncmp(line,"PASSWORD=",9)?line+9:NULL);memset(line,0,sizeof line);
 }
+/* upload-check.conf "FULL_CHECK=1": download each upload again to compare (off: size check). */
+static int full_check_on;
+static void full_check_load(void) {
+    char path[1400];snprintf(path,sizeof path,"%s/upload-check.conf",root);FILE *f=fopen(path,"r");int on=0;
+    if(f) {if(fscanf(f,"FULL_CHECK=%d",&on)!=1||on!=1)on=0;fclose(f);}full_check_on=on;pscloud_worker_set_full_check(on);
+}
 static void cloud_keep_load(void) {
     char path[1400];snprintf(path,sizeof path,"%s/cloud-keep.conf",root);FILE *f=fopen(path,"r");int keep=0;
     if(f) {if(fscanf(f,"KEEP=%d",&keep)!=1||keep<0||keep>999)keep=0;fclose(f);}cloud_keep=keep;
@@ -1689,7 +1695,7 @@ static void cloud_housekeeping_json(int sock) {
     struct settings cloud={0};unsigned long long used=0,available=0;long status=0;int configured=!pscloud_configure(cloudpath,&cloud);
     if(configured)status=cloud_quota(&cloud,&used,&available);
     memset(cloud.password,0,sizeof cloud.password);
-    char json[256];snprintf(json,sizeof json,"{\"configured\":%s,\"keep\":%d,\"known\":%s,\"used\":%llu,\"available\":%llu}",configured?"true":"false",cloud_keep,status==207?"true":"false",used,available);
+    char json[256];snprintf(json,sizeof json,"{\"configured\":%s,\"keep\":%d,\"full_check\":%s,\"known\":%s,\"used\":%llu,\"available\":%llu}",configured?"true":"false",cloud_keep,full_check_on?"true":"false",status==207?"true":"false",used,available);
     respond(sock,200,"application/json",json,strlen(json));
 }
 /* After uploads: prune each uploaded save's folder. Quiet; runs on the upload thread. */
@@ -1977,6 +1983,13 @@ static void action(int sock,const char *path,const char *form) {
         char path_conf[1400],text[32];snprintf(path_conf,sizeof path_conf,"%s/cloud-keep.conf",root);snprintf(text,sizeof text,"KEEP=%d\n",k);
         if(atomic_config(path_conf,text)) {message(sock,500,"Setting could not be saved");return;}
         cloud_keep=k;message(sock,200,k?"Older cloud versions will be removed after each upload":"All cloud versions are kept");return;
+    }
+    if(!strcmp(path,"/api/upload-check")) {
+        char full[4];if(parameter(form,"full",full,sizeof full)||(strcmp(full,"0")&&strcmp(full,"1"))) {message(sock,400,"Choose how uploads are checked");return;}
+        char path_conf[1400];snprintf(path_conf,sizeof path_conf,"%s/upload-check.conf",root);
+        if(atomic_config(path_conf,!strcmp(full,"1")?"FULL_CHECK=1\n":"FULL_CHECK=0\n")) {message(sock,500,"Setting could not be saved");return;}
+        full_check_on=!strcmp(full,"1");pscloud_worker_set_full_check(full_check_on);
+        message(sock,200,full_check_on?"Each upload will be downloaded again and compared (uses twice the data)":"Uploads are checked by size; nothing is downloaded again");return;
     }
     if(!strcmp(path,"/api/peers")) {
         char list[600]={0},copy[600],text[640]={0};size_t n=0;(void)parameter(form,"peers",list,sizeof list);snprintf(copy,sizeof copy,"%s",list);
@@ -2759,7 +2772,7 @@ int main(int argc,char **argv) {
     move_into_folder();
 #endif
     snprintf(googlepath,sizeof googlepath,"%s/google.conf",root);pscloud_google_load(googlepath,&google);
-    game_settings_load();schedule_load();console_id_load();cloud_keep_load();encryption_load();
+    game_settings_load();schedule_load();console_id_load();cloud_keep_load();full_check_load();encryption_load();
     pscloud_log_open(logpath);load_preferences();signal(SIGPIPE,SIG_IGN);signal(SIGTERM,stop_server);signal(SIGINT,stop_server);
     if(curl_global_init(CURL_GLOBAL_DEFAULT))return 2;
     int server=socket(AF_INET,SOCK_STREAM,0);if(server<0)return 2;

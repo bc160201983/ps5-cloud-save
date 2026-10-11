@@ -201,10 +201,10 @@ typedef int (*allocate_fn)(int,uint64_t,uint64_t,int);
 /* New, formatted, empty container at path (capacity bytes). */
 static int new_container(const char *path,size_t capacity,const char *template_image) {
 #ifdef PSCLOUD_HOST_TEST
-    /* Host stand-in: an image of the right size with the template's key area. */
-    unsigned char key[0x60];int in=open(template_image,O_RDONLY|O_NOFOLLOW);int bad=in<0||pread(in,key,sizeof key,0x800)!=(ssize_t)sizeof key;if(in>=0)close(in);
+    /* Host stand-in: an image of the right size with the template's header and key area. */
+    unsigned char head[0x860];int in=open(template_image,O_RDONLY|O_NOFOLLOW);int bad=in<0||pread(in,head,sizeof head,0)!=(ssize_t)sizeof head;if(in>=0)close(in);
     int fd=bad?-1:open(path,O_WRONLY|O_CREAT|O_EXCL|O_NOFOLLOW,0600);
-    bad=fd<0||ftruncate(fd,(off_t)capacity)||pwrite(fd,key,sizeof key,0x800)!=(ssize_t)sizeof key||fsync(fd);if(fd>=0)close(fd);
+    bad=fd<0||ftruncate(fd,(off_t)capacity)||pwrite(fd,head,sizeof head,0)!=(ssize_t)sizeof head||fsync(fd);if(fd>=0)close(fd);
     return bad?-1:0;
 #else
     (void)template_image;

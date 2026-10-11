@@ -161,7 +161,7 @@ class GenericSharingTests(unittest.TestCase):
             f=self.fixture(Path(tmp));result,file,sha=self.run_share(f,0);self.assertEqual(result,0)
             data=(f[1]/'share'/file).read_bytes();self.assertEqual(hashlib.sha256(data).hexdigest(),sha);self.assertEqual(self.validate(data),0)
             with zipfile.ZipFile(io.BytesIO(data)) as z:
-                self.assertEqual(z.namelist(),['manifest.txt','slot-0.zip','slot-1.zip'])
+                self.assertEqual(z.namelist(),['manifest.txt','slot-0.zip','slot-1.zip','sys-0.zip','sys-1.zip'])
                 for slot in z.namelist()[1:]:
                     with zipfile.ZipFile(io.BytesIO(z.read(slot))) as inner:self.assertFalse(any('sce_sys' in n for n in inner.namelist()))
 
@@ -194,7 +194,7 @@ class GenericSharingTests(unittest.TestCase):
             f=self.fixture(Path(tmp));result,file,_=self.run_share(f,0,only=b'profile');self.assertEqual(result,0)
             data=(f[1]/'share'/file).read_bytes();self.assertEqual(self.validate(data),0)
             with zipfile.ZipFile(io.BytesIO(data)) as z:
-                self.assertEqual(z.namelist(),['manifest.txt','slot-0.zip'])
+                self.assertEqual(z.namelist(),['manifest.txt','slot-0.zip','sys-0.zip'])
                 self.assertIn(b'SLOT=0:profile:',z.read('manifest.txt'))
                 self.assertNotIn(b'save1',z.read('manifest.txt'))
         for only in (b'missing',b'save1,save1',b'save1,../x',b',',b'save1,missing'):

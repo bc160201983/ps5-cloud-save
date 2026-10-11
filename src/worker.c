@@ -40,6 +40,11 @@ void pscloud_worker_status(struct pscloud_transfer_status *s) {
     do {generation=file_generation;if(generation&1)continue;for(unsigned i=0;i<256;i++)s->file[i]=(char)transfer_file[i];}while((generation&1) || generation!=file_generation);
 }
 void pscloud_worker_cancel(void) {stopped=1;}
+/* Full check downloads every upload again and compares its SHA-256; off by default because it
+ * doubles the traffic. Without it an upload counts when TLS delivered it, the server answered
+ * 2xx and a HEAD shows exactly the size sent; only then is the identity (SHA-256) written. */
+static _Atomic int full_check;
+void pscloud_worker_set_full_check(int on) {full_check=on?1:0;}
 void pscloud_worker_prepare(void) {stopped=0;transfer_phase=PSCLOUD_IDLE;transfer_done=0;transfer_total=0;transfer_transport=0;transfer_http=0;transfer_failed_phase=0;}
 /* Bound active transfers by size, not a blanket five minutes. A separate
  * low-speed guard aborts stalls; a continuing large upload can take longer. */
@@ -119,6 +124,21 @@ static int verify_remote(const char *url,const char *user,const char *pass,const
     char hash[65];for(unsigned i=0;i<32;i++)snprintf(hash+2*i,3,"%02x",digest[i]);
     return body.size==size && !strcmp(hash,expected)?1:0;
 }
+/* 1 stored with exactly this size, 0 missing or another size, -1 cannot establish. */
+static int remote_size_matches(const char *url,const char *user,const char *pass,const char *ca,curl_off_t size) {
+    CURL *c=curl_easy_init();if(!c)return -1;
+    phase(PSCLOUD_READBACK);transfer_total=0;
+    curl_easy_setopt(c,CURLOPT_URL,url);curl_easy_setopt(c,CURLOPT_PROTOCOLS_STR,"https");
+    curl_easy_setopt(c,CURLOPT_USERNAME,user);curl_easy_setopt(c,CURLOPT_PASSWORD,pass);curl_easy_setopt(c,CURLOPT_NOBODY,1L);
+    curl_easy_setopt(c,CURLOPT_CONNECTTIMEOUT,15L);curl_easy_setopt(c,CURLOPT_TIMEOUT,60L);curl_easy_setopt(c,CURLOPT_NOSIGNAL,1L);
+    if(ca && *ca)curl_easy_setopt(c,CURLOPT_CAINFO,ca);
+    CURLcode rc=curl_easy_perform(c);long status=0;curl_easy_getinfo(c,CURLINFO_RESPONSE_CODE,&status);transport("archive size check",rc,status);
+    curl_off_t length=-1;curl_easy_getinfo(c,CURLINFO_CONTENT_LENGTH_DOWNLOAD_T,&length);curl_easy_cleanup(c);
+    if(rc!=CURLE_OK || (status!=200 && status!=404))return -1;
+    if(status==404)return 0;
+    if(length<0)return -1;
+    return length==size?1:0;
+}
 static size_t collect_identity(char *p,size_t a,size_t b,void *ctx) {
     struct remote_body *r=ctx;if(b && a>1024/b)return 0;
     size_t n=a*b;if(n>1024-r->size)return 0;
@@ -147,7 +167,10 @@ static int cloud_copy(const char *archive,const char *identity,const char *user,
     if(status==404)return 0;
     if(length<0)return -1;
     if(encrypted)return length==size; /* identity (plain checksum) matches and the size is an encrypted copy's */
-    return length==size?verify_remote(archive,user,pass,ca,s->sha256,size):0;
+    /* The identity (same SHA-256) is only written after a checked upload, so a matching
+     * identity plus the same size is enough unless the full check is on. */
+    if(length!=size)return 0;
+    return full_check?verify_remote(archive,user,pass,ca,s->sha256,size):1;
 }
 static int collection(const char *url,const char *user,const char *pass,const char *ca) {
     CURL *c=curl_easy_init();if(!c)return 1;
@@ -280,7 +303,9 @@ static int upload(const char *base,const char *user,const char *pass,const char 
         fprintf(stderr,"Upload retained for retry: %s (transport=%d, HTTP=%ld)\n",object,rc,status);
         return 1;
     }
-    int verified=verify_remote(url,user,pass,ca,send_hash,send_size);
+    int verified=full_check?verify_remote(url,user,pass,ca,send_hash,send_size):remote_size_matches(url,user,pass,ca,send_size);
+    /* A server that does not report sizes gets the full check instead of trust. */
+    if(verified<0&&!full_check&&!stopped)verified=verify_remote(url,user,pass,ca,send_hash,send_size);
     if(sealed>=0)close(sealed);
     if(stopped) {fprintf(stderr,"Upload cancelled; nothing committed, local backup retained: %s\n",object);return 1;}
     if(verified!=1) {
@@ -358,6 +383,7 @@ int pscloud_worker_main(int argc,char **argv) {
 int main(int argc,char **argv) {
 #endif
     pscloud_worker_prepare();
+    if(getenv("PSCLOUD_FULL_CHECK"))full_check=!strcmp(getenv("PSCLOUD_FULL_CHECK"),"1");
 #ifdef PSCLOUD_EMBEDDED
     if(curl_global_init(CURL_GLOBAL_DEFAULT))return 2;
     int result=worker_run(argc,argv,getenv("PSCLOUD_URL"),getenv("PSCLOUD_USER"),getenv("PSCLOUD_PASSWORD"),getenv("PSCLOUD_CA_BUNDLE"));

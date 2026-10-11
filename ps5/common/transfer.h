@@ -13,6 +13,8 @@ void pscloud_worker_status(struct pscloud_transfer_status *);
 long pscloud_transfer_timeout(unsigned long long);
 void pscloud_worker_cancel(void);
 void pscloud_worker_prepare(void);
+/* 1: after each upload, download it again and compare SHA-256 (slow). 0: size check (default). */
+void pscloud_worker_set_full_check(int on);
 struct settings;
 int pscloud_worker_upload(const char *,const char *,const struct settings *);
 #endif

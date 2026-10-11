@@ -27,6 +27,8 @@ class WorkerTest(unittest.TestCase):
         self.manifest_status = 201
         self.collections=set()
         self.puts=[]
+        self.gets=[]
+        self.truncate_upload=False
         self.corrupt_upload=False
         parent = self
         class Handler(http.server.BaseHTTPRequestHandler):
@@ -55,6 +57,7 @@ class WorkerTest(unittest.TestCase):
                 body=parent.objects.get(self.path)
                 if body is None:
                     self.send_response(404); self.end_headers(); return
+                parent.gets.append(self.path)
                 self.send_response(200)
                 self.send_header('Content-Length',str(len(body)))
                 self.end_headers(); self.wfile.write(body)
@@ -81,6 +84,7 @@ class WorkerTest(unittest.TestCase):
                     if status == 201:
                         parent.puts.append(self.path)
                         parent.objects[self.path] = (bytes([body[0]^1])+body[1:]) if parent.corrupt_upload and body and not self.path.endswith('.identity') else body
+                        if parent.truncate_upload and not self.path.endswith('.identity'):parent.objects[self.path]=body[:-1]
                     self.send_response(status)
                 self.end_headers()
             def log_message(self, *args): pass
@@ -91,7 +95,7 @@ class WorkerTest(unittest.TestCase):
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
         self.env = dict(os.environ, PSCLOUD_URL=f'https://localhost:{self.server.server_port}/backups',
-                        PSCLOUD_USER='user', PSCLOUD_PASSWORD='pass', PSCLOUD_CA_BUNDLE=str(self.cert))
+                        PSCLOUD_USER='user', PSCLOUD_PASSWORD='pass', PSCLOUD_CA_BUNDLE=str(self.cert), PSCLOUD_FULL_CHECK='1')
     def tearDown(self):
         self.server.shutdown()
         self.server.server_close()
@@ -173,6 +177,21 @@ class WorkerTest(unittest.TestCase):
         self.puts.clear()
         self.assertEqual(self.run_worker().returncode,0)
         self.assertIn(remote,self.puts);self.assertEqual(self.objects[remote],original)
+
+    def test_default_check_does_not_download_the_upload_again(self):
+        p=self.structured_job();self.assertEqual(self.run_worker(PSCLOUD_FULL_CHECK='0').returncode,0)
+        archive=next(k for k in self.objects if not k.endswith('.identity'))
+        self.assertNotIn(archive,self.gets)  # a HEAD with the size, not a second transfer
+        self.assertTrue(any(k.endswith('.identity') for k in self.objects))
+        # Already in the cloud: skipped without downloading it either.
+        sent=p.with_name(p.name[:-6]+'.sent');sent.rename(p);self.puts.clear()
+        self.assertEqual(self.run_worker(PSCLOUD_FULL_CHECK='0').returncode,0)
+        self.assertNotIn(archive,self.puts);self.assertNotIn(archive,self.gets)
+
+    def test_default_check_catches_a_stored_copy_of_the_wrong_size(self):
+        p=self.structured_job();self.truncate_upload=True
+        self.assertEqual(self.run_worker(PSCLOUD_FULL_CHECK='0').returncode,1);self.assertTrue(p.exists())
+        self.assertFalse(any(k.endswith('.identity') for k in self.objects))
 
     def test_corrupt_upload_does_not_publish_identity_commit(self):
         p=self.structured_job();self.corrupt_upload=True
