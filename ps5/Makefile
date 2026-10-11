@@ -4,7 +4,9 @@ endif
 include $(PS5_PAYLOAD_SDK)/toolchain/prospero.mk
 
 .PHONY: all clean deploy upload recovery backup dashboard share
-all: pscloud-probe.elf pscloud-export.elf
+all: pscloud-probe.elf pscloud-export.elf pscloud-ps.elf
+pscloud-ps.elf: ps-probe.c
+	$(CC) -O2 -Wall -Wextra -Werror -o $@ ps-probe.c -lkernel
 pscloud-probe.elf: probe.c common/log.c common/log.h
 	$(CC) -O2 -Wall -Wextra -Werror -o $@ probe.c common/log.c
 pscloud-export.elf: export.c common/log.c common/zip.c common/log.h common/zip.h
@@ -37,4 +39,4 @@ pscloud-restore.elf: restore.c common/restore.c common/zip.c common/log.c common
 deploy: pscloud-probe.elf
 	$(PS5_DEPLOY) -h $(PS5_HOST) -p 9021 $<
 clean:
-	rm -f pscloud-probe.elf pscloud-export.elf pscloud-upload.elf pscloud-download.elf pscloud-restore.elf pscloud-backup.elf pscloud-dashboard.elf ui.h
+	rm -f pscloud-probe.elf pscloud-export.elf pscloud-ps.elf pscloud-upload.elf pscloud-download.elf pscloud-restore.elf pscloud-backup.elf pscloud-dashboard.elf ui.h
