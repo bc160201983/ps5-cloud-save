@@ -440,8 +440,9 @@ int pscloud_share_game(const char *home,const char *root,const char *appmeta,con
             if(fstatat(source,name,&st,AT_SYMLINK_NOFOLLOW)&&create_missing&&mode==2) {
                 const char *why="";struct pscloud_source_sys from={0};
                 from.sfo=sys_file(&p->sys[i],"param.sfo",&from.sfo_size);from.keystone=sys_file(&p->sys[i],"keystone",&from.keystone_size);
-                if(pscloud_create_slot(home,system_root,root,user,title,p->slots[i],p->capacity[i],&from,&why)) {refuse("Slot %s could not be created: %s",p->slots[i],why);goto done;}
-                strcpy(created[created_count++],p->slots[i]);
+                if(!pscloud_create_slot(home,system_root,root,user,title,p->slots[i],p->capacity[i],&from,&why))strcpy(created[created_count++],p->slots[i]);
+                else if(!skip_missing) {refuse("Slot %s could not be created: %s",p->slots[i],why);goto done;}
+                else pscloud_log("WARN","Slot %s not created (%s); skipped",p->slots[i],why);
             }
             else if(fstatat(source,name,&st,AT_SYMLINK_NOFOLLOW)&&create_missing) {pscloud_log("INFO","Slot %s will be created when the save is written",p->slots[i]);continue;}
             if(fstatat(source,name,&st,AT_SYMLINK_NOFOLLOW)) {
