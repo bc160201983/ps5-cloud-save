@@ -125,12 +125,17 @@ static int firmware_tested(void) {return firmware_id==0x11400000U||firmware_id==
 static int compact_effective(void) {return compact_backups||!legacy_firmware();}
 static void prune_local_history(void);
 /* Per-game choices, in <root>/games.conf as "PPSA03671 CLOSE=1 ALL=1". Missing = on. */
-struct game_setting {char title[10];int close_backup,backup_all;};
+struct game_setting {char title[10];int close_backup,backup_all,auto_sync,auto_apply;};
 static struct game_setting game_settings[512];static unsigned game_settings_count;
 static pthread_mutex_t settings_mutex=PTHREAD_MUTEX_INITIALIZER;
 static void game_settings_load(void);
 static int game_setting(const char *title,int which);
 static void batch_json(int sock);
+static time_t newest_container(int titledir);
+static void sync_tick(void);
+static void registry_publish(void);
+static void console_id_load(void);
+static void sync_after_restore(const char *user,const char *title,const char *file);
 static int batch_start(const char *user);
 static int schedule_save(void);
 static void schedule_load(void);
@@ -157,6 +162,7 @@ static size_t collect(char *p,size_t a,size_t b,void *ctx) {
     if(n>r->limit-r->size)return 0;
     memcpy(r->data+r->size,p,n);r->size+=n;r->data[r->size]=0;return n;
 }
+static _Thread_local int webdav_quiet; /* background sync checks do not fill Activity */
 static long webdav(const struct settings *s,const char *url,const char *method,struct response *r) {
     CURL *c=curl_easy_init();if(!c)return 0;
     curl_easy_setopt(c,CURLOPT_URL,url);curl_easy_setopt(c,CURLOPT_PROTOCOLS_STR,"https");
@@ -169,8 +175,19 @@ static long webdav(const struct settings *s,const char *url,const char *method,s
     curl_easy_setopt(c,CURLOPT_WRITEDATA,r);struct curl_slist *headers=NULL;
     if(!strcmp(method,"PROPFIND")) {headers=curl_slist_append(headers,"Depth: 1");curl_easy_setopt(c,CURLOPT_HTTPHEADER,headers);}
     CURLcode result=curl_easy_perform(c);long status=0;curl_easy_getinfo(c,CURLINFO_RESPONSE_CODE,&status);
-    pscloud_log("INFO","WebDAV %s: transport=%d HTTP=%ld",method,(int)result,status);
+    if(!webdav_quiet)pscloud_log("INFO","WebDAV %s: transport=%d HTTP=%ld",method,(int)result,status);
     curl_slist_free_all(headers);curl_easy_cleanup(c);return result==CURLE_OK?status:0;
+}
+static long webdav_put(const struct settings *s,const char *url,const char *data,size_t size) {
+    CURL *c=curl_easy_init();if(!c)return 0;char sink[256];struct response r={sink,0,sizeof sink-1};
+    curl_easy_setopt(c,CURLOPT_URL,url);curl_easy_setopt(c,CURLOPT_PROTOCOLS_STR,"https");
+    curl_easy_setopt(c,CURLOPT_USERAGENT,"PSCloud/" PSCLOUD_VERSION);
+    curl_easy_setopt(c,CURLOPT_USERNAME,s->user);curl_easy_setopt(c,CURLOPT_PASSWORD,s->password);
+    curl_easy_setopt(c,CURLOPT_CAINFO,s->ca);curl_easy_setopt(c,CURLOPT_CONNECTTIMEOUT,10L);curl_easy_setopt(c,CURLOPT_TIMEOUT,25L);curl_easy_setopt(c,CURLOPT_NOSIGNAL,1L);
+    curl_easy_setopt(c,CURLOPT_CUSTOMREQUEST,"PUT");curl_easy_setopt(c,CURLOPT_POSTFIELDS,data);curl_easy_setopt(c,CURLOPT_POSTFIELDSIZE,(long)size);
+    curl_easy_setopt(c,CURLOPT_WRITEFUNCTION,collect);curl_easy_setopt(c,CURLOPT_WRITEDATA,&r);
+    CURLcode result=curl_easy_perform(c);long status=0;curl_easy_getinfo(c,CURLINFO_RESPONSE_CODE,&status);curl_easy_cleanup(c);
+    return result==CURLE_OK?status:0;
 }
 static int safe_word(const char *s,size_t max) {
     if(!*s || strlen(s)>max)return 0;
@@ -303,31 +320,31 @@ static void game_settings_load(void) {
     char path[1400];snprintf(path,sizeof path,"%s/games.conf",root);FILE *f=fopen(path,"r");if(!f)return;
     pthread_mutex_lock(&settings_mutex);game_settings_count=0;char line[128];
     while(fgets(line,sizeof line,f)&&game_settings_count<512) {
-        struct game_setting g={{0},1,1};if(sscanf(line,"%9s CLOSE=%d ALL=%d",g.title,&g.close_backup,&g.backup_all)!=3||!pscloud_title_valid(g.title))continue;
-        g.close_backup=g.close_backup!=0;g.backup_all=g.backup_all!=0;game_settings[game_settings_count++]=g;
+        struct game_setting g={{0},1,1,0,0};if(sscanf(line,"%9s CLOSE=%d ALL=%d SYNC=%d APPLY=%d",g.title,&g.close_backup,&g.backup_all,&g.auto_sync,&g.auto_apply)<3||!pscloud_title_valid(g.title))continue;
+        g.close_backup=g.close_backup!=0;g.backup_all=g.backup_all!=0;g.auto_sync=g.auto_sync!=0;g.auto_apply=g.auto_sync&&g.auto_apply!=0;game_settings[game_settings_count++]=g;
     }
     pthread_mutex_unlock(&settings_mutex);fclose(f);
 }
-/* which: 0 = back up when closed, 1 = include in Back up all */
+/* which: 0 = back up when closed, 1 = include in Back up all, 2 = auto download, 3 = auto replace */
 static int game_setting(const char *title,int which) {
-    int value=1;pthread_mutex_lock(&settings_mutex);
-    for(unsigned i=0;i<game_settings_count;i++)if(!strcmp(game_settings[i].title,title))value=which?game_settings[i].backup_all:game_settings[i].close_backup;
+    int value=which<2;pthread_mutex_lock(&settings_mutex);
+    for(unsigned i=0;i<game_settings_count;i++)if(!strcmp(game_settings[i].title,title))value=which==3?game_settings[i].auto_apply:which==2?game_settings[i].auto_sync:which?game_settings[i].backup_all:game_settings[i].close_backup;
     pthread_mutex_unlock(&settings_mutex);return value;
 }
-static int game_settings_save(const char *title,int close_backup,int backup_all) {
+static int game_settings_save(const char *title,int close_backup,int backup_all,int auto_sync,int auto_apply) {
     pthread_mutex_lock(&settings_mutex);unsigned i=0;
     while(i<game_settings_count&&strcmp(game_settings[i].title,title))i++;
     if(i==game_settings_count) {if(i==512) {pthread_mutex_unlock(&settings_mutex);return -1;}snprintf(game_settings[i].title,sizeof game_settings[i].title,"%.9s",title);game_settings_count++;}
-    game_settings[i].close_backup=close_backup;game_settings[i].backup_all=backup_all;
+    game_settings[i].close_backup=close_backup;game_settings[i].backup_all=backup_all;game_settings[i].auto_sync=auto_sync;game_settings[i].auto_apply=auto_sync&&auto_apply;
     char *text=malloc(512*32);size_t n=0;
-    for(unsigned k=0;text&&k<game_settings_count;k++)if(!game_settings[k].close_backup||!game_settings[k].backup_all)n+=(size_t)snprintf(text+n,512*32-n,"%s CLOSE=%d ALL=%d\n",game_settings[k].title,game_settings[k].close_backup,game_settings[k].backup_all);
+    for(unsigned k=0;text&&k<game_settings_count;k++)if(!game_settings[k].close_backup||!game_settings[k].backup_all||game_settings[k].auto_sync)n+=(size_t)snprintf(text+n,512*32-n,"%s CLOSE=%d ALL=%d SYNC=%d APPLY=%d\n",game_settings[k].title,game_settings[k].close_backup,game_settings[k].backup_all,game_settings[k].auto_sync,game_settings[k].auto_apply);
     pthread_mutex_unlock(&settings_mutex);
     char path[1400];snprintf(path,sizeof path,"%s/games.conf",root);
     int bad=!text||atomic_config(path,n?text:"");free(text);return bad?-1:0;
 }
 static void game_settings_json(int sock,const char *query) {
     char title[16];if(parameter(query,"title",title,sizeof title)||!pscloud_title_valid(title)) {reject(sock,400,"Invalid game");return;}
-    char json[160];snprintf(json,sizeof json,"{\"title\":\"%s\",\"close_backup\":%s,\"backup_all\":%s}",title,game_setting(title,0)?"true":"false",game_setting(title,1)?"true":"false");
+    char json[240];snprintf(json,sizeof json,"{\"title\":\"%s\",\"close_backup\":%s,\"backup_all\":%s,\"auto_sync\":%s,\"auto_apply\":%s}",title,game_setting(title,0)?"true":"false",game_setting(title,1)?"true":"false",game_setting(title,2)?"true":"false",game_setting(title,3)?"true":"false");
     respond(sock,200,"application/json",json,strlen(json));
 }
 static void escaped(char *out,size_t max,const char *input) {
@@ -958,6 +975,206 @@ static void prune_shared_keep(unsigned keep) {
         if(newer>=keep&&!unlinkat(dir,items[i].name,0))pscloud_log("INFO","Removed older shared save %s (keeping the newest %u for this game)",items[i].name,keep);}
     fsync(dir);free(items);close(dir);
 }
+
+/* ---------- Sync between consoles ----------
+ * Cloud folders are per console profile (<game>/User-<id>/WholeGame). Each console publishes
+ * its profiles to <cloud>/.pscloud-profiles/<id>.txt; links.conf says which profiles on other
+ * consoles are "the same person" as a local profile. A game's sync state compares this PS5's
+ * newest save time with the newest cloud version (own or linked) and the last sync point. */
+static char console_id[17];
+static void console_id_load(void) {
+    char path[1400];snprintf(path,sizeof path,"%s/console.id",root);int fd=open(path,O_RDONLY|O_NOFOLLOW);
+    if(fd>=0) {ssize_t n=read(fd,console_id,16);close(fd);console_id[n>0?n:0]=0;if(safe_word(console_id,16)&&strlen(console_id)==16)return;}
+    char id[33];if(pscloud_random_id(id))return;memcpy(console_id,id,16);console_id[16]=0;
+    char text[32];snprintf(text,sizeof text,"%s\n",console_id);atomic_config(path,text);console_id[16]=0;
+}
+static int profile_name(const char *user,char *name,size_t max) {
+    char path[1400];snprintf(path,sizeof path,"%s/%s/username.dat",home,user);name[0]=0;
+    int fd=open(path,O_RDONLY|O_NOFOLLOW);if(fd<0)return -1;ssize_t n=read(fd,name,max-1);close(fd);if(n<=0)return -1;name[n]=0;
+    for(ssize_t i=0;i<n;i++)if((unsigned char)name[i]<32) {name[i]=0;break;}
+    return name[0]?0:-1;
+}
+static void registry_publish(void) {
+    struct settings cloud={0};if(pscloud_configure(cloudpath,&cloud)||!*console_id)return;
+    webdav_quiet=1;char url[4200],text[512];
+    char sink[512];struct response ignored={sink,0,sizeof sink-1};
+    snprintf(url,sizeof url,"%s/.pscloud-profiles/",cloud.url);webdav(&cloud,url,"MKCOL",&ignored);
+    DIR *d=opendir(home);struct dirent *u;
+    while(d&&(u=readdir(d))) {
+        if(!safe_word(u->d_name,16))continue;char name[64];if(profile_name(u->d_name,name,sizeof name))continue;
+        for(char *q=name;*q;q++)if(*q=='"'||*q=='\\'||(unsigned char)*q<32)*q=' ';
+        int n=snprintf(text,sizeof text,"NAME=%s\nCONSOLE=%s\nFIRMWARE=%x.%02x\nUPDATED=%lld\n",shown,console_id,firmware_id>>24,(firmware_id>>16)&255,(long long)time(NULL));
+        snprintf(url,sizeof url,"%s/.pscloud-profiles/%s.txt",cloud.url,u->d_name);(void)name;webdav_put(&cloud,url,text,(size_t)n);
+    }
+    if(d)closedir(d);webdav_quiet=0;memset(cloud.password,0,sizeof cloud.password);
+}
+/* links.conf: "<local profile> <cloud profile>[,<cloud profile>...]" */
+static int links_for(const char *user,char linked[4][17]) {
+    char path[1400],line[256];snprintf(path,sizeof path,"%s/links.conf",root);FILE *f=fopen(path,"r");int n=0;if(!f)return 0;
+    while(fgets(line,sizeof line,f)) {char who[32],list[200];if(sscanf(line,"%31s %199s",who,list)!=2||strcmp(who,user))continue;
+        for(char *save=NULL,*tok=strtok_r(list,",",&save);tok&&n<4;tok=strtok_r(NULL,",",&save))if(safe_word(tok,16)&&strcmp(tok,user))snprintf(linked[n++],17,"%s",tok);}
+    fclose(f);return n;
+}
+static int links_save(const char *user,const char *list) {
+    char path[1400],line[256],out[8192]={0};size_t n=0;snprintf(path,sizeof path,"%s/links.conf",root);FILE *f=fopen(path,"r");
+    while(f&&fgets(line,sizeof line,f)) {char who[32];if(sscanf(line,"%31s",who)==1&&strcmp(who,user)&&n+strlen(line)<sizeof out-1) {strcpy(out+n,line);n+=strlen(line);}}
+    if(f)fclose(f);
+    if(*list)n+=(size_t)snprintf(out+n,sizeof out-n,"%s %s\n",user,list);
+    return atomic_config(path,out);
+}
+/* HTTP date ("Sat, 11 Oct 2026 07:31:25 GMT") to Unix time. */
+static long long http_time(const char *text) {
+    static const char months[]="JanFebMarAprMayJunJulAugSepOctNovDec";char month[4];int day,year,h,m,sec;
+    if(sscanf(text,"%*3s, %d %3s %d %d:%d:%d",&day,month,&year,&h,&m,&sec)!=6)return 0;
+    const char *at=strstr(months,month);if(!at)return 0;int mon=(int)(at-months)/3;
+    long long y=year-(mon<2),era=y/400,yoe=y-era*400,mp=(mon+9)%12,doy=(153*mp+2)/5+day-1,doe=yoe*365+yoe/4-yoe/100+doy;
+    return (era*146097+doe-719468)*86400LL+h*3600+m*60+sec;
+}
+struct cloud_version {char file[128],user[17],sha[65];long long created;};
+/* Newest WholeGame version in one profile's cloud folder: PROPFIND for the newest identity
+ * by modification date, then read that identity. 1 found, 0 none, -1 error. */
+static int cloud_newest(const struct settings *cloud,const char *user,const char *title,struct cloud_version *out) {
+    struct pscloud_snapshot who={0};snprintf(who.user,sizeof who.user,"%s",user);snprintf(who.title,sizeof who.title,"%s",title);strcpy(who.slot,"WholeGame");memset(who.sha256,'0',64);
+    char folder[256],url[4200];if(pscloud_snapshot_folder(&who,folder,sizeof folder))return -1;
+    snprintf(url,sizeof url,"%s/%s/.pscloud/",cloud->url,folder);
+    char *xml=malloc(512*1024+1);if(!xml)return -1;struct response r={xml,0,512*1024};long status=webdav(cloud,url,"PROPFIND",&r);
+    if(status==404) {free(xml);return 0;}
+    if(status!=207&&status!=200) {free(xml);return -1;}
+    xml[r.size]=0;char best[128]={0};long long best_time=0;
+    for(char *cursor=xml;(cursor=strstr(cursor,"href>"));) {
+        cursor+=5;char *end=strchr(cursor,'<');if(!end)break;
+        char *begin=cursor;for(char *p=cursor;p<end;p++)if(*p=='/')begin=p+1;
+        size_t n=(size_t)(end-begin);if(n<10||n>200||strncmp(end-9,".identity",9))continue;
+        char *stop=strstr(end,"href>"),*mod=strstr(end,"getlastmodified");long long when=0;
+        if(mod&&(!stop||mod<stop)) {char *gt=strchr(mod,'>');if(gt)when=http_time(gt+1);}
+        if(when>=best_time&&n-9<sizeof best) {best_time=when;memcpy(best,begin,n-9);best[n-9]=0;}
+    }
+    free(xml);if(!*best)return 0;
+    struct pscloud_snapshot snap;if(remote_snapshot(cloud,&who,best,&snap))return -1;
+    snprintf(out->file,sizeof out->file,"%s",best);snprintf(out->user,sizeof out->user,"%s",user);snprintf(out->sha,sizeof out->sha,"%s",snap.sha256);out->created=snap.created;
+    return 1;
+}
+static long long sync_base(const char *user,const char *title) {
+    char path[1400];snprintf(path,sizeof path,"%s/sync/%s-%s",root,user,title);FILE *f=fopen(path,"r");long long when=0;
+    if(f) {if(fscanf(f,"WHEN=%lld",&when)!=1)when=0;fclose(f);}return when;
+}
+static void sync_mark(const char *user,const char *title) {
+    char path[1400],text[64];snprintf(path,sizeof path,"%s/sync",root);(void)mkdir(path,0700);
+    snprintf(path,sizeof path,"%s/sync/%s-%s",root,user,title);snprintf(text,sizeof text,"WHEN=%lld\n",(long long)time(NULL));atomic_config(path,text);
+}
+enum {SYNC_UNKNOWN,SYNC_NONE,SYNC_IN,SYNC_CLOUD,SYNC_LOCAL,SYNC_CONFLICT};
+static const char *const sync_names[]={"unknown","not_in_cloud","in_sync","cloud_newer","local_newer","conflict"};
+static int sync_state(const char *user,const char *title,struct cloud_version *newest_other,long long *local_time) {
+    struct settings cloud={0};if(pscloud_configure(cloudpath,&cloud))return SYNC_UNKNOWN;
+    char path[1400];snprintf(path,sizeof path,"%s/%s/savedata_prospero/%s",home,user,title);int fd=pscloud_open_directory(path);
+    *local_time=fd>=0?(long long)newest_container(fd):0;if(fd>=0)close(fd);
+    struct cloud_version own={0},v;int got=cloud_newest(&cloud,user,title,&own);if(got<0) {memset(cloud.password,0,sizeof cloud.password);return SYNC_UNKNOWN;}
+    char linked[4][17];int n=links_for(user,linked),any_other=0;memset(newest_other,0,sizeof *newest_other);
+    for(int i=0;i<n;i++)if(cloud_newest(&cloud,linked[i],title,&v)>0&&v.created>newest_other->created) {*newest_other=v;any_other=1;}
+    memset(cloud.password,0,sizeof cloud.password);
+    if(!got&&!any_other)return SYNC_NONE;
+    long long base=sync_base(user,title);if(got&&own.created>base)base=own.created;
+    if(!base) /* never synced: the newer side wins */
+        return any_other&&newest_other->created>*local_time?SYNC_CLOUD:SYNC_LOCAL;
+    int cloud_changed=any_other&&newest_other->created>base,local_changed=*local_time>base+60;
+    return cloud_changed&&local_changed?SYNC_CONFLICT:cloud_changed?SYNC_CLOUD:local_changed?SYNC_LOCAL:SYNC_IN;
+}
+static void sync_status_json(int sock,const char *query) {
+    char user[32],title[16];if(parameter(query,"user",user,sizeof user)||!safe_word(user,16)||parameter(query,"title",title,sizeof title)||!pscloud_title_valid(title)) {reject(sock,400,"Choose a profile and game");return;}
+    struct cloud_version other;long long local_time=0;webdav_quiet=1;int state=sync_state(user,title,&other,&local_time);webdav_quiet=0;
+    char name[64]="",shown[400]="";if(*other.user) {if(profile_name(other.user,name,sizeof name))snprintf(name,sizeof name,"Profile %s",other.user);escaped(shown,sizeof shown,name);}
+    char linked[4][17];int links=links_for(user,linked);
+    char json[1600];snprintf(json,sizeof json,"{\"state\":\"%s\",\"local_time\":%lld,\"base\":%lld,\"cloud\":{\"file\":\"%s\",\"user\":\"%s\",\"name\":\"%s\",\"created\":%lld,\"sha256\":\"%s\"},\"links\":%d}",
+        sync_names[state],local_time,sync_base(user,title),other.file,other.user,shown,other.created,other.sha,links);
+    respond(sock,200,"application/json",json,strlen(json));
+}
+/* Fetch the newest linked cloud version into share/ and run the staged check for this
+ * profile. On success the normal Replace my save step can use it. */
+static int sync_fetch(const char *user,const char *title,char file[128],char sha[65],char *why,size_t why_max) {
+    struct cloud_version other;long long local_time=0;webdav_quiet=1;int state=sync_state(user,title,&other,&local_time);webdav_quiet=0;
+    if(!*other.file) {snprintf(why,why_max,"No save from your other PS5 in the cloud");return -1;}
+    (void)state;struct settings cloud={0};if(pscloud_configure(cloudpath,&cloud)) {snprintf(why,why_max,"Connect your cloud first");return -1;}
+    struct pscloud_snapshot who={0};snprintf(who.user,sizeof who.user,"%s",other.user);snprintf(who.title,sizeof who.title,"%s",title);strcpy(who.slot,"WholeGame");memset(who.sha256,'0',64);
+    char folder[256],url[4400];pscloud_snapshot_folder(&who,folder,sizeof folder);snprintf(url,sizeof url,"%s/%s/%s",cloud.url,folder,other.file);
+    unsigned char *data=malloc(PSCLOUD_RESTORE_MAX+1U);if(!data) {snprintf(why,why_max,"Out of memory");return -1;}
+    struct response r={(char *)data,0,PSCLOUD_RESTORE_MAX};long status=webdav(&cloud,url,"GET",&r);memset(cloud.password,0,sizeof cloud.password);
+    if(status!=200||pscloud_verify_hash(data,r.size,other.sha)||pscloud_share_validate(data,r.size,title)) {free(data);snprintf(why,why_max,"Cloud save could not be downloaded or did not verify");return -1;}
+    char share[1400],id[33],path[1600];snprintf(share,sizeof share,"%s/share",root);(void)mkdir(share,0700);
+    if(pscloud_random_id(id)) {free(data);return -1;}
+    snprintf(file,128,"portable-%s-%s.zip",title,id);snprintf(path,sizeof path,"%s/%s",share,file);
+    int fd=open(path,O_WRONLY|O_CREAT|O_EXCL|O_NOFOLLOW,0600);size_t at=0;int bad=fd<0;
+    while(!bad&&at<r.size) {ssize_t w=write(fd,data+at,r.size-at);if(w<=0)bad=1;else at+=(size_t)w;}
+    if(fd>=0) {if(fsync(fd))bad=1;close(fd);}
+    if(bad) {free(data);snprintf(why,why_max,"Could not store the cloud save");return -1;}
+    char published[128];struct pscloud_share_options options={NULL,0,1};
+    bad=pscloud_share_game(home,root,appmeta,user,title,1,data,r.size,&options,published,sha);free(data);
+    if(bad) {unlink(path);const char *e=pscloud_share_error();snprintf(why,why_max,"Check failed: %s",*e?e:"see Activity");return -1;}
+    char proof[1700];snprintf(proof,sizeof proof,"%s/%s.check-%s",share,file,user);atomic_config(proof,sha);
+    snprintf(path,sizeof path,"%s/sync",root);(void)mkdir(path,0700);
+    char pending[1400],text[256];snprintf(pending,sizeof pending,"%s/sync/%s-%s.pending",root,user,title);snprintf(text,sizeof text,"FILE=%s\n",file);atomic_config(pending,text);
+    pscloud_log("EVENT","Newer save for %s fetched from the cloud and checked; ready to replace",title);
+    return 0;
+}
+/* After a replace: if it used the fetched sync file, this game is now in sync. */
+static void sync_after_restore(const char *user,const char *title,const char *file) {
+    char pending[1400],line[256]={0};snprintf(pending,sizeof pending,"%s/sync/%s-%s.pending",root,user,title);FILE *f=fopen(pending,"r");if(!f)return;
+    if(!fgets(line,sizeof line,f))line[0]=0;fclose(f);char expect[200];snprintf(expect,sizeof expect,"FILE=%s\n",file);
+    if(!strcmp(line,expect)) {sync_mark(user,title);unlink(pending);}
+}
+static void cloud_profiles_json(int sock) {
+    struct settings cloud={0};if(pscloud_configure(cloudpath,&cloud)) {respond(sock,200,"application/json","{\"profiles\":[],\"links\":[]}",28);return;}
+    registry_publish();webdav_quiet=1;
+    char url[4200];snprintf(url,sizeof url,"%s/.pscloud-profiles/",cloud.url);char *xml=malloc(256*1024+1);struct response r={xml,0,256*1024};
+    long status=xml?webdav(&cloud,url,"PROPFIND",&r):0;
+    char json[16384];int pos=snprintf(json,sizeof json,"{\"console\":\"%s\",\"profiles\":[",console_id);unsigned count=0;
+    if(xml&&(status==207||status==200)) {xml[r.size]=0;
+        for(char *cursor=xml;(cursor=strstr(cursor,"href>"))&&count<32;) {
+            cursor+=5;char *end=strchr(cursor,'<');if(!end)break;char *begin=cursor;for(char *p=cursor;p<end;p++)if(*p=='/')begin=p+1;
+            size_t n=(size_t)(end-begin);if(n<5||n>40||strncmp(end-4,".txt",4))continue;char id[32];memcpy(id,begin,n-4);id[n-4]=0;if(!safe_word(id,16))continue;
+            char text[600];struct response t={text,0,sizeof text-1};snprintf(url,sizeof url,"%s/.pscloud-profiles/%s.txt",cloud.url,id);
+            if(webdav(&cloud,url,"GET",&t)!=200)continue;text[t.size]=0;
+            char name[200]="",console[32]="",fw[16]="";char *a=strstr(text,"NAME="),*b=strstr(text,"CONSOLE="),*c=strstr(text,"FIRMWARE=");
+            if(a)sscanf(a+5,"%199[^\n]",name);if(b)sscanf(b+8,"%31[^\n]",console);if(c)sscanf(c+9,"%15[^\n]",fw);
+            for(char *q=name;*q;q++)if(*q=='"'||*q=='\\'||(unsigned char)*q<32)*q=' ';
+            if(!safe_word(console,16))console[0]=0;for(char *q=fw;*q;q++)if(!strchr("0123456789.",*q))*q=0;
+            int w=snprintf(json+pos,sizeof json-(size_t)pos,"%s{\"user\":\"%s\",\"name\":\"%s\",\"console\":\"%s\",\"firmware\":\"%s\",\"this_console\":%s}",count?",":"",id,name,console,fw,!strcmp(console,console_id)?"true":"false");
+            if(w<0||(size_t)w>=sizeof json-(size_t)pos-600)break;pos+=w;count++;
+        }}
+    free(xml);webdav_quiet=0;memset(cloud.password,0,sizeof cloud.password);
+    pos+=snprintf(json+pos,sizeof json-(size_t)pos,"],\"links\":{");
+    char path[1400],line[256];snprintf(path,sizeof path,"%s/links.conf",root);FILE *f=fopen(path,"r");unsigned links=0;
+    while(f&&fgets(line,sizeof line,f)) {char who[32],list[200];if(sscanf(line,"%31s %199s",who,list)!=2||!safe_word(who,16))continue;
+        for(char *q=list;*q;q++)if(!strchr("0123456789abcdefABCDEF,",*q))*q=0;
+        pos+=snprintf(json+pos,sizeof json-(size_t)pos,"%s\"%s\":\"%s\"",links++?",":"",who,list);}
+    if(f)fclose(f);snprintf(json+pos,sizeof json-(size_t)pos,"}}");respond(sock,200,"application/json",json,strlen(json));
+}
+/* Background: games with "download newer saves automatically" are checked every 15 minutes. */
+static void sync_tick(void) {
+    struct settings cloud={0};if(pscloud_configure(cloudpath,&cloud))return;memset(cloud.password,0,sizeof cloud.password);
+    struct game_setting copy[512];unsigned n;pthread_mutex_lock(&settings_mutex);n=game_settings_count;memcpy(copy,game_settings,n*sizeof copy[0]);pthread_mutex_unlock(&settings_mutex);
+    for(unsigned i=0;i<n&&!stopped;i++) {
+        if(!copy[i].auto_sync||title_running(copy[i].title)>0)continue;
+        DIR *users=opendir(home);struct dirent *u;
+        while(users&&(u=readdir(users))&&!stopped) {
+            if(!safe_word(u->d_name,16))continue;char linked[4][17];if(!links_for(u->d_name,linked))continue;
+            struct cloud_version other;long long local_time;webdav_quiet=1;int state=sync_state(u->d_name,copy[i].title,&other,&local_time);webdav_quiet=0;
+            if(state!=SYNC_CLOUD)continue;
+            char name[256],file[128],sha[65],why[300];pscloud_app_name(appmeta,copy[i].title,name,sizeof name);
+            if(pthread_mutex_trylock(&operation_mutex))return;
+            pscloud_log_open(logpath);int bad=sync_fetch(u->d_name,copy[i].title,file,sha,why,sizeof why);
+            if(!bad&&copy[i].auto_apply&&title_running(copy[i].title)<=0) {
+                char published[128],check[65];unsigned char *data=NULL;size_t size=0;char share[1400];snprintf(share,sizeof share,"%s/share",root);int dir=pscloud_open_directory(share);
+                struct pscloud_share_options options={NULL,0,1};
+                bad=dir<0||pscloud_read_archive(dir,file,&data,&size)||pscloud_share_game(home,root,appmeta,u->d_name,copy[i].title,2,data,size,&options,published,check);free(data);if(dir>=0)close(dir);
+                if(!bad) {sync_after_restore(u->d_name,copy[i].title,file);pscloud_notify("Updated %s with your newer save from the cloud",name);}
+                else pscloud_log("WARN","Automatic replace of %s stopped; your save is unchanged or a rollback copy was kept",name);
+            } else if(!bad)pscloud_notify("A newer save for %s is ready. Open PSCloud to use it",name);
+            else pscloud_log("WARN","Sync for %s: %s",name,why);
+            pthread_mutex_unlock(&operation_mutex);
+        }
+        if(users)closedir(users);
+    }
+}
 struct background_job {struct settings settings;char spool[1400],files[256][144];unsigned count;};
 static void *background_upload(void *arg) {
     struct background_job *job=arg;int result=0;
@@ -1225,6 +1442,13 @@ static void action(int sock,const char *path,const char *form) {
     if(!strcmp(path,"/api/usb-copy-all")) {usb_copy_all(sock,form);return;}
     if(!strcmp(path,"/api/usb-delete")) {usb_delete(sock,form);return;}
     if(!strcmp(path,"/api/cleanup")) {cleanup_apply(sock,form);return;}
+    if(!strcmp(path,"/api/links")) {
+        char user[32],list[200]={0};if(parameter(form,"user",user,sizeof user)||!safe_word(user,16)) {message(sock,400,"Choose a profile");return;}
+        if(!parameter(form,"linked",list,sizeof list)&&*list) {char copy[200];snprintf(copy,sizeof copy,"%s",list);
+            for(char *save=NULL,*tok=strtok_r(copy,",",&save);tok;tok=strtok_r(NULL,",",&save))if(!safe_word(tok,16)) {message(sock,400,"Invalid profile link");return;}}
+        if(links_save(user,list)) {message(sock,500,"Link could not be saved");return;}
+        message(sock,200,*list?"Profiles linked":"Link removed");return;
+    }
     if(!strcmp(path,"/api/backup-all-start")) {
         char user[32]={0};int one=!parameter(form,"user",user,sizeof user);
         if(one&&!safe_word(user,16)) {message(sock,400,"Invalid profile");return;}
@@ -1240,7 +1464,8 @@ static void action(int sock,const char *path,const char *form) {
     if(!strcmp(path,"/api/game-settings")) {
         char title[16],close_value[8],all_value[8];
         if(parameter(form,"title",title,sizeof title)||!pscloud_title_valid(title)||parameter(form,"close_backup",close_value,sizeof close_value)||parameter(form,"backup_all",all_value,sizeof all_value)) {message(sock,400,"Invalid game settings");return;}
-        if(game_settings_save(title,!strcmp(close_value,"1"),!strcmp(all_value,"1"))) {message(sock,500,"Game settings could not be saved");return;}
+        char sync_value[8]="0",apply_value[8]="0";(void)parameter(form,"auto_sync",sync_value,sizeof sync_value);(void)parameter(form,"auto_apply",apply_value,sizeof apply_value);
+        if(game_settings_save(title,!strcmp(close_value,"1"),!strcmp(all_value,"1"),!strcmp(sync_value,"1"),!strcmp(apply_value,"1"))) {message(sock,500,"Game settings could not be saved");return;}
         message(sock,200,"Game settings saved");return;
     }
     if(!strcmp(path,"/api/sync")) {int result=upload_queue();message(sock,result?502:200,result?"Upload pending; local backups retained":"Queued backups uploaded");return;}
@@ -1252,6 +1477,13 @@ static void action(int sock,const char *path,const char *form) {
     }
     if(selection(form,&chosen)) {message(sock,400,"Unsupported save selection");return;}
     if(!strcmp(path,"/api/usb-save-game")) {usb_save_game(sock,form,&chosen);return;}
+    if(!strcmp(path,"/api/sync-get")) {
+        char closed[8],file[128],sha[65],why[300];
+        if(parameter(form,"closed",closed,sizeof closed)||strcmp(closed,"yes")) {message(sock,400,"Close the game and switch on Game closed first");return;}
+        if(sync_fetch(chosen.user,chosen.title,file,sha,why,sizeof why)) {message(sock,400,why);return;}
+        char json[400];snprintf(json,sizeof json,"{\"ok\":true,\"file\":\"%s\",\"sha256\":\"%s\",\"message\":\"Newer save downloaded and checked. Your save is not changed yet\"}",file,sha);
+        respond(sock,200,"application/json",json,strlen(json));return;
+    }
     if(!strncmp(path,"/api/share-",11)) {
         char file[128]={0},sha[65]={0},confirm[8],expected[65],directory[1400];
         if(parameter(form,"closed",closed,sizeof closed)||strcmp(closed,"yes")) {message(sock,400,"Close the selected game and confirm before sharing");return;}
@@ -1276,6 +1508,7 @@ static void action(int sock,const char *path,const char *form) {
             options.skip_missing=!parameter(form,"skip_missing",flag,sizeof flag)&&!strcmp(flag,"yes");
         }
         int bad=pscloud_share_game(home,root,appmeta,chosen.user,chosen.title,exporting?0:checking?1:2,data,size,&options,published,sha);free(data);
+        if(!bad&&restoring)sync_after_restore(chosen.user,chosen.title,file);
         if(!bad&&checking) {char proof[240],proofpath[1800];snprintf(proof,sizeof proof,"%s.check-%s",file,chosen.user);snprintf(proofpath,sizeof proofpath,"%s/%s",directory,proof);bad=atomic_config(proofpath,sha);}
         if(dir>=0)close(dir);
         if(bad) {
@@ -1607,6 +1840,8 @@ static void serve(int sock,int *locked) {
     if(!strcmp(method,"GET") && !strcmp(url,"/api/users")) {users(sock);return;}
     if(!strcmp(method,"GET") && !strcmp(url,"/api/save-status")) {save_status(sock,query);return;}
     if(!strcmp(method,"GET") && !strcmp(url,"/api/slot-icon")) {slot_icon(sock,query);return;}
+    if(!strcmp(method,"GET") && !strcmp(url,"/api/sync-status")) {sync_status_json(sock,query);return;}
+    if(!strcmp(method,"GET") && !strcmp(url,"/api/cloud-profiles")) {cloud_profiles_json(sock);return;}
     if(!strcmp(method,"GET") && !strcmp(url,"/api/game-settings")) {game_settings_json(sock,query);return;}
     if(!strcmp(method,"GET") && !strcmp(url,"/api/storage")) {storage_json(sock);return;}
     if(!strcmp(method,"GET") && !strcmp(url,"/api/cleanup")) {cleanup_preview(sock);return;}
@@ -1847,6 +2082,8 @@ static void *game_close_watch(void *unused) {
            ||getenv("PSCLOUD_TEST_SCHEDULE_NOW")
 #endif
           )schedule_tick();
+        if(seconds==20||!(seconds%3600))registry_publish(); /* let other consoles find these profiles */
+        if(!(seconds%900))sync_tick();
         if(seconds%interval)continue;
         if(!game_close_backup) {watch_ready=0;watched_count=0;continue;}
         watch_scan();
@@ -1903,7 +2140,7 @@ int main(int argc,char **argv) {
     move_into_folder();
 #endif
     snprintf(googlepath,sizeof googlepath,"%s/google.conf",root);pscloud_google_load(googlepath,&google);
-    game_settings_load();schedule_load();
+    game_settings_load();schedule_load();console_id_load();
     pscloud_log_open(logpath);load_preferences();signal(SIGPIPE,SIG_IGN);signal(SIGTERM,stop_server);signal(SIGINT,stop_server);
     if(curl_global_init(CURL_GLOBAL_DEFAULT))return 2;
     int server=socket(AF_INET,SOCK_STREAM,0);if(server<0)return 2;

@@ -684,6 +684,52 @@ class DashboardTests(unittest.TestCase):
         c.request('GET','/api/share-download?'+urllib.parse.urlencode({'file':result['file']}),headers={'Cookie':self.cookie})
         response=c.getresponse();self.assertEqual(response.status,200);self.assertEqual(response.read(),data);c.close()
 
+    def test_sync_with_a_linked_profile_from_another_console(self):
+        import test_sharing,test_portable
+        self.process.terminate();self.process.communicate(timeout=5)
+        fixture=self.fixture.root/'generic';slot='save1'
+        test_portable.PortableTests.sfo(self,fixture/slot,slot,b'\x44'*8)
+        second=self.image.parent/('sdimg_'+slot);second.write_bytes(self.original)
+        metadata=self.root/'appmeta/PPSA02433';metadata.mkdir(parents=True)
+        (metadata/'param.json').write_text(json.dumps({'contentVersion':'01.000.002'}))
+        self.start_server(PSCLOUD_TEST_GENERIC_PAYLOADS=str(fixture))
+        status_url='/api/sync-status?user=1eb70483&title=PPSA02433'
+        self.assertEqual(self.request(status_url)[1]['state'],'not_in_cloud')
+        # The other console's profile uploaded a newer save of this game.
+        old=time.time()-5000
+        for f in (self.image,second):os.utime(f,(old,old))
+        package=test_sharing.portable(slots=(slot,),title='PPSA02433');sha=hashlib.sha256(package).hexdigest()
+        folder='/backups/Crash%20Bandicoot%204%20-%20PPSA02433/User-1eb70484/WholeGame/'
+        def publish(name,created):
+            self.fixture.objects[folder+name]=package
+            self.fixture.objects[folder+'.pscloud/'+name+'.identity']=('USER_ID=1eb70484\nTITLE=PPSA02433\nSAVE_NAME=WholeGame\nSHA256='+sha+'\nCREATED_UNIX=%d\n'%created).encode()
+        publish('portable-PPSA02433-'+'e'*32+'.zip',int(time.time()))
+        self.assertEqual(self.request(status_url)[1]['state'],'not_in_cloud')  # not linked yet
+        self.assertEqual(self.request('/api/links',{'user':'1eb70483','linked':'1eb70484'})[0],200)
+        self.assertEqual(self.request('/api/links',{'user':'1eb70483','linked':'../x'})[0],400)
+        data=self.request(status_url)[1];self.assertEqual((data['state'],data['cloud']['user'],data['links']),('cloud_newer','1eb70484',1))
+        context=self.selected(slot='WholeGame')
+        self.assertEqual(self.request('/api/sync-get',context)[0],400)  # game not confirmed closed
+        status,got=self.request('/api/sync-get',dict(context,closed='yes'));self.assertEqual(status,200,got)
+        self.assertEqual(self.image.read_bytes(),self.original)  # checked only, nothing replaced
+        status,done=self.request('/api/share-restore',self.selected(closed='yes',confirm='yes',file=got['file'],sha256=got['sha256']));self.assertEqual(status,200,done)
+        self.assertEqual(self.request(status_url)[1]['state'],'in_sync')
+        # Both sides change after the sync: a conflict, not a silent overwrite.
+        future=time.time()+5000
+        for f in (self.image,second):os.utime(f,(future,future))
+        publish('portable-PPSA02433-'+'f'*32+'.zip',int(time.time())+100)
+        self.assertEqual(self.request(status_url)[1]['state'],'conflict')
+        # Profiles are published for the other console to find.
+        status,profiles=self.request('/api/cloud-profiles');self.assertEqual(status,200)
+        self.assertIn('/backups/.pscloud-profiles/1eb70483.txt',self.fixture.objects)
+        self.assertEqual(profiles['links'],{'1eb70483':'1eb70484'})
+
+    def test_per_game_sync_settings_round_trip(self):
+        self.request('/api/game-settings',{'title':'PPSA02433','close_backup':'1','backup_all':'1','auto_sync':'1','auto_apply':'1'})
+        data=self.request('/api/game-settings?title=PPSA02433')[1];self.assertEqual((data['auto_sync'],data['auto_apply']),(True,True))
+        self.request('/api/game-settings',{'title':'PPSA02433','close_backup':'1','backup_all':'1','auto_sync':'0','auto_apply':'1'})
+        data=self.request('/api/game-settings?title=PPSA02433')[1];self.assertEqual((data['auto_sync'],data['auto_apply']),(False,False))  # replace needs download
+
     def test_local_only_backup_then_explicit_upload(self):
         self.assertEqual(self.request('/api/preferences',{'auto_upload':'0','activity_refresh':'1'})[0],200)
         chosen=self.selected(closed='yes')
