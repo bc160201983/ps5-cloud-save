@@ -1,4 +1,47 @@
-# PS5 Cloud Save — development milestone 0.19.5
+# PS5 Cloud Save — development milestone 0.20.0
+
+## Where PSCloud keeps your files
+
+Everything PSCloud stores on the PS5 is in one folder, `/data/pscloud/`, plus its log.
+The dashboard's **Storage** page shows each location with its size and file count.
+
+| Location on the PS5 | What is in it | Deleted automatically? |
+|---|---|---|
+| `/data/pscloud/spool/` | **Local backups.** Every backup made on this PS5. `*.zip.ready` = waiting to upload, `*.zip.sent` = uploaded (kept as history), each with a `.identity` file naming the profile, game and checksum. | Only uploaded older copies, and only if "Keep only the newest backup of each game" is on. Backups that have not been uploaded are never deleted. |
+| `/data/pscloud/share/` | **Shared saves.** ZIPs exported with Share saves and ZIPs you received. | No |
+| `/data/pscloud/rollback/` | **Restore safety copies.** Your save as it was just before each restore or replace, so it can be put back. | Never |
+| `/data/pscloud/downloads/` | **Cloud downloads.** Backups downloaded from your cloud to the PS5. | No |
+| `/data/pscloud/staging/`, `/data/pscloud/portable-stage-*` | **Temporary copies** used while a backup or check runs. | Yes, when the operation finishes. Leftovers mean it was interrupted. |
+| `/data/pscloud/preferences.conf`, `/data/pscloud-upload.conf`, `/data/pscloud/google.conf` | **Settings** and cloud sign-in, readable only by PSCloud. | No |
+| `/data/pscloud.log` | **Activity log**, shown on the Activity page. | No |
+| `/user/home/<profile>/savedata_prospero/` | **Your PS5's own saves.** PSCloud only reads these, except when you choose Restore or Replace. | Not by PSCloud |
+
+**USB drives.** Plug in an exFAT USB drive (it appears as `/mnt/usb0` to `/mnt/usb7`).
+PSCloud only writes inside the drive's `PSCloud` folder:
+
+```
+PSCloud/Backups/<Game name> (<ID>)/portable-<ID>-<snapshot>.zip
+PSCloud/Shared saves/<Game name> (<ID>)/portable-<ID>-<snapshot>.zip
+```
+
+Every copy is written to a temporary file first, then read back and compared by
+SHA-256 before it counts as copied. A shared save ZIP placed anywhere under `PSCloud/`
+on the drive can be received from the Storage page.
+
+## Version 0.20.0 — Storage page and USB drives
+
+- **Storage page** (sidebar): every location above with its path, purpose, size and
+  file count, plus free space on the PS5. New read-only endpoint /api/storage.
+- **USB:** pick a drive, **Copy all backups and shared saves** (skips files already
+  there with the same checksum), **Copy to USB** on each queued backup, and **Receive
+  this save** for any PSCloud ZIP on the drive, which opens the normal receive steps.
+  Endpoints /api/usb, /api/usb-files, /api/usb-file (read-only), /api/usb-copy and
+  /api/usb-copy-all. Paths are restricted to `<drive>/PSCloud/`.
+
+Verified by host tests (locations and sizes, verified copies, "already there", folder
+names, rejected paths outside PSCloud, nothing written elsewhere on the drive). Not yet
+tried with a real USB drive on a console.
+
 
 ## Version 0.19.5 — backups no longer fail while an upload runs
 

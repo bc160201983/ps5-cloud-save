@@ -32,6 +32,7 @@
 #include <errno.h>
 #include <time.h>
 #include <openssl/evp.h>
+#include <sys/statvfs.h>
 #ifndef PSCLOUD_HOST_TEST
 #include <ps5/kernel.h>
 #include <sys/types.h>
@@ -497,6 +498,192 @@ static void queue_list(int sock) {
     }
     snprintf(json+pos,sizeof json-pos,"],\"count\":%u,\"truncated\":%s}",count,truncated?"true":"false");cache_store(queue_cache,sizeof queue_cache,json);respond(sock,200,"application/json",json,strlen(json));
 }
+
+/* ---------- Storage transparency and USB drives ----------
+ * Everything PSCloud keeps lives under <root> (/data/pscloud) plus the log. USB drives are
+ * the console's exFAT mounts /mnt/usb0-7; PSCloud only writes inside <drive>/PSCloud. */
+static void tree_size(int dir,unsigned depth,unsigned long long *bytes,unsigned *files) {
+    int scan=dup(dir);DIR *d=scan<0?NULL:fdopendir(scan);if(!d) {if(scan>=0)close(scan);return;}
+    struct dirent *e;
+    while((e=readdir(d))&&*files<100000) {
+        if(!strcmp(e->d_name,".")||!strcmp(e->d_name,".."))continue;
+        struct stat st;if(fstatat(dir,e->d_name,&st,AT_SYMLINK_NOFOLLOW))continue;
+        if(S_ISREG(st.st_mode)) {*bytes+=(unsigned long long)st.st_size;(*files)++;}
+        else if(S_ISDIR(st.st_mode)&&depth<6) {int sub=openat(dir,e->d_name,O_RDONLY|O_DIRECTORY|O_NOFOLLOW);if(sub>=0) {tree_size(sub,depth+1,bytes,files);close(sub);}}
+    }
+    closedir(d);
+}
+static void path_size(const char *path,unsigned long long *bytes,unsigned *files,int *exists) {
+    struct stat st;*bytes=0;*files=0;*exists=!lstat(path,&st);if(!*exists)return;
+    if(S_ISREG(st.st_mode)) {*bytes=(unsigned long long)st.st_size;*files=1;return;}
+    if(!S_ISDIR(st.st_mode))return;
+    int dir=pscloud_open_directory(path);if(dir>=0) {tree_size(dir,0,bytes,files);close(dir);}
+}
+static int usb_mount(unsigned index,char *out,size_t max) {
+#ifdef PSCLOUD_HOST_TEST
+    const char *base=getenv("PSCLOUD_TEST_USB_ROOT");if(!base)return -1;
+    if(snprintf(out,max,"%s/usb%u",base,index)>=(int)max)return -1;
+    struct stat st;return !stat(out,&st)&&S_ISDIR(st.st_mode)?0:-1;
+#else
+    if(snprintf(out,max,"/mnt/usb%u",index)>=(int)max)return -1;
+    struct stat st,parent;
+    if(stat(out,&st)||!S_ISDIR(st.st_mode)||stat("/mnt",&parent))return -1;
+    return st.st_dev!=parent.st_dev?0:-1; /* an empty mount point is not a drive */
+#endif
+}
+static int usb_drive(const char *form,char *out,size_t max) {
+    char id[8];if(parameter(form,"drive",id,sizeof id)||strlen(id)!=4||strncmp(id,"usb",3)||id[3]<'0'||id[3]>'7')return -1;
+    return usb_mount((unsigned)(id[3]-'0'),out,max);
+}
+static void storage_json(int sock) {
+    struct place {const char *key,*label,*purpose;char path[1400];} places[9];unsigned n=0;
+    #define PLACE(k,l,p,...) do{places[n].key=k;places[n].label=l;places[n].purpose=p;snprintf(places[n].path,sizeof places[n].path,__VA_ARGS__);n++;}while(0)
+    PLACE("backups","Local backups","Every backup made on this PS5. Ones waiting are uploaded next; uploaded ones stay as history unless you keep only the newest.","%s/spool",root);
+    PLACE("shared","Shared saves","ZIPs exported for sharing and ones you received.","%s/share",root);
+    PLACE("rollback","Restore safety copies","A copy of your save taken just before each restore, so it can be put back. Never deleted automatically.","%s/rollback",root);
+    PLACE("downloads","Cloud downloads","Backups downloaded from your cloud to this PS5.","%s/downloads",root);
+    PLACE("staging","Temporary copies","Working copies used while a backup or check runs. Normally empty; leftovers mean an operation was interrupted.","%s/staging",root);
+    PLACE("log","Activity log","Everything PSCloud did, shown on the Activity page.","%s",logpath);
+    PLACE("settings","Settings","Your preferences and cloud sign-in, readable only by PSCloud on this PS5.","%s/preferences.conf",root);
+    PLACE("saves","Your PS5 saves","The console's own save files. PSCloud only reads them, except when you choose Restore or Replace.","%s",home);
+    #undef PLACE
+    char json[16384];int pos=snprintf(json,sizeof json,"{\"root\":\"%s\",\"places\":[",root);
+    for(unsigned i=0;i<n;i++) {
+        unsigned long long bytes=0;unsigned files=0;int exists=0;
+        if(strcmp(places[i].key,"saves"))path_size(places[i].path,&bytes,&files,&exists);else exists=1;
+        if(!strcmp(places[i].key,"staging")) { /* sharing checks use portable-stage-* folders beside staging */
+            int dir=pscloud_open_directory(root);DIR *d=NULL;int scan=dir>=0?dup(dir):-1;d=scan>=0?fdopendir(scan):NULL;
+            if(d) {struct dirent *e;while((e=readdir(d)))if(!strncmp(e->d_name,"portable-stage-",15)) {int sub=openat(dir,e->d_name,O_RDONLY|O_DIRECTORY|O_NOFOLLOW);if(sub>=0) {tree_size(sub,0,&bytes,&files);close(sub);}}closedir(d);} else if(scan>=0)close(scan);
+            if(dir>=0)close(dir);
+        }
+        char path[2900];escaped(path,sizeof path,places[i].path);
+        int w=snprintf(json+pos,sizeof json-(size_t)pos,"%s{\"key\":\"%s\",\"label\":\"%s\",\"purpose\":\"%s\",\"path\":\"%s\",\"exists\":%s,\"files\":%u,\"bytes\":%llu}",
+            i?",":"",places[i].key,places[i].label,places[i].purpose,path,exists?"true":"false",files,bytes);
+        if(w<0||(size_t)w>=sizeof json-(size_t)pos-64)break;pos+=w;
+    }
+    struct statvfs fs;unsigned long long free_bytes=0,total=0;
+    if(!statvfs(root,&fs)) {free_bytes=(unsigned long long)fs.f_bavail*fs.f_frsize;total=(unsigned long long)fs.f_blocks*fs.f_frsize;}
+    snprintf(json+pos,sizeof json-(size_t)pos,"],\"free\":%llu,\"total\":%llu}",free_bytes,total);
+    respond(sock,200,"application/json",json,strlen(json));
+}
+static void usb_list(int sock) {
+    char json[4096];int pos=snprintf(json,sizeof json,"{\"drives\":[");unsigned count=0;
+    for(unsigned i=0;i<8;i++) {
+        char path[1200];if(usb_mount(i,path,sizeof path))continue;
+        struct statvfs fs;unsigned long long free_bytes=0,total=0;
+        if(!statvfs(path,&fs)) {free_bytes=(unsigned long long)fs.f_bavail*fs.f_frsize;total=(unsigned long long)fs.f_blocks*fs.f_frsize;}
+        char shown[2400];escaped(shown,sizeof shown,path);
+        pos+=snprintf(json+pos,sizeof json-(size_t)pos,"%s{\"id\":\"usb%u\",\"path\":\"%s\",\"free\":%llu,\"total\":%llu}",count++?",":"",i,shown,free_bytes,total);
+    }
+    snprintf(json+pos,sizeof json-(size_t)pos,"]}");respond(sock,200,"application/json",json,strlen(json));
+}
+/* A file inside <drive>/PSCloud, given relative to the drive: no "..", no hidden parts, .zip. */
+static int usb_relative(const char *rel) {
+    size_t n=strlen(rel);
+    if(n<12||n>400||strncmp(rel,"PSCloud/",8)||strcasecmp(rel+n-4,".zip"))return 0;
+    for(const char *p=rel;*p;p++)if((unsigned char)*p<32||*p=='\\'||*p==':'||*p=='*'||*p=='?'||*p=='"'||*p=='<'||*p=='>'||*p=='|')return 0;
+    for(const char *part=rel;part;) {const char *slash=strchr(part,'/');size_t len=slash?(size_t)(slash-part):strlen(part);if(!len||part[0]=='.')return 0;part=slash?slash+1:NULL;}
+    return 1;
+}
+static void usb_scan(const char *drive,const char *rel,unsigned depth,char *json,size_t cap,int *pos,unsigned *count) {
+    char path[2000];if(snprintf(path,sizeof path,"%s/%s",drive,rel)>=(int)sizeof path)return;
+    DIR *d=opendir(path);if(!d)return;struct dirent *e;
+    while((e=readdir(d))&&*count<300) {
+        if(e->d_name[0]=='.')continue;
+        char child[1000],full[3000];if(snprintf(child,sizeof child,"%s/%s",rel,e->d_name)>=(int)sizeof child)continue;
+        snprintf(full,sizeof full,"%s/%s",drive,child);struct stat st;if(lstat(full,&st))continue;
+        if(S_ISDIR(st.st_mode)&&depth<3)usb_scan(drive,child,depth+1,json,cap,pos,count);
+        else if(S_ISREG(st.st_mode)&&usb_relative(child)) {
+            char shown[2100];escaped(shown,sizeof shown,child);
+            int w=snprintf(json+*pos,cap-(size_t)*pos,"%s{\"path\":\"%s\",\"size\":%lld,\"modified\":%lld}",*count?",":"",shown,(long long)st.st_size,(long long)st.st_mtime);
+            if(w<0||(size_t)w>=cap-(size_t)*pos-16)break;*pos+=w;(*count)++;
+        }
+    }
+    closedir(d);
+}
+static void usb_files(int sock,const char *query) {
+    char drive[1200];if(usb_drive(query,drive,sizeof drive)) {reject(sock,400,"USB drive not found");return;}
+    static char json[262144];int pos=snprintf(json,sizeof json,"{\"files\":[");unsigned count=0;
+    usb_scan(drive,"PSCloud",0,json,sizeof json,&pos,&count);
+    snprintf(json+pos,sizeof json-(size_t)pos,"]}");respond(sock,200,"application/json",json,strlen(json));
+}
+static void usb_file(int sock,const char *query) {
+    char drive[1200],rel[512],path[1800];
+    if(usb_drive(query,drive,sizeof drive)||parameter(query,"path",rel,sizeof rel)||!usb_relative(rel)) {reject(sock,400,"USB file not found");return;}
+    snprintf(path,sizeof path,"%s/%s",drive,rel);
+    int fd=open(path,O_RDONLY|O_NOFOLLOW);struct stat st;
+    if(fd<0||fstat(fd,&st)||!S_ISREG(st.st_mode)||st.st_size<=0||st.st_size>512LL*1024*1024) {if(fd>=0)close(fd);reject(sock,404,"USB file not found");return;}
+    char header[512];int n=snprintf(header,sizeof header,"HTTP/1.1 200 OK\r\nContent-Type: application/zip\r\nContent-Length: %lld\r\nConnection: close\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\n\r\n",(long long)st.st_size);
+    send_all(sock,header,(size_t)n);
+    char *buffer=malloc(1U<<20);long long left=st.st_size;
+    while(buffer&&left>0) {ssize_t got=read(fd,buffer,left>(1<<20)?(1<<20):(size_t)left);if(got<=0)break;send_all(sock,buffer,(size_t)got);left-=got;}
+    free(buffer);close(fd);
+}
+/* exFAT-safe folder name for a game: "<name> (<ID>)". */
+static void usb_game_folder(const char *title,char *out,size_t max) {
+    char name[256],clean[96];pscloud_app_name(appmeta,title,name,sizeof name);size_t n=0;
+    for(const char *p=name;*p&&n<sizeof clean-1;p++) {unsigned char c=(unsigned char)*p;clean[n++]=(c<32||strchr("\\/:*?\"<>|",c))?'_':(char)c;}
+    while(n&&(clean[n-1]==' '||clean[n-1]=='.'))n--;clean[n]=0;
+    if(!strcmp(clean,title)||!n)snprintf(out,max,"%s",title);else snprintf(out,max,"%s (%s)",clean,title);
+}
+/* Copy a PSCloud ZIP to <drive>/PSCloud/<kind>/<game>/ through a temporary file, then read
+ * the copy back and compare checksums. 1 = copied, 0 = identical copy already there. */
+static int usb_copy(const char *drive,const char *kind,const char *source_dir,const char *file,char *shown,size_t shown_max) {
+    char title[10];memcpy(title,file+(strncmp(file,"portable-",9)?10:9),9);title[9]=0;
+    char folder[200],dir[1600],src[1600],dst[2000],tmp[2000];usb_game_folder(title,folder,sizeof folder);
+    snprintf(src,sizeof src,"%s/%s",source_dir,file);
+    snprintf(dir,sizeof dir,"%s/PSCloud",drive);(void)mkdir(dir,0777);
+    snprintf(dir,sizeof dir,"%s/PSCloud/%s",drive,kind);(void)mkdir(dir,0777);
+    snprintf(dir,sizeof dir,"%s/PSCloud/%s/%s",drive,kind,folder);(void)mkdir(dir,0777);
+    snprintf(dst,sizeof dst,"%s/%s",dir,file);snprintf(tmp,sizeof tmp,"%s/.%s.part",dir,file);
+    snprintf(shown,shown_max,"PSCloud/%s/%s/%s",kind,folder,file);
+    int in=open(src,O_RDONLY|O_NOFOLLOW);
+    if(in<0) {snprintf(src,sizeof src,"%s/%s.ready",source_dir,file);in=open(src,O_RDONLY|O_NOFOLLOW);} /* waiting to upload */
+    if(in<0) {snprintf(src,sizeof src,"%s/%s.sent",source_dir,file);in=open(src,O_RDONLY|O_NOFOLLOW);} /* already uploaded */
+    if(in<0)return -1;
+    char want[65],have[65];if(pscloud_file_hash(in,want)) {close(in);return -1;}
+    int existing=open(dst,O_RDONLY|O_NOFOLLOW);
+    if(existing>=0) {int same=!pscloud_file_hash(existing,have)&&!strcmp(want,have);close(existing);if(same) {close(in);return 0;}}
+    if(lseek(in,0,SEEK_SET)) {close(in);return -1;}
+    int out=open(tmp,O_WRONLY|O_CREAT|O_TRUNC,0666);if(out<0) {close(in);return -1;}
+    char *buffer=malloc(1U<<20);int bad=!buffer;
+    while(!bad) {ssize_t got=read(in,buffer,1U<<20);if(got<0)bad=1;if(got<=0)break;
+        for(ssize_t done=0;done<got&&!bad;) {ssize_t w=write(out,buffer+done,(size_t)(got-done));if(w<=0)bad=1;else done+=w;}}
+    free(buffer);close(in);if(fsync(out))bad=1;if(close(out))bad=1;
+    if(!bad&&rename(tmp,dst))bad=1;
+    if(!bad) {int check=open(dst,O_RDONLY|O_NOFOLLOW);bad=check<0||pscloud_file_hash(check,have)||strcmp(want,have);if(check>=0)close(check);}
+    if(bad) {unlink(tmp);pscloud_log("WARN","USB copy of %s failed or did not verify",file);return -1;}
+    pscloud_log("EVENT","Copied %s to USB (%s), checksum verified",file,shown);return 1;
+}
+static void usb_copy_action(int sock,const char *form) {
+    char drive[1200],kind[16],file[128],shown[600];
+    if(usb_drive(form,drive,sizeof drive)) {message(sock,400,"Plug in a USB drive (exFAT) and choose it");return;}
+    if(parameter(form,"kind",kind,sizeof kind)||(strcmp(kind,"backup")&&strcmp(kind,"shared"))||parameter(form,"file",file,sizeof file)||!valid_archive(file)) {message(sock,400,"Choose a backup or shared save");return;}
+    char source[1400];snprintf(source,sizeof source,"%s/%s",root,!strcmp(kind,"backup")?"spool":"share");
+    int r=usb_copy(drive,!strcmp(kind,"backup")?"Backups":"Shared saves",source,file,shown,sizeof shown);
+    char text[900];
+    if(r<0) {message(sock,500,"Copy to USB failed; check the drive has space and is exFAT");return;}
+    snprintf(text,sizeof text,r?"Copied to USB: %s":"Already on USB: %s",shown);message(sock,200,text);
+}
+static void usb_copy_all(int sock,const char *form) {
+    char drive[1200];if(usb_drive(form,drive,sizeof drive)) {message(sock,400,"Plug in a USB drive (exFAT) and choose it");return;}
+    unsigned copied=0,same=0,failed=0;
+    for(int k=0;k<2;k++) {
+        char source[1400];snprintf(source,sizeof source,"%s/%s",root,k?"share":"spool");
+        DIR *d=opendir(source);if(!d)continue;struct dirent *e;
+        while((e=readdir(d))&&!stopped) {
+            char file[128];size_t n=strlen(e->d_name);
+            size_t cut=n>=6&&!strcmp(e->d_name+n-6,".ready")?6:n>=5&&!strcmp(e->d_name+n-5,".sent")?5:0;
+            if(n-cut>=sizeof file)continue;memcpy(file,e->d_name,n-cut);file[n-cut]=0;
+            if(!valid_archive(file))continue;
+            char shown[600];int r=usb_copy(drive,k?"Shared saves":"Backups",source,file,shown,sizeof shown);
+            if(r>0)copied++;else if(!r)same++;else failed++;
+        }
+        closedir(d);
+    }
+    char text[256];snprintf(text,sizeof text,"USB: %u copied, %u already there%s%s",copied,same,failed?", failed: ":"",failed?"check space and format":"");
+    message(sock,failed?500:200,text);
+}
 struct background_job {struct settings settings;char spool[1400],files[256][144];unsigned count;};
 static void *background_upload(void *arg) {
     struct background_job *job=arg;int result=0;
@@ -756,6 +943,8 @@ static void action(int sock,const char *path,const char *form) {
     pscloud_log("EVENT","Dashboard action: %s",path);
     struct pscloud_snapshot chosen;char closed[8];
     if(!strcmp(path,"/api/sync-start")) {start_background(sock,form);return;}
+    if(!strcmp(path,"/api/usb-copy")) {usb_copy_action(sock,form);return;}
+    if(!strcmp(path,"/api/usb-copy-all")) {usb_copy_all(sock,form);return;}
     if(!strcmp(path,"/api/sync")) {int result=upload_queue();message(sock,result?502:200,result?"Upload pending; local backups retained":"Queued backups uploaded");return;}
     if(!strcmp(path,"/api/sync-one")) {
         char file[128],ready[144];struct pscloud_snapshot s;
@@ -1103,6 +1292,10 @@ static void serve(int sock,int *locked) {
     if(!strcmp(method,"GET") && !strcmp(url,"/api/games")) {games(sock);return;}
     if(!strcmp(method,"GET") && !strcmp(url,"/api/users")) {users(sock);return;}
     if(!strcmp(method,"GET") && !strcmp(url,"/api/save-status")) {save_status(sock,query);return;}
+    if(!strcmp(method,"GET") && !strcmp(url,"/api/storage")) {storage_json(sock);return;}
+    if(!strcmp(method,"GET") && !strcmp(url,"/api/usb")) {usb_list(sock);return;}
+    if(!strcmp(method,"GET") && !strcmp(url,"/api/usb-files")) {usb_files(sock,query);return;}
+    if(!strcmp(method,"GET") && !strcmp(url,"/api/usb-file")) {usb_file(sock,query);return;}
     if(!strcmp(method,"GET") && !strcmp(url,"/api/running")) {
         char title[16],name[256],escaped_name[1536],json[2048];int found=running_game(title);
         if(found>0) {pscloud_app_name(appmeta,title,name,sizeof name);escaped(escaped_name,sizeof escaped_name,name);}

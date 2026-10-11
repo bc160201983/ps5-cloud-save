@@ -29,6 +29,13 @@ class Handler(BaseHTTPRequestHandler):
         elif path=='/api/preferences':
             self.send({'auto_upload':True,'activity_refresh':True,'game_close_available':True,'game_close_backup':False,'sharing_available':True,'compact_backups':True,'compact_required':False})
         elif path=='/api/health':self.send({'busy':False})
+        elif path=='/api/storage':self.send({'root':'/data/pscloud','free':412*2**30,'total':825*2**30,'places':[
+            {'key':'backups','label':'Local backups','purpose':'Every backup made on this PS5.','path':'/data/pscloud/spool','exists':True,'files':14,'bytes':38*2**20},
+            {'key':'shared','label':'Shared saves','purpose':'ZIPs exported for sharing and ones you received.','path':'/data/pscloud/share','exists':True,'files':3,'bytes':9*2**20},
+            {'key':'rollback','label':'Restore safety copies','purpose':'A copy of your save taken just before each restore.','path':'/data/pscloud/rollback','exists':False,'files':0,'bytes':0},
+            {'key':'saves','label':'Your PS5 saves','purpose':"The console's own save files.",'path':'/user/home','exists':True,'files':0,'bytes':0}]})
+        elif path=='/api/usb':self.send({'drives':[{'id':'usb0','path':'/mnt/usb0','free':58*2**30,'total':64*2**30}]})
+        elif path=='/api/usb-files':self.send({'files':[{'path':"PSCloud/Shared saves/Marvel's Wolverine (PPSA03671)/portable-PPSA03671-"+'c'*32+'.zip','size':1200000,'modified':1791536400}]})
         elif path=='/api/running':self.send({'known':True,'running':True,'title':'PPSA02433','name':'Crash Bandicoot 4','icon':'/api/icon?title=PPSA02433','backup_on_close':True})
         elif path=='/api/transfer':self.send({'sequence':3,'phase':7,'active':False,'result':0,'cancelled':False,'name':'Crash Bandicoot 4','file':'portable-PPSA02433-x.zip','total':0,'done':0,'transport':0,'http':200})
         elif path=='/api/google/status':self.send({'configured':False,'authorized':False,'pending':False,'transfers_available':False})

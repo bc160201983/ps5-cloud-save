@@ -174,6 +174,33 @@ class DashboardTests(unittest.TestCase):
         self.assertEqual(names['PPSA17525'],('PPSA17525',False))
         self.assertEqual(self.request('/api/save-status?user=1eb70483&title=PPSA03355')[1]['name'],'Hades')
 
+    def test_storage_locations_and_verified_usb_copies(self):
+        self.process.terminate();self.process.communicate(timeout=5)
+        usb=self.fixture.root/'usb';(usb/'usb0').mkdir(parents=True)
+        self.start_server(PSCLOUD_TEST_USB_ROOT=str(usb))
+        backup='portable-PPSA02433-'+'a'*32+'.zip';shared='portable-PPSA02433-'+'b'*32+'.zip'
+        (self.root/'spool').mkdir(exist_ok=True);(self.root/'spool'/(backup+'.ready')).write_bytes(b'backup-bytes')
+        (self.root/'share').mkdir(exist_ok=True);(self.root/'share'/shared).write_bytes(b'shared-bytes')
+        status,data=self.request('/api/storage');self.assertEqual(status,200)
+        places={p['key']:p for p in data['places']}
+        self.assertTrue(places['backups']['path'].endswith('/spool'));self.assertEqual(places['backups']['files'],1)
+        self.assertTrue(places['shared']['path'].endswith('/share'));self.assertTrue(places['log']['path'].endswith('pscloud.log'))
+        self.assertEqual([d['id'] for d in self.request('/api/usb')[1]['drives']],['usb0'])
+        status,data=self.request('/api/usb-copy',{'drive':'usb0','kind':'backup','file':backup});self.assertEqual(status,200,data)
+        copied=usb/'usb0/PSCloud/Backups/Crash Bandicoot 4 (PPSA02433)'/backup
+        self.assertEqual(copied.read_bytes(),b'backup-bytes');self.assertIn('Copied to USB',data['message'])
+        self.assertIn('Already on USB',self.request('/api/usb-copy',{'drive':'usb0','kind':'backup','file':backup})[1]['message'])
+        status,data=self.request('/api/usb-copy-all',{'drive':'usb0'});self.assertEqual(status,200,data)
+        self.assertEqual((usb/'usb0/PSCloud/Shared saves/Crash Bandicoot 4 (PPSA02433)'/shared).read_bytes(),b'shared-bytes')
+        self.assertIn('1 copied, 1 already there',data['message'])
+        files=self.request('/api/usb-files?drive=usb0')[1]['files'];self.assertEqual(len(files),2)
+        path=next(f['path'] for f in files if f['path'].endswith(shared))
+        status,_,body=self.binary('/api/usb-file?'+urllib.parse.urlencode({'drive':'usb0','path':path}));self.assertEqual((status,body),(200,b'shared-bytes'))
+        for query in ({'drive':'usb0','path':'PSCloud/../secret.zip'},{'drive':'usb0','path':'/etc/passwd'},{'drive':'usb9','path':path}):
+            with self.subTest(query=query):self.assertNotEqual(self.binary('/api/usb-file?'+urllib.parse.urlencode(query))[0],200)
+        self.assertEqual(self.request('/api/usb-copy',{'drive':'usb0','kind':'backup','file':'../x.zip'})[0],400)
+        self.assertEqual(list((usb/'usb0').iterdir()),[usb/'usb0/PSCloud'])  # nothing written outside PSCloud
+
     def test_idle_browser_connection_does_not_block_dashboard(self):
         idle=http.client.HTTPConnection('127.0.0.1',self.port,timeout=5);idle.connect()
         try:
