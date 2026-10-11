@@ -645,11 +645,13 @@ static int package_fingerprint(const char *path,char out[65]) {
     for(const char *line=text;line<end;) {
         const char *next=memchr(line,'\n',(size_t)(end-line));size_t len=next?(size_t)(next-line):(size_t)(end-line);
         if(len>5&&!memcmp(line,"SLOT=",5)) {EVP_DigestUpdate(ctx,line,len);EVP_DigestUpdate(ctx,"\n",1);lines++;}
-        if(!next)break;line=next+1;
+        if(!next)break;
+        line=next+1;
     }
     unsigned char digest[32];unsigned dsize=0;int ok=lines&&EVP_DigestFinal_ex(ctx,digest,&dsize)&&dsize==32;EVP_MD_CTX_free(ctx);
     if(!ok)return -1;
-    for(unsigned i=0;i<32;i++)snprintf(out+2*i,3,"%02x",digest[i]);return 0;
+    for(unsigned i=0;i<32;i++)snprintf(out+2*i,3,"%02x",digest[i]);
+    return 0;
 }
 /* An existing copy of this save on the drive: same file checksum, or the same contents
  * (fingerprint) under another name. Looks in the game folder and the older layout's folders. */
