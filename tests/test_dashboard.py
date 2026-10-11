@@ -724,6 +724,46 @@ class DashboardTests(unittest.TestCase):
         self.assertIn('/backups/.pscloud-profiles/1eb70483.txt',self.fixture.objects)
         self.assertEqual(profiles['links'],{'1eb70483':'1eb70484'})
 
+    def test_sync_with_another_ps5_on_the_local_network(self):
+        import test_sharing,test_portable,socket
+        def free_udp():
+            u=socket.socket(socket.AF_INET,socket.SOCK_DGRAM);u.bind(('127.0.0.1',0));port=u.getsockname()[1];u.close();return port
+        udp_b=free_udp()
+        # Console B: profile 1eb70484 with a newer backup of the game in its queue.
+        other=Path(self.fixture.root)/'consoleB';(other/'home/1eb70484/savedata_prospero').mkdir(parents=True);(other/'root/spool').mkdir(parents=True)
+        (other/'home/1eb70484/username.dat').write_bytes(b'bilal')
+        package=test_sharing.portable(slots=('save1',),title='PPSA02433');sha=hashlib.sha256(package).hexdigest()
+        name='portable-PPSA02433-'+'9'*32+'.zip'
+        (other/'root/spool'/(name+'.sent')).write_bytes(package)
+        (other/'root/spool'/(name+'.identity')).write_text('USER_ID=1eb70484\nTITLE=PPSA02433\nSAVE_NAME=WholeGame\nSHA256=%s\nCREATED_UNIX=%d\n'%(sha,int(time.time())))
+        b=subprocess.Popen([str(ROOT/'dashboard-host'),str(other/'root'),str(other/'home'),'0'],env=dict(os.environ,PSCLOUD_TEST_UDP_PORT=str(udp_b)),stdout=subprocess.PIPE,stderr=subprocess.STDOUT,text=True)
+        try:
+            port_b=int(b.stdout.readline().strip().split('=',1)[1]);b.stdout.readline()
+            # Console A (this test's dashboard) with the game's save and the share fixture.
+            self.process.terminate();self.process.communicate(timeout=5)
+            fixture=self.fixture.root/'generic';test_portable.PortableTests.sfo(self,fixture/'save1','save1',b'\x44'*8)
+            second=self.image.parent/'sdimg_save1';second.write_bytes(self.original)
+            metadata=self.root/'appmeta/PPSA02433';metadata.mkdir(parents=True);(metadata/'param.json').write_text(json.dumps({'contentVersion':'01.000.002'}))
+            self.cloud.unlink()  # no cloud at all: network only
+            self.start_server(PSCLOUD_TEST_GENERIC_PAYLOADS=str(fixture),PSCLOUD_TEST_DISCOVER_PORT=str(udp_b),PSCLOUD_TEST_UDP_PORT=str(free_udp()))
+            old=time.time()-5000
+            for f in (self.image,second):os.utime(f,(old,old))
+            found=self.request('/api/peers/discover')[1]['found'];self.assertEqual([f['address'] for f in found],['127.0.0.1:%d'%port_b])
+            self.assertEqual(self.request('/api/peers',{'peers':'not-an-ip'})[0],400)
+            self.assertEqual(self.request('/api/peers',{'peers':'127.0.0.1:%d'%port_b})[0],200)
+            peers=self.request('/api/peers')[1]['peers'];self.assertTrue(peers[0]['reachable']);self.assertEqual(peers[0]['info']['profiles'][0]['name'],'bilal')
+            self.request('/api/links',{'user':'1eb70483','linked':'1eb70484'})
+            data=self.request('/api/sync-status?user=1eb70483&title=PPSA02433')[1]
+            self.assertEqual((data['state'],data['cloud']['source'],data['cloud']['name']),('cloud_newer','network','bilal'))
+            status,got=self.request('/api/sync-get',self.selected(slot='WholeGame',closed='yes'));self.assertEqual(status,200,got)
+            self.assertEqual(self.image.read_bytes(),self.original)
+            status,done=self.request('/api/share-restore',self.selected(closed='yes',confirm='yes',file=got['file'],sha256=got['sha256']));self.assertEqual(status,200,done)
+            self.assertEqual(self.request('/api/sync-status?user=1eb70483&title=PPSA02433')[1]['state'],'in_sync')
+            # Peer endpoints only serve backups, by valid name.
+            c=http.client.HTTPConnection('127.0.0.1',port_b,timeout=10);c.request('GET','/api/peer/file?file=../../etc/passwd');self.assertEqual(c.getresponse().status,400);c.close()
+        finally:
+            b.terminate();b.communicate(timeout=5)
+
     def test_per_game_sync_settings_round_trip(self):
         self.request('/api/game-settings',{'title':'PPSA02433','close_backup':'1','backup_all':'1','auto_sync':'1','auto_apply':'1'})
         data=self.request('/api/game-settings?title=PPSA02433')[1];self.assertEqual((data['auto_sync'],data['auto_apply']),(True,True))
