@@ -1521,6 +1521,7 @@ static void serve(int sock,int *locked) {
     /* These read-only resources do not share mutable transfer buffers. */
     if(!strcmp(method,"GET") && !strncmp(url,"/api/icon?",10)) {game_icon(sock,url+10);return;}
     if(!strcmp(method,"GET") && !strcmp(url,"/api/preferences")) {preferences(sock,NULL);return;}
+    if(!strcmp(method,"GET") && !strcmp(url,"/api/backup-all")) {batch_json(sock);return;}
     if(!strcmp(method,"GET") && !strcmp(url,"/api/state")) {
         struct settings s={0};int configured=pscloud_configure(cloudpath,&s)==0;
         char address[6144],username[512],json[8192];escaped(address,sizeof address,s.url);escaped(username,sizeof username,s.user);
@@ -1607,7 +1608,6 @@ static void serve(int sock,int *locked) {
     if(!strcmp(method,"GET") && !strcmp(url,"/api/save-status")) {save_status(sock,query);return;}
     if(!strcmp(method,"GET") && !strcmp(url,"/api/slot-icon")) {slot_icon(sock,query);return;}
     if(!strcmp(method,"GET") && !strcmp(url,"/api/game-settings")) {game_settings_json(sock,query);return;}
-    if(!strcmp(method,"GET") && !strcmp(url,"/api/backup-all")) {batch_json(sock);return;}
     if(!strcmp(method,"GET") && !strcmp(url,"/api/storage")) {storage_json(sock);return;}
     if(!strcmp(method,"GET") && !strcmp(url,"/api/cleanup")) {cleanup_preview(sock);return;}
     if(!strcmp(method,"GET") && !strcmp(url,"/api/usb")) {usb_list(sock);return;}
