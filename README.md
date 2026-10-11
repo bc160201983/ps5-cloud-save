@@ -1,4 +1,28 @@
-# PS5 Cloud Save — development milestone 0.28.0
+# PS5 Cloud Save — development milestone 0.29.0
+
+## Version 0.29.0 — sync over your home network
+
+Two PS5s running PSCloud can now sync directly, with no cloud account.
+- **Finding each other:** every PSCloud answers a UDP "PSCLOUD-DISCOVER" on port 8083 with
+  its console ID, dashboard port and firmware. Cloud settings → **Other PS5s on your
+  network** → **Find on my network** (`/api/peers/discover`), or type the other PS5's IP.
+  The list is kept in `peers.conf` (`/api/peers`).
+- **What a console shares:** read-only, under `/api/peer/` and without a browser session:
+  its profiles (`info`), the newest portable whole-game backup per profile and game
+  (`latest`), and that backup file by its exact name (`file`). Nothing else, and nothing
+  can be written. Anyone on the home network can already open the dashboard, so this adds
+  no new exposure; keep port 8082/8083 off the internet.
+- **Sync:** profile links (Cloud settings → Link with your other PS5) now list profiles
+  from PS5s on the network too. Sync status looks at the cloud (if connected) and at the
+  linked profile's newest backup on each network PS5; a backup this PS5 made counts as a
+  sync point. "Get the newer save" downloads from the other PS5 over the network, verifies
+  the checksum and runs the usual staged check; replacing keeps a rollback copy. Automatic
+  download/replace per game works the same way. The other PS5 shares its backups, so keep
+  "Back up when I close a game" on there to always share the latest progress.
+
+Verified by a host test with two PSCloud instances (discovery, profile names, newer save
+found on the network, fetch and check without changing the save, replace, in sync, and
+refusal of paths outside the backups). Not yet tried between the two consoles.
 
 ## Version 0.28.0 — start with the console, rest mode
 
