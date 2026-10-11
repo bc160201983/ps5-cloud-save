@@ -1,4 +1,14 @@
-# PS5 Cloud Save — development milestone 0.19.0
+# PS5 Cloud Save — development milestone 0.19.1
+
+## Version 0.19.1 — clearer backup settings
+
+Cloud settings → Backup settings is grouped into Automatic, Storage and Other, with
+plain labels and one short explanation each: "Back up when I close a game", "Upload
+new backups to the cloud" (it also applies to game-close backups, which the old label
+did not say), "Smaller backups (recommended)", "Keep only the newest backup of each
+game on the PS5" and "Refresh the Activity page automatically". The stored settings
+and their behaviour are unchanged. Verified in a local preview.
+
 
 ## Version 0.19.0 — cleaner home page, now playing
 
