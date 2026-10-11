@@ -801,8 +801,9 @@ static void space_shared(int apply,struct space *out) {
     int scan=dup(dir);DIR *d=items&&scan>=0?fdopendir(scan):NULL;if(!d) {if(scan>=0)close(scan);free(items);close(dir);return;}
     struct dirent *e;
     while((e=readdir(d))&&n<512) {
-        if(!valid_archive(e->d_name))continue;struct stat st;if(fstatat(dir,e->d_name,&st,AT_SYMLINK_NOFOLLOW)||!S_ISREG(st.st_mode))continue;
-        snprintf(items[n].name,sizeof items[n].name,"%s",e->d_name);memcpy(items[n].title,e->d_name+(strncmp(e->d_name,"portable-",9)?10:9),9);items[n].title[9]=0;
+        if(!valid_archive(e->d_name))continue;
+        struct stat st;if(fstatat(dir,e->d_name,&st,AT_SYMLINK_NOFOLLOW)||!S_ISREG(st.st_mode))continue;
+        snprintf(items[n].name,sizeof items[n].name,"%.127s",e->d_name);memcpy(items[n].title,e->d_name+(strncmp(e->d_name,"portable-",9)?10:9),9);items[n].title[9]=0;
         items[n].when=st.st_mtime;items[n].size=st.st_size;n++;
     }
     closedir(d);
@@ -903,7 +904,7 @@ static void prune_shared_keep(unsigned keep) {
     int scan=dup(dir);DIR *d=items&&scan>=0?fdopendir(scan):NULL;if(!d) {if(scan>=0)close(scan);free(items);close(dir);return;}
     struct dirent *e;
     while((e=readdir(d))&&n<512) {if(!valid_archive(e->d_name))continue;struct stat st;if(fstatat(dir,e->d_name,&st,AT_SYMLINK_NOFOLLOW)||!S_ISREG(st.st_mode))continue;
-        snprintf(items[n].name,sizeof items[n].name,"%s",e->d_name);memcpy(items[n].title,e->d_name+(strncmp(e->d_name,"portable-",9)?10:9),9);items[n].title[9]=0;items[n].when=st.st_mtime;n++;}
+        snprintf(items[n].name,sizeof items[n].name,"%.127s",e->d_name);memcpy(items[n].title,e->d_name+(strncmp(e->d_name,"portable-",9)?10:9),9);items[n].title[9]=0;items[n].when=st.st_mtime;n++;}
     closedir(d);
     for(unsigned i=0;i<n;i++) {unsigned newer=0;for(unsigned j=0;j<n;j++)if(j!=i&&!strcmp(items[j].title,items[i].title)&&(items[j].when>items[i].when||(items[j].when==items[i].when&&strcmp(items[j].name,items[i].name)>0)))newer++;
         if(newer>=keep&&!unlinkat(dir,items[i].name,0))pscloud_log("INFO","Removed older shared save %s (keeping the newest %u for this game)",items[i].name,keep);}
@@ -1156,7 +1157,7 @@ static void configure_cloud(int sock,const char *form) {
     if(strncmp(s.url,"https://",8) || strchr(s.url,'?') || strchr(s.url,'#') || !*s.user || !*s.password) {message(sock,400,"Use an HTTPS WebDAV URL, username and app password");return;}
     size_t n=strlen(s.url);while(n>8 && s.url[n-1]=='/')s.url[--n]=0;
     strcpy(s.mode,"once");
-    if(*previous.ca)strcpy(s.ca,previous.ca);else snprintf(s.ca,sizeof s.ca,"%s/ca.pem",root);
+    if(*previous.ca)strcpy(s.ca,previous.ca);else snprintf(s.ca,sizeof s.ca,"%.900s/ca.pem",root);
     char body[65537];struct response response={body,0,sizeof body-1};long status=webdav(&s,s.url,"PROPFIND",&response);
     cloud_status=(int)status;
     if(status!=207 && status!=200) {message(sock,502,"Nextcloud rejected the connection; settings were not saved");return;}
