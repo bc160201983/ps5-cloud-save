@@ -3,7 +3,7 @@ $(error Set PS5_PAYLOAD_SDK to the installed ps5-payload SDK directory)
 endif
 include $(PS5_PAYLOAD_SDK)/toolchain/prospero.mk
 
-.PHONY: all clean deploy upload recovery backup dashboard share
+.PHONY: all clean deploy upload recovery backup dashboard share createtest
 all: pscloud-probe.elf pscloud-export.elf pscloud-ps.elf
 pscloud-ps.elf: ps-probe.c
 	$(CC) -O2 -Wall -Wextra -Werror -o $@ ps-probe.c -lkernel
@@ -30,6 +30,10 @@ ui.h: ui.html ../VERSION ../tools/embed_ui.py
 	python3 ../tools/embed_ui.py ui.html ui.h ../VERSION
 pscloud-dashboard.elf: dashboard.c ui.h backup.c download.c ../src/worker.c common/managed.c common/managed.h common/mount.c common/restore.c common/zip.c common/log.c common/cloud.c common/snapshot.c common/appmeta.c common/appmeta.h common/bundle.c common/bundle.h common/savemeta.c common/savemeta.h common/google.c common/google.h common/transfer.h common/sharing.c common/sharing.h
 	$(CC) -O2 -Wall -Wextra -Werror -DPSCLOUD_BACKUP_EMBEDDED -DPSCLOUD_DOWNLOAD_EMBEDDED -DPSCLOUD_EMBEDDED $$($(CURL_CONFIG) --cflags) -o $@ dashboard.c backup.c download.c ../src/worker.c common/managed.c common/mount.c common/restore.c common/zip.c common/log.c common/cloud.c common/snapshot.c common/appmeta.c common/bundle.c common/savemeta.c common/google.c common/sharing.c $$($(CURL_CONFIG) --static-libs) -lkernel -lSceFsInternalForVsh -lSceSystemService -lpthread
+# Test only: makes and reopens a new save container inside /data/pscloud/create-test.
+createtest: pscloud-create-test.elf
+pscloud-create-test.elf: create-test.c common/mount.c common/mount.h common/log.c common/appmeta.c common/appmeta.h common/restore.c common/zip.c common/snapshot.c
+	$(CC) -O2 -Wall -Wextra -Werror $$($(CURL_CONFIG) --cflags) -o $@ create-test.c common/mount.c common/log.c common/appmeta.c common/restore.c common/zip.c common/snapshot.c $$($(CURL_CONFIG) --static-libs) -lkernel -lSceFsInternalForVsh
 pscloud-backup.elf: backup.c common/mount.c common/mount.h common/restore.c common/zip.c common/log.c common/snapshot.c
 	$(CC) -O2 -Wall -Wextra -Werror $$($(CURL_CONFIG) --cflags) -o $@ backup.c common/mount.c common/restore.c common/zip.c common/log.c common/snapshot.c $$($(CURL_CONFIG) --static-libs) -lkernel -lSceFsInternalForVsh
 pscloud-download.elf: download.c common/cloud.c common/restore.c common/log.c common/restore.h common/cloud.h common/snapshot.c
@@ -39,4 +43,4 @@ pscloud-restore.elf: restore.c common/restore.c common/zip.c common/log.c common
 deploy: pscloud-probe.elf
 	$(PS5_DEPLOY) -h $(PS5_HOST) -p 9021 $<
 clean:
-	rm -f pscloud-probe.elf pscloud-export.elf pscloud-ps.elf pscloud-upload.elf pscloud-download.elf pscloud-restore.elf pscloud-backup.elf pscloud-dashboard.elf ui.h
+	rm -f pscloud-probe.elf pscloud-export.elf pscloud-ps.elf pscloud-upload.elf pscloud-download.elf pscloud-restore.elf pscloud-backup.elf pscloud-dashboard.elf pscloud-create-test.elf ui.h

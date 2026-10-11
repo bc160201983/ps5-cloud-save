@@ -1,6 +1,7 @@
 #ifndef PSCLOUD_APPMETA_H
 #define PSCLOUD_APPMETA_H
 #include <stddef.h>
+#include <stdio.h>
 int pscloud_title_valid(const char *title);
 int pscloud_app_name(const char *metadata_root,const char *title,char *name,size_t max);
 int pscloud_app_meta_dir(const char *metadata_root,const char *title,char *out,size_t max);
@@ -11,5 +12,7 @@ int pscloud_save_slot_info(const char *home,const char *user,const char *title,c
 /* When the game last saved each slot of a title, from the PS5's save database (read-only). */
 struct pscloud_db_slot {char slot[64];long long saved;};
 int pscloud_save_db_times(const char *path,const char *title,struct pscloud_db_slot *out,int max);
+/* Diagnostic: write the save database's layout and its first rows to out (read-only). */
+int pscloud_save_db_describe(const char *path,int rows,FILE *out);
 int pscloud_app_version(const char *metadata_root,const char *title,char *version,size_t max);
 #endif

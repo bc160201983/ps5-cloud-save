@@ -272,18 +272,69 @@ static void slot_row(const unsigned char *rec,size_t size,void *ctx) {
     long long t=iso_time(when);if(!t||!*dir)return;
     snprintf(c->out[c->n].slot,sizeof c->out[c->n].slot,"%.63s",dir);c->out[c->n].saved=t;c->n++;
 }
-int pscloud_save_db_times(const char *path,const char *title,struct pscloud_db_slot *out,int max) {
-    if(!pscloud_title_valid(title))return -1;
+static int db_load(const char *path,struct sqlite_file *f) {
+    memset(f,0,sizeof *f);
     int fd=open(path,O_RDONLY|O_NOFOLLOW|O_NONBLOCK);if(fd<0)return -1;
     struct stat st;if(fstat(fd,&st)||!S_ISREG(st.st_mode)||st.st_size<512||st.st_size>64*1024*1024) {close(fd);return -1;}
-    struct sqlite_file f={malloc((size_t)st.st_size),(size_t)st.st_size,0,0};size_t have=0;
-    while(f.data&&have<f.size) {ssize_t n=pread(fd,f.data+have,f.size-have,(off_t)have);if(n<=0)break;have+=(size_t)n;}
+    f->data=malloc((size_t)st.st_size);f->size=(size_t)st.st_size;size_t have=0;
+    while(f->data&&have<f->size) {ssize_t n=pread(fd,f->data+have,f->size-have,(off_t)have);if(n<=0)break;have+=(size_t)n;}
     close(fd);
-    if(!f.data||have!=f.size||memcmp(f.data,"SQLite format 3",16)) {free(f.data);return -1;}
-    f.page=db_u16(f.data+16);if(f.page==1)f.page=65536;f.usable=f.page-f.data[20];
-    if(f.page<512||f.size%f.page) {free(f.data);return -1;}
+    if(!f->data||have!=f->size||memcmp(f->data,"SQLite format 3",16)) {free(f->data);f->data=NULL;return -1;}
+    f->page=db_u16(f->data+16);if(f->page==1)f->page=65536;f->usable=f->page-f->data[20];
+    if(f->page<512||f->size%f->page) {free(f->data);f->data=NULL;return -1;}
+    return 0;
+}
+int pscloud_save_db_times(const char *path,const char *title,struct pscloud_db_slot *out,int max) {
+    if(!pscloud_title_valid(title))return -1;
+    struct sqlite_file f;if(db_load(path,&f))return -1;
     struct master_ctx m={0,{0}};db_walk(&f,1,0,master_row,&m);
     struct slots_ctx c={title,db_column_index(m.sql,"title_id"),db_column_index(m.sql,"dir_name"),db_column_index(m.sql,"mtime"),out,0,max};
     if(!m.root||c.c_title<0||c.c_dir<0||c.c_mtime<0) {free(f.data);return -1;}
     db_walk(&f,m.root,0,slot_row,&c);free(f.data);return c.n;
+}
+/* Any column as text: NULL, integer, text, or x'hex' for blobs. -1 past the last column. */
+static int db_value(const unsigned char *rec,size_t size,int n,char *out,size_t max) {
+    int l=0;unsigned long long header=db_varint(rec,rec+size,&l);if(!l||header>size||max<8)return -1;
+    size_t at=(size_t)l,body=(size_t)header;
+    for(int col=0;at<header;col++) {
+        int k=0;unsigned long long type=db_varint(rec+at,rec+header,&k);if(!k)return -1;at+=(size_t)k;
+        size_t len=type>=12?(size_t)((type-12)/2):type<=4?(size_t)type:type==5?6:type==6||type==7?8:0;
+        if(col==n) {
+            if(body+len>size)return -1;
+            if(type==0)snprintf(out,max,"NULL");
+            else if(type>=1&&type<=6) {long long v=(rec[body]&0x80)?-1:0;for(size_t i=0;i<len;i++)v=(long long)(((unsigned long long)v<<8)|rec[body+i]);snprintf(out,max,"%lld",v);}
+            else if(type==8||type==9)snprintf(out,max,"%d",(int)type-8);
+            else if(type==7)snprintf(out,max,"<real>");
+            else if(type>=13&&type%2) {size_t c=len<max-1?len:max-1;memcpy(out,rec+body,c);out[c]=0;}
+            else {size_t o=2;memcpy(out,"x'",2);for(size_t i=0;i<len&&o+4<max;i++)o+=(size_t)snprintf(out+o,max-o,"%02x",rec[body+i]);out[o]='\'';out[o+1]=0;}
+            return 0;
+        }
+        body+=len;
+    }
+    return -1;
+}
+struct describe_ctx {FILE *out;unsigned root;int rows,max;};
+static void describe_schema(const unsigned char *rec,size_t size,void *ctx) {
+    struct describe_ctx *d=ctx;char kind[16],name[128],table[128],root[32],*sql=malloc(8192);if(!sql)return;
+    if(!db_value(rec,size,0,kind,sizeof kind)&&!db_value(rec,size,1,name,sizeof name)&&!db_value(rec,size,2,table,sizeof table)&&!db_value(rec,size,3,root,sizeof root)) {
+        if(db_value(rec,size,4,sql,8192))strcpy(sql,"?");
+        fprintf(d->out,"SCHEMA %s %s on %s root=%s: %s\n",kind,name,table,root,sql);
+        if(!strcmp(kind,"table")&&!strcmp(name,"savedata"))d->root=(unsigned)strtoul(root,NULL,10);
+    }
+    free(sql);
+}
+static void describe_row(const unsigned char *rec,size_t size,void *ctx) {
+    struct describe_ctx *d=ctx;if(d->rows>=d->max)return;d->rows++;
+    char *value=malloc(4096);if(!value)return;fprintf(d->out,"ROW");
+    for(int col=0;col<64&&!db_value(rec,size,col,value,4096);col++)fprintf(d->out," [%d]=%s",col,value);
+    fputc('\n',d->out);free(value);
+}
+int pscloud_save_db_describe(const char *path,int rows,FILE *out) {
+    struct sqlite_file f;if(db_load(path,&f)) {fprintf(out,"DB %s unreadable\n",path);return -1;}
+    const unsigned char *h=f.data;
+    fprintf(out,"DB %s size=%zu page=%u reserved=%u write=%u read=%u changes=%u pages=%u freelist=%u cookie=%u format=%u encoding=%u user_version=%u vacuum=%u app=%u valid_for=%u sqlite=%u\n",
+        path,f.size,f.page,h[20],h[18],h[19],db_u32(h+24),db_u32(h+28),db_u32(h+36),db_u32(h+40),db_u32(h+44),db_u32(h+56),db_u32(h+60),db_u32(h+52),db_u32(h+68),db_u32(h+92),db_u32(h+96));
+    struct describe_ctx d={out,0,0,rows};db_walk(&f,1,0,describe_schema,&d);
+    if(d.root)db_walk(&f,d.root,0,describe_row,&d);
+    fprintf(out,"DB rows shown=%d\n",d.rows);free(f.data);return 0;
 }

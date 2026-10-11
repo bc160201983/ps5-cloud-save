@@ -39,7 +39,7 @@ jobs:
             grep -a -o -E '(sce|kernel_)[A-Za-z0-9_]{4,}' "$f" | sort -u | grep -i -E 'savedata|pfs|ppr|sealed|regmgr|mountsave|keystone' || true
           done
       - name: Build direct uploader
-        run: make -C ps5 upload recovery backup dashboard share
+        run: make -C ps5 upload recovery backup dashboard share createtest
       - name: Package uploader and trusted CA bundle
         run: |
           mkdir -p upload-package
@@ -80,6 +80,11 @@ jobs:
         with:
           name: pscloud-share
           path: share-package/
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pscloud-create-test
+          path: ps5/pscloud-create-test.elf
           if-no-files-found: error
   host-tests:
     runs-on: ubuntu-24.04
