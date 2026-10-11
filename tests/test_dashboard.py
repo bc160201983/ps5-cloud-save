@@ -116,8 +116,7 @@ class DashboardTests(unittest.TestCase):
         status,data=self.request('/api/log?wait=1&since=-1');self.assertEqual(status,200)  # no size known yet: immediate
         def append():
             time.sleep(2)
-            with open(log,'a') as f:f.write('2026-10-11 10:00:00 EVENT Test line
-')
+            with open(log,'a') as f:f.write('2026-10-11 10:00:00 EVENT Test line\n')
         threading.Thread(target=append).start()
         started=time.monotonic();status,data=self.request('/api/log?wait=1&since=%d'%size);took=time.monotonic()-started
         self.assertEqual(status,200);self.assertIn('Test line',data['log']);self.assertGreater(data['size'],size)
