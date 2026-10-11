@@ -768,6 +768,7 @@ enum {SPACE_LEFTOVERS,SPACE_SAFETY,SPACE_SHARED,SPACE_HISTORY};
 static int is_mounted_inside(int dir) {
     struct stat self;if(fstat(dir,&self))return 1;
     int scan=dup(dir);DIR *d=scan<0?NULL:fdopendir(scan);if(!d) {if(scan>=0)close(scan);return 1;}
+    rewinddir(d);
     struct dirent *e;int mounted=0;
     while((e=readdir(d))&&!mounted) {if(e->d_name[0]=='.')continue;struct stat st;if(!fstatat(dir,e->d_name,&st,AT_SYMLINK_NOFOLLOW)&&S_ISDIR(st.st_mode)&&st.st_dev!=self.st_dev)mounted=1;}
     closedir(d);return mounted;
@@ -779,6 +780,7 @@ static void space_folder(int parent,const char *name,int apply,int take_safety,i
     int dir=openat(parent,name,O_RDONLY|O_DIRECTORY|O_NOFOLLOW);if(dir<0)return;
     if(is_mounted_inside(dir)) {close(dir);return;}
     int scan=dup(dir);DIR *d=scan<0?NULL:fdopendir(scan);if(!d) {if(scan>=0)close(scan);close(dir);return;}
+    rewinddir(d);
     struct dirent *e;
     while((e=readdir(d))) {
         if(!strcmp(e->d_name,".")||!strcmp(e->d_name,".."))continue;
@@ -798,7 +800,7 @@ static void space_folder(int parent,const char *name,int apply,int take_safety,i
 static void space_shared(int apply,struct space *out) {
     char path[1400];snprintf(path,sizeof path,"%s/share",root);int dir=pscloud_open_directory(path);if(dir<0)return;
     struct item {char name[128],title[10];time_t when;off_t size;} *items=calloc(512,sizeof *items);unsigned n=0;
-    int scan=dup(dir);DIR *d=items&&scan>=0?fdopendir(scan):NULL;if(!d) {if(scan>=0)close(scan);free(items);close(dir);return;}
+    int scan=dup(dir);DIR *d=items&&scan>=0?fdopendir(scan):NULL;if(d)rewinddir(d);if(!d) {if(scan>=0)close(scan);free(items);close(dir);return;}
     struct dirent *e;
     while((e=readdir(d))&&n<512) {
         if(!valid_archive(e->d_name))continue;
@@ -820,7 +822,7 @@ static void space_shared(int apply,struct space *out) {
 static void space_history(struct space *out) {
     char path[1400];snprintf(path,sizeof path,"%s/spool",root);int dir=pscloud_open_directory(path);if(dir<0)return;
     struct item {char title[10],user[17];long long created;off_t size;} *items=calloc(512,sizeof *items);unsigned n=0;
-    int scan=dup(dir);DIR *d=items&&scan>=0?fdopendir(scan):NULL;if(!d) {if(scan>=0)close(scan);free(items);close(dir);return;}
+    int scan=dup(dir);DIR *d=items&&scan>=0?fdopendir(scan):NULL;if(d)rewinddir(d);if(!d) {if(scan>=0)close(scan);free(items);close(dir);return;}
     struct dirent *e;
     while((e=readdir(d))&&n<512) {
         size_t len=strlen(e->d_name);if(len<6||len-5>=128||strcmp(e->d_name+len-5,".sent"))continue;
@@ -837,7 +839,7 @@ static void space_history(struct space *out) {
 static void space_scan(int apply,const int take[4],struct space *out) {
     memset(out,0,sizeof *out);
     int parent=pscloud_open_directory(root);if(parent<0)return;
-    int scan=dup(parent);DIR *d=scan>=0?fdopendir(scan):NULL;
+    int scan=dup(parent);DIR *d=scan>=0?fdopendir(scan):NULL;if(d)rewinddir(d);
     if(d) {
         char names[128][96];unsigned n=0;struct dirent *e;
         while((e=readdir(d))&&n<128)if((strstr(e->d_name,"-stage-")||!strcmp(e->d_name,"staging"))&&strlen(e->d_name)<96)strcpy(names[n++],e->d_name);
@@ -845,7 +847,7 @@ static void space_scan(int apply,const int take[4],struct space *out) {
         for(unsigned i=0;i<n;i++) {
             if(!strcmp(names[i],"staging")) { /* backup work folders: staging/<id>/... */
                 int st=openat(parent,"staging",O_RDONLY|O_DIRECTORY|O_NOFOLLOW);if(st<0)continue;
-                int sc=dup(st);DIR *sd=sc>=0?fdopendir(sc):NULL;
+                int sc=dup(st);DIR *sd=sc>=0?fdopendir(sc):NULL;if(sd)rewinddir(sd);
                 if(sd) {char subs[128][96];unsigned m=0;struct dirent *x;while((x=readdir(sd))&&m<128)if(x->d_name[0]!='.'&&strlen(x->d_name)<96)strcpy(subs[m++],x->d_name);closedir(sd);
                     for(unsigned j=0;j<m;j++) {struct stat info;if(fstatat(st,subs[j],&info,AT_SYMLINK_NOFOLLOW))continue;
                         if(S_ISDIR(info.st_mode))space_folder(st,subs[j],apply,take[SPACE_SAFETY],take[SPACE_LEFTOVERS],out);
@@ -858,7 +860,7 @@ static void space_scan(int apply,const int take[4],struct space *out) {
     /* rollback/: every entry is a safety copy (files, or folders of before-N.img). */
     int rb=openat(parent,"rollback",O_RDONLY|O_DIRECTORY|O_NOFOLLOW);
     if(rb>=0) {
-        int sc=dup(rb);DIR *rd=sc>=0?fdopendir(sc):NULL;
+        int sc=dup(rb);DIR *rd=sc>=0?fdopendir(sc):NULL;if(rd)rewinddir(rd);
         if(rd) {char names[256][128];unsigned n=0;struct dirent *e;while((e=readdir(rd))&&n<256)if(e->d_name[0]!='.'&&strlen(e->d_name)<128)strcpy(names[n++],e->d_name);closedir(rd);
             for(unsigned i=0;i<n;i++) {struct stat st;if(fstatat(rb,names[i],&st,AT_SYMLINK_NOFOLLOW))continue;
                 if(S_ISDIR(st.st_mode)) {struct space part={0};space_folder(rb,names[i],apply&&take[SPACE_SAFETY],1,1,&part);
@@ -901,7 +903,7 @@ static void space_totals(unsigned long long *leftover_bytes,unsigned *leftover_f
 static void prune_shared_keep(unsigned keep) {
     char path[1400];snprintf(path,sizeof path,"%s/share",root);int dir=pscloud_open_directory(path);if(dir<0)return;
     struct item {char name[128],title[10];time_t when;} *items=calloc(512,sizeof *items);unsigned n=0;
-    int scan=dup(dir);DIR *d=items&&scan>=0?fdopendir(scan):NULL;if(!d) {if(scan>=0)close(scan);free(items);close(dir);return;}
+    int scan=dup(dir);DIR *d=items&&scan>=0?fdopendir(scan):NULL;if(d)rewinddir(d);if(!d) {if(scan>=0)close(scan);free(items);close(dir);return;}
     struct dirent *e;
     while((e=readdir(d))&&n<512) {if(!valid_archive(e->d_name))continue;struct stat st;if(fstatat(dir,e->d_name,&st,AT_SYMLINK_NOFOLLOW)||!S_ISREG(st.st_mode))continue;
         snprintf(items[n].name,sizeof items[n].name,"%.127s",e->d_name);memcpy(items[n].title,e->d_name+(strncmp(e->d_name,"portable-",9)?10:9),9);items[n].title[9]=0;items[n].when=st.st_mtime;n++;}
