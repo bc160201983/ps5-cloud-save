@@ -161,7 +161,8 @@ int pscloud_save_title_name(const char *home,const char *user,const char *title,
         size_t n=strlen(e->d_name);if(n<5||strcmp(e->d_name+n-4,".sfo")||strchr(e->d_name,'/'))continue;
         char path[1700],label[256],slot[96];if(snprintf(path,sizeof path,"%s/%s",dir,e->d_name)>=(int)sizeof path)continue;
         files++;if(sfo_texts(path,label,sizeof label,slot,sizeof slot))continue;
-        if(!strcmp(label,slot)||generic_label(label))continue; /* "ProfileData", "Save Data": not a game name */
+        if(!strcmp(label,slot))continue; /* "ProfileData" for ProfileData says nothing about the game */
+        if(generic_label(label)) {conflict=1;continue;} /* "Settings", "Save Data": saves are named by slot, not game */
         if(!agreed[0])snprintf(agreed,sizeof agreed,"%s",label);else if(strcmp(agreed,label))conflict=1;
     }
     closedir(d);
