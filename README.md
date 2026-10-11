@@ -1,4 +1,27 @@
-# PS5 Cloud Save — development milestone 0.29.0
+# PS5 Cloud Save — development milestone 0.29.1
+
+## Version 0.29.1 — per-game sync, send to the other PS5, honest sync status
+
+- **Sync this game with my other PS5** (per game): backs the game up when it is closed,
+  even with the main "Back up when I close a game" setting off, and brings newer progress
+  from the linked profile automatically (checked first; optional automatic replace). Each
+  console lists its synced games in `/api/peer/info`, so turning it on once on either PS5
+  turns it on for both. Synced games are checked every 5 minutes.
+- **Send to my other PS5** (manual button on the game's sync banner, `/api/sync-push`):
+  backs the game up here, then asks the other PS5 (`POST /api/peer/push`) to fetch it over
+  the read-only peer API, verify it and run the staged check. It replaces the save there
+  only if that PS5 has **Allow my other PS5 to update saves on this PS5** on (`remote.conf`,
+  off by default) and the game is closed there; otherwise the save waits there as ready to
+  replace and that PS5 shows a notification. A rollback copy is always kept. The receiving
+  PS5 accepts only from consoles in its own network list, for profiles linked on it.
+- **Sync status is honest about what it compared:** found on the 7.00 console, the banner
+  said "This PS5 is newer" for a profile that was not linked and had nothing to compare
+  with. It now says "Not linked yet", "Only on this PS5" (the other PS5 has no copy), or
+  "This PS5 is newer" only when the other copy really is older, and names where the other
+  copy is (on your network or in the cloud).
+
+Verified by host tests with two PSCloud instances (send with and without permission to
+replace, refusal from a console not in the list). Not yet tried between the two consoles.
 
 ## Version 0.29.0 — sync over your home network
 

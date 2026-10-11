@@ -1268,9 +1268,11 @@ static void sync_status_json(int sock,const char *query) {
             if(at) {at+=strlen(pattern);size_t k=0;while(*at&&*at!='"'&&k+1<sizeof name)name[k++]=*at++;name[k]=0;}}}
         escaped(shown,sizeof shown,name);
     }
-    char linked[4][17];int links=links_for(user,linked);
-    char json[1800];snprintf(json,sizeof json,"{\"state\":\"%s\",\"local_time\":%lld,\"base\":%lld,\"cloud\":{\"file\":\"%s\",\"user\":\"%s\",\"name\":\"%s\",\"created\":%lld,\"sha256\":\"%s\",\"source\":\"%s\",\"peer\":\"%s\"},\"links\":%d}",
-        sync_names[state],local_time,sync_base(user,title),other.file,other.user,shown,other.created,other.sha,*other.peer?"network":"cloud",other.peer,links);
+    char linked[4][17],peers[8][64];int links=links_for(user,linked),peer_count=peers_list(peers);
+    struct settings cloud={0};int has_cloud=!pscloud_configure(cloudpath,&cloud);memset(cloud.password,0,sizeof cloud.password);
+    /* other_found: the linked profile has a copy somewhere; without it "newer" means nothing to compare */
+    char json[1900];snprintf(json,sizeof json,"{\"state\":\"%s\",\"local_time\":%lld,\"base\":%lld,\"cloud\":{\"file\":\"%s\",\"user\":\"%s\",\"name\":\"%s\",\"created\":%lld,\"sha256\":\"%s\",\"source\":\"%s\",\"peer\":\"%s\"},\"links\":%d,\"other_found\":%s,\"peers\":%d,\"has_cloud\":%s}",
+        sync_names[state],local_time,sync_base(user,title),other.file,other.user,shown,other.created,other.sha,*other.peer?"network":"cloud",other.peer,links,*other.file?"true":"false",peer_count,has_cloud?"true":"false");
     respond(sock,200,"application/json",json,strlen(json));
 }
 /* Fetch the newest linked cloud version into share/ and run the staged check for this
