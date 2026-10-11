@@ -8,6 +8,9 @@ struct pscloud_share_options {
     const char *only;   /* export: comma-separated slot names, NULL/empty = all */
     int allow_version;  /* check/restore: accept a package from an older or unknown game version */
     int skip_missing;   /* check/restore: skip package slots the receiver profile does not have */
+    int create_missing; /* restore: create package slots the profile lacks (check: they are skipped) */
+    int not_installed;  /* check/restore: the game is not installed here; write without a version check */
+    const char *system_root; /* "" on the PS5; tests point it at a folder (save list database) */
 };
 /* Generic decrypted, multi-slot format; distinct from same-console backups.
  * mode: 0 export, 1 staged check, 2 explicitly confirmed live restore.

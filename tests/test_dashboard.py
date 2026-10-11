@@ -35,8 +35,8 @@ class DashboardTests(unittest.TestCase):
         subprocess.run(['cc','-O2','-std=c11','-Wall','-Wextra','-Werror',
                         '-DPSCLOUD_HOST_TEST','-DPSCLOUD_BACKUP_EMBEDDED','-DPSCLOUD_DOWNLOAD_EMBEDDED','-DPSCLOUD_EMBEDDED',
                         *[str(ROOT/p) for p in ['ps5/dashboard.c','ps5/backup.c','ps5/download.c','src/worker.c']],
-                        *[str(ROOT/'ps5/common'/n) for n in ['managed.c','mount.c','restore.c','zip.c','log.c','cloud.c','snapshot.c','appmeta.c','bundle.c','savemeta.c','google.c','sharing.c']],
-                        '-o',str(ROOT/'dashboard-host'),'-lcurl','-lcrypto','-pthread'],check=True)
+                        *[str(ROOT/'ps5/common'/n) for n in ['managed.c','mount.c','restore.c','zip.c','log.c','cloud.c','snapshot.c','appmeta.c','bundle.c','savemeta.c','google.c','sharing.c','slotcreate.c']],
+                        '-o',str(ROOT/'dashboard-host'),'-lcurl','-lcrypto','-lsqlite3','-pthread'],check=True)
 
     def setUp(self):
         self.fixture=test_worker.WorkerTest();self.fixture.setUp()
@@ -723,6 +723,49 @@ class DashboardTests(unittest.TestCase):
         status,profiles=self.request('/api/cloud-profiles');self.assertEqual(status,200)
         self.assertIn('/backups/.pscloud-profiles/1eb70483.txt',self.fixture.objects)
         self.assertEqual(profiles['links'],{'1eb70483':'1eb70484'})
+
+    def test_restore_creates_slots_this_profile_lacks_without_the_game(self):
+        import test_sharing,test_portable,sqlite3
+        self.process.terminate();self.process.communicate(timeout=5)
+        fixture=self.fixture.root/'generic'
+        test_portable.PortableTests.sfo(self,fixture/SLOT,SLOT,b'\x44'*8)
+        (fixture/SLOT/'sce_sys/keystone').write_bytes(b'K'*96)
+        # The profile has one slot of the game (made by the game earlier); the game is not installed.
+        self.save_db(self.root,'1eb70483',[(SLOT,'2026-10-01T10:00:00.00Z')])
+        self.start_server(PSCLOUD_TEST_GENERIC_PAYLOADS=str(fixture))
+        package=test_sharing.portable(slots=(SLOT,'save2'),title='PPSA02433');sha=hashlib.sha256(package).hexdigest()
+        name='portable-PPSA02433-'+'a'*32+'.zip';(self.root/'share').mkdir(exist_ok=True);(self.root/'share'/name).write_bytes(package)
+        base=self.selected(slot='WholeGame',closed='yes',file=name,sha256=sha)
+        status,refused=self.request('/api/share-check',base);self.assertEqual(status,400);self.assertIn('not',refused['message'])
+        options=dict(base,not_installed='yes',create_missing='yes')
+        status,checked=self.request('/api/share-check',options);self.assertEqual(status,200,checked)
+        created=self.image.parent/'sdimg_save2';self.assertFalse(created.exists())  # a check creates nothing
+        status,done=self.request('/api/share-restore',dict(options,confirm='yes'));self.assertEqual(status,200,done)
+        self.assertTrue(created.exists());self.assertEqual(created.stat().st_size,1024*1024)
+        db=sqlite3.connect(str(self.root/'system/system_data/savedata_prospero/1eb70483/db/user/savedata.db'))
+        row=db.execute("select sub_title,blocks,size_kib from savedata where title_id='PPSA02433' and dir_name='save2'").fetchone();db.close()
+        self.assertEqual(row,('Added by PSCloud',16,1024))
+        # The new slot carries the game's identity from the other slot, under its own name, and the shared files.
+        self.assertIn(b'save2\0',(fixture/'save2/sce_sys/param.sfo').read_bytes())
+        self.assertEqual((fixture/'save2/sce_sys/keystone').read_bytes(),b'K'*96)
+        self.assertEqual((fixture/'save2/folder/progress.bin').read_bytes(),b'shared')
+        # Creating it again is refused: the slot exists now and is simply replaced.
+        status,again=self.request('/api/share-check',options);self.assertEqual(status,200,again)
+
+    def test_creating_a_slot_needs_another_slot_of_the_game(self):
+        import test_sharing,test_portable
+        self.process.terminate();self.process.communicate(timeout=5)
+        fixture=self.fixture.root/'generic';test_portable.PortableTests.sfo(self,fixture/SLOT,SLOT,b'\x44'*8)
+        self.save_db(self.root,'1eb70483',[('other','2026-10-01T10:00:00.00Z')])  # no database row for the existing slot
+        self.start_server(PSCLOUD_TEST_GENERIC_PAYLOADS=str(fixture))
+        package=test_sharing.portable(slots=(SLOT,'save2'),title='PPSA02433');sha=hashlib.sha256(package).hexdigest()
+        name='portable-PPSA02433-'+'b'*32+'.zip';(self.root/'share').mkdir(exist_ok=True);(self.root/'share'/name).write_bytes(package)
+        options=self.selected(slot='WholeGame',closed='yes',file=name,sha256=sha,not_installed='yes',create_missing='yes')
+        self.assertEqual(self.request('/api/share-check',options)[0],200)
+        before=self.image.read_bytes()
+        status,refused=self.request('/api/share-restore',dict(options,confirm='yes'));self.assertEqual(status,400)
+        self.assertIn('start the game once',refused['message'])
+        self.assertFalse((self.image.parent/'sdimg_save2').exists());self.assertEqual(self.image.read_bytes(),before)
 
     def test_sync_with_another_ps5_on_the_local_network(self):
         import test_sharing,test_portable,socket

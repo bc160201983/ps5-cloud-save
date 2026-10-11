@@ -33,13 +33,13 @@ def portable(inner=None,slots=('save1','profile'),title='PPSA10528',version='01.
     return zip_bytes([('manifest.txt',manifest.encode())]+[(f'slot-{i}.zip',inner) for i in range(len(slots))])
 
 class ShareOptions(ctypes.Structure):
-    _fields_=[('only',ctypes.c_char_p),('allow_version',ctypes.c_int),('skip_missing',ctypes.c_int)]
+    _fields_=[('only',ctypes.c_char_p),('allow_version',ctypes.c_int),('skip_missing',ctypes.c_int),('create_missing',ctypes.c_int),('not_installed',ctypes.c_int),('system_root',ctypes.c_char_p)]
 
 class GenericSharingTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        sources=['ps5/backup.c']+[f'ps5/common/{n}.c' for n in ('sharing','mount','restore','zip','log','snapshot','savemeta','appmeta')]
-        subprocess.run(['cc','-O2','-std=c11','-Wall','-Wextra','-Werror','-fPIC','-shared','-DPSCLOUD_HOST_TEST','-DPSCLOUD_BACKUP_EMBEDDED',*[str(ROOT/p) for p in sources],'-o',str(ROOT/'sharing-host.so'),'-lcrypto'],check=True)
+        sources=['ps5/backup.c']+[f'ps5/common/{n}.c' for n in ('sharing','slotcreate','mount','restore','zip','log','snapshot','savemeta','appmeta')]
+        subprocess.run(['cc','-O2','-std=c11','-Wall','-Wextra','-Werror','-fPIC','-shared','-DPSCLOUD_HOST_TEST','-DPSCLOUD_BACKUP_EMBEDDED',*[str(ROOT/p) for p in sources],'-o',str(ROOT/'sharing-host.so'),'-lcrypto','-lsqlite3'],check=True)
         cls.lib=ctypes.CDLL(str(ROOT/'sharing-host.so'))
         cls.lib.pscloud_share_validate.argtypes=[ctypes.c_void_p,ctypes.c_size_t,ctypes.c_char_p]
         cls.lib.pscloud_share_game.argtypes=[ctypes.c_char_p]*5+[ctypes.c_int,ctypes.c_void_p,ctypes.c_size_t,ctypes.c_void_p,ctypes.c_void_p,ctypes.c_void_p]

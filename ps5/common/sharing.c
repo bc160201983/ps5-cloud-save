@@ -12,6 +12,7 @@
 #include "savemeta.h"
 #include "appmeta.h"
 #include "zip.h"
+#include "slotcreate.h"
 #include "log.h"
 #include <sys/stat.h>
 #include <sys/file.h>
@@ -364,6 +365,8 @@ static int version_compare(const char *a,const char *b) {
 int pscloud_share_game(const char *home,const char *root,const char *appmeta,const char *user,const char *title,int mode,const unsigned char *archive,size_t size,const struct pscloud_share_options *options,char published[128],char checksum[65]) {
     published[0]=0;checksum[0]=0;share_error[0]=0;
     const char *only=options?options->only:NULL;int allow_version=options&&options->allow_version,skip_missing=options&&options->skip_missing;
+    int create_missing=options&&options->create_missing,not_installed=options&&options->not_installed,uninstalled=0;
+    const char *system_root=options&&options->system_root?options->system_root:"";char created[SLOTS][64];unsigned created_count=0;
     struct pscloud_snapshot identity={0};if(strlen(user)>=sizeof identity.user||strlen(title)>=sizeof identity.title)return -1;
     strcpy(identity.user,user);strcpy(identity.title,title);strcpy(identity.slot,"WholeGame");memset(identity.sha256,'0',64);
     if(!pscloud_snapshot_valid(&identity)||mode<0||mode>2)return -1;
@@ -382,12 +385,13 @@ int pscloud_share_game(const char *home,const char *root,const char *appmeta,con
     if(mode&&only&&*only) {refuse("Slot selection applies to export only");goto done;}
     if(pscloud_app_version(appmeta,title,version,sizeof version)) {
         /* Receiver must have the game installed; an uninstalled source may still export. */
-        if(mode) {refuse("Install this game on this console before importing its saves");goto done;}
+        if(mode&&!not_installed) {refuse("Install this game on this console before importing its saves, or choose to write it anyway");goto done;}
+        if(mode) {uninstalled=1;pscloud_log("WARN","Game not installed here; writing its saves without a game version check, by request");}
         strcpy(version,"unknown");pscloud_log("WARN","Installed game version unreadable; package records GAME_VERSION=unknown");
     }
     if(mode) {
         if(!archive||package_parse(archive,size,title,p)||digest(archive,size,checksum)) {refuse("Package is damaged or belongs to another game");goto done;}
-        if(strcmp(p->version,version)) {
+        if(!uninstalled&&strcmp(p->version,version)) {
             int order=version_compare(p->version,version);
             if(order==1) {refuse("Package is from game version %s but this console has %s; update the game first",p->version,version);goto done;}
             if(!allow_version) {refuse("Package is from game version %s, this console has %s; allow a different game version to continue",p->version,version);goto done;}
@@ -406,6 +410,12 @@ int pscloud_share_game(const char *home,const char *root,const char *appmeta,con
         unsigned kept=0;
         for(unsigned i=0;i<p->count;i++) {
             char name[80];struct stat st;snprintf(name,sizeof name,"sdimg_%s",p->slots[i]);
+            if(fstatat(source,name,&st,AT_SYMLINK_NOFOLLOW)&&create_missing&&mode==2) {
+                const char *why="";
+                if(pscloud_create_slot(home,system_root,root,user,title,p->slots[i],p->capacity[i],"Added by PSCloud",&why)) {refuse("Slot %s could not be created: %s",p->slots[i],why);goto done;}
+                strcpy(created[created_count++],p->slots[i]);
+            }
+            else if(fstatat(source,name,&st,AT_SYMLINK_NOFOLLOW)&&create_missing) {pscloud_log("INFO","Slot %s will be created when the save is written",p->slots[i]);continue;}
             if(fstatat(source,name,&st,AT_SYMLINK_NOFOLLOW)) {
                 if(!skip_missing) {refuse("This profile has no save slot %s; play further to create it or skip missing slots",p->slots[i]);goto done;}
                 pscloud_log("WARN","Receiver has no slot %s; skipped by request",p->slots[i]);continue;
@@ -413,6 +423,7 @@ int pscloud_share_game(const char *home,const char *root,const char *appmeta,con
             if(kept!=i) {memcpy(p->slots[kept],p->slots[i],sizeof p->slots[0]);p->capacity[kept]=p->capacity[i];p->entries[kept+1]=p->entries[i+1];}
             kept++;
         }
+        if(!kept&&created_count==0&&create_missing) {refuse("Only new slots are in this package; nothing else to check. Write the save to create them");goto done;}
         if(!kept) {refuse("None of the package save slots exist in this profile; play the game once to create a save");goto done;}
         p->count=kept;
     }
@@ -484,6 +495,8 @@ int pscloud_share_game(const char *home,const char *root,const char *appmeta,con
     if(mode!=2&&!marker&&!state.mounted&&!state.credentials_saved)discard_completed_stage(parent,stage,stage_name,p->count,!mode);
 done:
     if(state.mounted) {if(pscloud_mount_end(&state,mount))result=-1;else unmounted=1;}
+    /* Slots made for this import go away again when it did not complete. */
+    if(result&&!state.mounted)for(unsigned i=0;i<created_count;i++)(void)pscloud_remove_created_slot(home,system_root,user,title,created[i]);
     if(pscloud_mount_leave(&state))result=-1;
     if(marker&&(!attempted||unmounted)&&!state.mounted&&!state.credentials_saved&&parent>=0) {if(unlinkat(parent,".mount-active",0)||fsync(parent))result=-1;}
     for(unsigned i=0;i<SLOTS;i++)if(original[i]>=0)close(original[i]);
