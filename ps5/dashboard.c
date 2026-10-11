@@ -136,6 +136,7 @@ static void sync_tick(void);
 static void registry_publish(void);
 static void console_id_load(void);
 static void sync_after_restore(const char *user,const char *title,const char *file);
+static int backup_one(const char *user,const char *title,char published[144],int *unchanged);
 static int batch_start(const char *user);
 static int schedule_save(void);
 static void schedule_load(void);
@@ -1098,7 +1099,36 @@ static void peer_info_json(int sock) {
     while(d&&(u=readdir(d))&&n<16) {if(!safe_word(u->d_name,16))continue;char name[64],shown[400];if(profile_name(u->d_name,name,sizeof name))snprintf(name,sizeof name,"Profile %.16s",u->d_name);escaped(shown,sizeof shown,name);
         pos+=snprintf(json+pos,sizeof json-(size_t)pos,"%s{\"user\":\"%s\",\"name\":\"%s\"}",n++?",":"",u->d_name,shown);}
     if(d)closedir(d);
+    pos+=snprintf(json+pos,sizeof json-(size_t)pos,"],\"sync\":[");unsigned synced=0;
+    pthread_mutex_lock(&settings_mutex);
+    for(unsigned i=0;i<game_settings_count&&pos<(int)sizeof json-64;i++)if(game_settings[i].auto_sync)pos+=snprintf(json+pos,sizeof json-(size_t)pos,"%s\"%s\"",synced++?",":"",game_settings[i].title);
+    pthread_mutex_unlock(&settings_mutex);
     snprintf(json+pos,sizeof json-(size_t)pos,"]}");respond(sock,200,"application/json",json,strlen(json));
+}
+/* Games synced by a PS5 on the network count as synced here too ("turn it on once"). */
+static char peer_synced[256][10];static unsigned peer_synced_count;static pthread_mutex_t peer_synced_mutex=PTHREAD_MUTEX_INITIALIZER;
+static void peer_synced_refresh(void) {
+    char peers[8][64],titles[256][10];int n=peers_list(peers);unsigned count=0;
+    for(int i=0;i<n;i++) {
+        char body[8192];size_t got=0;if(peer_get(peers[i],"/api/peer/info",body,sizeof body-1,&got,5)!=200)continue;
+        char *list=strstr(body,"\"sync\":[");if(!list)continue;
+        for(char *q=list+8;*q&&*q!=']'&&count<256;q++)if(*q=='"'&&!strncmp(q+1,"PPSA",4)) {
+            char t[10];memcpy(t,q+1,9);t[9]=0;if(!pscloud_title_valid(t))continue;
+            int dup=0;for(unsigned k=0;k<count;k++)if(!strcmp(titles[k],t))dup=1;
+            if(!dup)strcpy(titles[count++],t);
+            q+=10;
+        }
+    }
+    pthread_mutex_lock(&peer_synced_mutex);memcpy(peer_synced,titles,sizeof titles[0]*count);peer_synced_count=count;pthread_mutex_unlock(&peer_synced_mutex);
+}
+static int game_synced(const char *title) {
+    if(game_setting(title,2))return 1;
+    int on=0;pthread_mutex_lock(&peer_synced_mutex);for(unsigned i=0;i<peer_synced_count;i++)if(!strcmp(peer_synced[i],title))on=1;pthread_mutex_unlock(&peer_synced_mutex);
+    return on;
+}
+static int any_synced(void) {
+    int any=peer_synced_count>0;pthread_mutex_lock(&settings_mutex);for(unsigned i=0;i<game_settings_count;i++)if(game_settings[i].auto_sync)any=1;pthread_mutex_unlock(&settings_mutex);
+    return any;
 }
 static void peer_latest_json(int sock,const char *query) {
     char user[32],title[16];struct cloud_version v;
@@ -1324,8 +1354,14 @@ static void sync_tick(void) {
     struct settings cloud={0};char peers[8][64];int has_cloud=!pscloud_configure(cloudpath,&cloud);memset(cloud.password,0,sizeof cloud.password);
     if(!has_cloud&&!peers_list(peers))return;
     struct game_setting copy[512];unsigned n;pthread_mutex_lock(&settings_mutex);n=game_settings_count;memcpy(copy,game_settings,n*sizeof copy[0]);pthread_mutex_unlock(&settings_mutex);
+    pthread_mutex_lock(&peer_synced_mutex);
+    for(unsigned k=0;k<peer_synced_count&&n<512;k++) {
+        int known=0;for(unsigned i=0;i<n;i++)if(!strcmp(copy[i].title,peer_synced[k])) {copy[i].auto_sync=1;known=1;}
+        if(!known) {memset(&copy[n],0,sizeof copy[n]);strcpy(copy[n].title,peer_synced[k]);copy[n].close_backup=1;copy[n].backup_all=1;copy[n].auto_sync=1;n++;}
+    }
+    pthread_mutex_unlock(&peer_synced_mutex);
     for(unsigned i=0;i<n&&!stopped;i++) {
-        if(!copy[i].auto_sync||title_running(copy[i].title)>0)continue;
+        if(!copy[i].auto_sync||title_running(copy[i].title)>0)continue; /* (peer-synced titles are added below) */
         DIR *users=opendir(home);struct dirent *u;
         while(users&&(u=readdir(users))&&!stopped) {
             if(!safe_word(u->d_name,16))continue;
@@ -1347,6 +1383,50 @@ static void sync_tick(void) {
         }
         if(users)closedir(users);
     }
+}
+
+/* ---------- Send a newer save to the other PS5 ----------
+ * The other console fetches it itself through the read-only peer API, checks it on a staged
+ * copy, and replaces only if its owner allowed that ("remote.conf ALLOW_REPLACE=1"). */
+static int remote_replace_allowed(void) {
+    char path[1400],line[64]={0};snprintf(path,sizeof path,"%s/remote.conf",root);FILE *f=fopen(path,"r");if(!f)return 0;
+    if(!fgets(line,sizeof line,f))line[0]=0;
+    fclose(f);return !strncmp(line,"ALLOW_REPLACE=1",15);
+}
+static int peer_known(const char *ip) {
+    char peers[8][64];int n=peers_list(peers);size_t len=strlen(ip);
+    for(int i=0;i<n;i++)if(!strncmp(peers[i],ip,len)&&peers[i][len]==':')return 1;
+    return 0;
+}
+/* On the receiving console: POST /api/peer/push?from=<their profile>&to=<our profile>&title=&replace=0|1 */
+static void peer_push(int sock,const char *query,const char *from_ip) {
+    char from[32],to[32],title[16],replace[8]="0",linked[4][17];
+    if(parameter(query,"from",from,sizeof from)||!safe_word(from,16)||parameter(query,"to",to,sizeof to)||!safe_word(to,16)||parameter(query,"title",title,sizeof title)||!pscloud_title_valid(title)) {reject(sock,400,"Invalid request");return;}
+    (void)parameter(query,"replace",replace,sizeof replace);
+    if(!peer_known(from_ip)) {reject(sock,403,"Add the sending PS5 under Other PS5s on your network on this PS5 first");return;}
+    int n=links_for(to,linked),ok=0;for(int i=0;i<n;i++)if(!strcmp(linked[i],from))ok=1;
+    if(!ok) {reject(sock,403,"These profiles are not linked on this PS5");return;}
+    if(title_running(title)>0) {reject(sock,409,"The game is open on the other PS5. Close it there and try again");return;}
+    if(pthread_mutex_trylock(&operation_mutex)) {reject(sock,409,"The other PS5 is busy; try again in a moment");return;}
+    char name[256],file[128],sha[65],why[300];pscloud_app_name(appmeta,title,name,sizeof name);pscloud_log_open(logpath);
+    pscloud_log("EVENT","Your other PS5 (%s) sent a newer save for %s",from_ip,name);
+    int bad=sync_fetch(to,title,file,sha,why,sizeof why);
+    if(bad) {pthread_mutex_unlock(&operation_mutex);char msg[400];snprintf(msg,sizeof msg,"The other PS5 could not use it: %s",why);reject(sock,400,msg);return;}
+    if(!strcmp(replace,"1")&&remote_replace_allowed()&&title_running(title)<=0) {
+        char share[1400],published[128],check[65];snprintf(share,sizeof share,"%s/share",root);int dir=pscloud_open_directory(share);unsigned char *data=NULL;size_t size=0;
+        struct pscloud_share_options options={NULL,0,1};
+        bad=dir<0||pscloud_read_archive(dir,file,&data,&size)||pscloud_share_game(home,root,appmeta,to,title,2,data,size,&options,published,check);
+        free(data);if(dir>=0)close(dir);
+        pthread_mutex_unlock(&operation_mutex);
+        if(bad) {const char *e=pscloud_share_error();char msg[400];snprintf(msg,sizeof msg,"Checked, but replacing on the other PS5 stopped: %s. Its save is unchanged or a rollback copy was kept",*e?e:"see Activity there");reject(sock,500,msg);return;}
+        sync_after_restore(to,title,file);pscloud_notify("%s was updated with the newer save from your other PS5",name);
+        const char *json="{\"ok\":true,\"state\":\"replaced\",\"message\":\"Replaced on the other PS5. A rollback copy of its old save was kept\"}";respond(sock,200,"application/json",json,strlen(json));return;
+    }
+    pthread_mutex_unlock(&operation_mutex);
+    pscloud_notify("A newer save for %s from your other PS5 is ready. Open PSCloud to use it",name);
+    const char *json=!strcmp(replace,"1")?"{\"ok\":true,\"state\":\"ready\",\"message\":\"Sent and checked. The other PS5 does not allow remote replacing, so it is waiting there: open the game in PSCloud on that PS5 and choose Replace my save\"}":
+        "{\"ok\":true,\"state\":\"ready\",\"message\":\"Sent and checked. On the other PS5, open the game in PSCloud and choose Replace my save\"}";
+    respond(sock,200,"application/json",json,strlen(json));
 }
 struct background_job {struct settings settings;char spool[1400],files[256][144];unsigned count;};
 static void cloud_prune_uploaded(const struct background_job *job);
@@ -1777,6 +1857,35 @@ static void action(int sock,const char *path,const char *form) {
         if(removed<0) {message(sock,502,"Cloud cleanup failed; nothing on this PS5 changed");return;}
         char text[160];snprintf(text,sizeof text,removed?"Removed %d older cloud versions":"Nothing to remove (%d)",removed);message(sock,200,text);return;
     }
+    if(!strcmp(path,"/api/sync-push")) {
+        char closed[8],replace[8]="0",peers[8][64],linked[4][17];(void)parameter(form,"replace",replace,sizeof replace);
+        if(parameter(form,"closed",closed,sizeof closed)||strcmp(closed,"yes")) {message(sock,400,"Close the game and switch on Game closed first");return;}
+        int np=peers_list(peers),nl=links_for(chosen.user,linked);
+        if(!np||!nl) {message(sock,400,"Add your other PS5 under Other PS5s on your network and link your profile first");return;}
+        char published[144];int unchanged=0;pscloud_log_open(logpath);
+        if(backup_one(chosen.user,chosen.title,published,&unchanged)) {message(sock,500,"Could not back up this game first; check Activity");return;}
+        char result[600]="",last[600]="No linked profile was found on your other PS5";int sent=0;
+        for(int i=0;i<np&&!sent;i++)for(int k=0;k<nl&&!sent;k++) {
+            char info[8192];size_t got=0;if(peer_get(peers[i],"/api/peer/info",info,sizeof info-1,&got,5)!=200) {snprintf(last,sizeof last,"Your other PS5 at %s is not reachable",peers[i]);continue;}
+            char needle[40];snprintf(needle,sizeof needle,"\"user\":\"%s\"",linked[k]);if(!strstr(info,needle))continue;
+            CURL *c=curl_easy_init();if(!c)continue;char url_push[600],body[1024];struct peer_body r={body,0,sizeof body-1};
+            snprintf(url_push,sizeof url_push,"http://%s/api/peer/push?from=%s&to=%s&title=%s&replace=%s",peers[i],chosen.user,linked[k],chosen.title,!strcmp(replace,"1")?"1":"0");
+            curl_easy_setopt(c,CURLOPT_URL,url_push);curl_easy_setopt(c,CURLOPT_PROTOCOLS_STR,"http");curl_easy_setopt(c,CURLOPT_POST,1L);curl_easy_setopt(c,CURLOPT_POSTFIELDS,"");
+            curl_easy_setopt(c,CURLOPT_CONNECTTIMEOUT,4L);curl_easy_setopt(c,CURLOPT_TIMEOUT,600L);curl_easy_setopt(c,CURLOPT_NOSIGNAL,1L);
+            curl_easy_setopt(c,CURLOPT_WRITEFUNCTION,peer_collect);curl_easy_setopt(c,CURLOPT_WRITEDATA,&r);
+            CURLcode rc=curl_easy_perform(c);long status=0;curl_easy_getinfo(c,CURLINFO_RESPONSE_CODE,&status);curl_easy_cleanup(c);body[r.size]=0;
+            char text[500]="";json_text(body,"message",text,sizeof text);
+            if(rc==CURLE_OK&&status==200) {snprintf(result,sizeof result,"%s",*text?text:"Sent to your other PS5");sent=1;}
+            else snprintf(last,sizeof last,"%s",*text?text:"Your other PS5 did not answer");
+        }
+        message(sock,sent?200:409,sent?result:last);return;
+    }
+    if(!strcmp(path,"/api/remote")) {
+        char allow[8];if(parameter(form,"allow_replace",allow,sizeof allow)||(strcmp(allow,"0")&&strcmp(allow,"1"))) {message(sock,400,"Invalid option");return;}
+        char path_conf[1400],text[32];snprintf(path_conf,sizeof path_conf,"%s/remote.conf",root);snprintf(text,sizeof text,"ALLOW_REPLACE=%s\n",allow);
+        if(atomic_config(path_conf,text)) {message(sock,500,"Could not save");return;}
+        message(sock,200,!strcmp(allow,"1")?"Your other PS5 can now replace saves here (a rollback copy is always kept)":"Your other PS5 can only send saves for you to replace");return;
+    }
     if(!strcmp(path,"/api/sync-get")) {
         char closed[8],file[128],sha[65],why[300];
         if(parameter(form,"closed",closed,sizeof closed)||strcmp(closed,"yes")) {message(sock,400,"Close the game and switch on Game closed first");return;}
@@ -2029,6 +2138,11 @@ static void serve(int sock,int *locked) {
     if(!strcmp(method,"GET") && !strcmp(url,"/api/peer/info")) {peer_info_json(sock);return;}
     if(!strcmp(method,"GET") && !strncmp(url,"/api/peer/latest?",17)) {peer_latest_json(sock,url+17);return;}
     if(!strcmp(method,"GET") && !strncmp(url,"/api/peer/file?",15)) {peer_file(sock,url+15);return;}
+    if(!strcmp(method,"POST") && !strncmp(url,"/api/peer/push?",15)) {
+        struct sockaddr_in remote={0};socklen_t remote_size=sizeof remote;char from_ip[INET_ADDRSTRLEN]="";
+        if(getpeername(sock,(struct sockaddr *)&remote,&remote_size)||!inet_ntop(AF_INET,&remote.sin_addr,from_ip,sizeof from_ip)) {reject(sock,400,"Unknown sender");return;}
+        peer_push(sock,url+15,from_ip);return;
+    }
     char supplied[64];
     int legacy=header_value(request,"X-PSCloud-Token",supplied,sizeof supplied)==0 && !strcmp(supplied,token);
     if(!legacy && !session(request)) {reject(sock,401,"Reload the dashboard to refresh your browser session");return;}
@@ -2150,6 +2264,7 @@ static void serve(int sock,int *locked) {
     if(!strcmp(method,"GET") && !strcmp(url,"/api/cloud-profiles")) {cloud_profiles_json(sock);return;}
     if(!strcmp(method,"GET") && !strcmp(url,"/api/peers")) {peers_json(sock);return;}
     if(!strcmp(method,"GET") && !strcmp(url,"/api/peers/discover")) {peers_discover_json(sock);return;}
+    if(!strcmp(method,"GET") && !strcmp(url,"/api/remote")) {const char *json=remote_replace_allowed()?"{\"allow_replace\":true}":"{\"allow_replace\":false}";respond(sock,200,"application/json",json,strlen(json));return;}
     if(!strcmp(method,"GET") && !strcmp(url,"/api/cloud-housekeeping")) {cloud_housekeeping_json(sock);return;}
     if(!strcmp(method,"GET") && !strcmp(url,"/api/encryption")) {const char *json=pscloud_encryption_on()?"{\"on\":true}":"{\"on\":false}";respond(sock,200,"application/json",json,strlen(json));return;}
     if(!strcmp(method,"GET") && !strcmp(url,"/api/game-settings")) {game_settings_json(sock,query);return;}
@@ -2400,16 +2515,18 @@ static void *game_close_watch(void *unused) {
 #endif
           )schedule_tick();
         if(seconds==20||!(seconds%3600))registry_publish(); /* let other consoles find these profiles */
-        if(!(seconds%900))sync_tick();
+        if(seconds==30||!(seconds%300))peer_synced_refresh();
+        if(!(seconds%300))sync_tick();
         if(seconds%interval)continue;
-        if(!game_close_backup) {watch_ready=0;watched_count=0;continue;}
+        if(!game_close_backup&&!any_synced()) {watch_ready=0;watched_count=0;continue;}
         watch_scan();
         if(!watch_ready) {watch_ready=1;continue;}
         if(pscloud_no_foreign_mount())continue; /* A mounted save means a game is still running. */
         for(unsigned i=0;i<watched_count&&!stopped;i++) {
             struct watched_save *w=&watched[i];
             if(!w->pending||w->stable<2)continue;
-            if(!game_setting(w->title,0)) {w->pending=0;pscloud_log("INFO","%s: back up when closed is off for this game",w->title);continue;}
+            int synced=game_synced(w->title);
+            if(!synced&&(!game_close_backup||!game_setting(w->title,0))) {w->pending=0;if(game_close_backup)pscloud_log("INFO","%s: back up when closed is off for this game",w->title);continue;}
             int running=title_running(w->title);
             if(running>0) {if(!w->waiting) {w->waiting=1;pscloud_log("INFO","%s is still running; backup waits until it is closed",w->title);}continue;}
             /* Without a process list, only back up after five quiet minutes. */

@@ -764,6 +764,44 @@ class DashboardTests(unittest.TestCase):
         finally:
             b.terminate();b.communicate(timeout=5)
 
+    def test_send_a_newer_save_to_the_other_ps5(self):
+        import test_portable,socket
+        def free_udp():
+            u=socket.socket(socket.AF_INET,socket.SOCK_DGRAM);u.bind(('127.0.0.1',0));port=u.getsockname()[1];u.close();return port
+        # This PS5 (A): the test dashboard, with compact backups and the share fixture.
+        self.process.terminate();self.process.communicate(timeout=5)
+        fixture=self.fixture.root/'generic';test_portable.PortableTests.sfo(self,fixture/'save1','save1',b'\x44'*8)
+        (self.image.parent/'sdimg_save1').write_bytes(self.original)
+        metadata=self.root/'appmeta/PPSA02433';metadata.mkdir(parents=True);(metadata/'param.json').write_text(json.dumps({'contentVersion':'01.000.002'}))
+        self.cloud.unlink()
+        self.start_server(PSCLOUD_TEST_GENERIC_PAYLOADS=str(fixture),PSCLOUD_TEST_UDP_PORT=str(free_udp()))
+        self.request('/api/preferences',{'auto_upload':'0','activity_refresh':'1','compact_backups':'1'})
+        # The other PS5 (B): profile 1eb70484 with an older save of the same game.
+        other=Path(self.fixture.root)/'consoleB';live=other/'home/1eb70484/savedata_prospero/PPSA02433';live.mkdir(parents=True)
+        (live/'sdimg_save1').write_bytes(self.original);old=time.time()-5000;os.utime(live/'sdimg_save1',(old,old))
+        (other/'root/appmeta/PPSA02433').mkdir(parents=True);(other/'root/appmeta/PPSA02433/param.json').write_text(json.dumps({'contentVersion':'01.000.002'}))
+        (other/'root/peers.conf').write_text('127.0.0.1:%d\n'%self.port);(other/'root/links.conf').write_text('1eb70484 1eb70483\n')
+        b=subprocess.Popen([str(ROOT/'dashboard-host'),str(other/'root'),str(other/'home'),'0'],env=dict(os.environ,PSCLOUD_TEST_UDP_PORT=str(free_udp()),PSCLOUD_TEST_GENERIC_PAYLOADS=str(fixture)),stdout=subprocess.PIPE,stderr=subprocess.STDOUT,text=True)
+        try:
+            port_b=int(b.stdout.readline().strip().split('=',1)[1]);b.stdout.readline()
+            context=self.selected(slot='WholeGame')
+            self.assertEqual(self.request('/api/sync-push',dict(context,closed='yes'))[0],400)  # not set up yet
+            self.request('/api/peers',{'peers':'127.0.0.1:%d'%port_b});self.request('/api/links',{'user':'1eb70483','linked':'1eb70484'})
+            self.assertEqual(self.request('/api/sync-push',context)[0],400)  # game not confirmed closed
+            # B does not allow remote replacing: the save is sent, checked and left ready there.
+            status,data=self.request('/api/sync-push',dict(context,closed='yes',replace='1'));self.assertEqual(status,200,data);self.assertIn('waiting there',data['message'])
+            self.assertFalse(list((other/'root/rollback').glob('restore-*')) if (other/'root/rollback').exists() else [])
+            self.assertTrue(list((other/'root/sync').glob('1eb70484-PPSA02433.pending')))
+            # Once B allows it, the same button replaces there, keeping a rollback copy.
+            (other/'root/remote.conf').write_text('ALLOW_REPLACE=1\n')
+            status,data=self.request('/api/sync-push',dict(context,closed='yes',replace='1'));self.assertEqual(status,200,data);self.assertIn('Replaced on the other PS5',data['message'])
+            self.assertEqual(len(list((other/'root/rollback').glob('restore-PPSA02433-1eb70484-*'))),1)
+            # A console that is not in B's list is refused.
+            (other/'root/peers.conf').write_text('')
+            self.assertEqual(self.request('/api/sync-push',dict(context,closed='yes'))[0],409)
+        finally:
+            b.terminate();b.communicate(timeout=5)
+
     def test_per_game_sync_settings_round_trip(self):
         self.request('/api/game-settings',{'title':'PPSA02433','close_backup':'1','backup_all':'1','auto_sync':'1','auto_apply':'1'})
         data=self.request('/api/game-settings?title=PPSA02433')[1];self.assertEqual((data['auto_sync'],data['auto_apply']),(True,True))
