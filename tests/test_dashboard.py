@@ -190,10 +190,13 @@ class DashboardTests(unittest.TestCase):
         copied=usb/'usb0/PSCloud/Backups/Crash Bandicoot 4 (PPSA02433)'/backup
         self.assertEqual(copied.read_bytes(),b'backup-bytes');self.assertIn('Copied to USB',data['message'])
         self.assertIn('Already on USB',self.request('/api/usb-copy',{'drive':'usb0','kind':'backup','file':backup})[1]['message'])
-        status,data=self.request('/api/usb-copy-all',{'drive':'usb0'});self.assertEqual(status,200,data)
+        other='portable-PPSA01341-'+'c'*32+'.zip';(self.root/'share'/other).write_bytes(b'other-game')
+        status,data=self.request('/api/usb-copy-all',{'drive':'usb0','title':'PPSA02433'});self.assertEqual(status,200,data)
+        self.assertFalse(any(p.name==other for p in usb.rglob('*.zip')))  # only the chosen game
         self.assertEqual((usb/'usb0/PSCloud/Shared saves/Crash Bandicoot 4 (PPSA02433)'/shared).read_bytes(),b'shared-bytes')
         self.assertIn('1 copied, 1 already there',data['message'])
         files=self.request('/api/usb-files?drive=usb0')[1]['files'];self.assertEqual(len(files),2)
+        self.assertEqual(self.request('/api/usb-copy-all',{'drive':'usb0','title':'bad'})[0],400)
         path=next(f['path'] for f in files if f['path'].endswith(shared))
         status,_,body=self.binary('/api/usb-file?'+urllib.parse.urlencode({'drive':'usb0','path':path}));self.assertEqual((status,body),(200,b'shared-bytes'))
         for query in ({'drive':'usb0','path':'PSCloud/../secret.zip'},{'drive':'usb0','path':'/etc/passwd'},{'drive':'usb9','path':path}):

@@ -1,4 +1,4 @@
-# PS5 Cloud Save — development milestone 0.21.0
+# PS5 Cloud Save — development milestone 0.22.0
 
 ## Where PSCloud keeps your files
 
@@ -27,6 +27,29 @@ PSCloud/Shared saves/<Game name> (<ID>)/portable-<ID>-<snapshot>.zip
 Every copy is written to a temporary file first, then read back and compared by
 SHA-256 before it counts as copied. A shared save ZIP placed anywhere under `PSCloud/`
 on the drive can be received from the Storage page.
+
+## Version 0.22.0 — friendlier Manage saves and Storage pages
+
+**Manage saves** is reorganised:
+- A header with the game's cover, name, profile and status (Installed / Saves only,
+  number of save slots, Playing), and a **Game closed** switch that is always visible
+  (it replaces the "I have fully closed this game" checkbox and works the same way).
+- Four tabs: **Back up** (back up now, add a backup from your PC), **Share**, **Cloud
+  versions** and **USB**.
+- **Share** shows two cards, "Send to another PS5" and "Receive from another PS5", each
+  with numbered steps; save slots are tappable chips; replacing your save sits in its
+  own clearly marked box.
+- **USB, per game:** "Save current save to USB" (a fresh export of this game, copied
+  and checked), "Copy all backups of this game" (/api/usb-copy-all now accepts `title`),
+  and this game's files on the drive with "Receive this save".
+
+**Storage** shows how much PSCloud uses with a coloured bar and legend, one card per
+location (icon, size, file count, plain description, path behind "Show location";
+leftover temporary copies are highlighted), and a USB card with a capacity bar,
+"Copy all saves to USB" and the drive's files grouped by game with cover art.
+
+Verified by host tests (including the per-game USB filter) and a local preview of both
+pages.
 
 ## Version 0.21.0 — refreshed design
 

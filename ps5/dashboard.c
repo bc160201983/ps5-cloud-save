@@ -670,6 +670,8 @@ static void usb_copy_action(int sock,const char *form) {
 }
 static void usb_copy_all(int sock,const char *form) {
     char drive[1200];if(usb_drive(form,drive,sizeof drive)) {message(sock,400,"Plug in a USB drive (exFAT) and choose it");return;}
+    char only[16]={0}; /* optional: one game's files */
+    if(!parameter(form,"title",only,sizeof only)&&!pscloud_title_valid(only)) {message(sock,400,"Invalid game");return;}
     unsigned copied=0,same=0,failed=0;
     for(int k=0;k<2;k++) {
         char source[1400];snprintf(source,sizeof source,"%s/%s",root,k?"share":"spool");
@@ -680,6 +682,7 @@ static void usb_copy_all(int sock,const char *form) {
             if(n-cut>=sizeof file)continue;
             memcpy(file,e->d_name,n-cut);file[n-cut]=0;
             if(!valid_archive(file))continue;
+            if(*only&&strncmp(file+(strncmp(file,"portable-",9)?10:9),only,9))continue;
             char shown[600];int r=usb_copy(drive,k?"Shared saves":"Backups",source,file,shown,sizeof shown);
             if(r>0)copied++;else if(!r)same++;else failed++;
         }
