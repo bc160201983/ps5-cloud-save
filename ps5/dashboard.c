@@ -136,6 +136,8 @@ static void sync_tick(void);
 static void registry_publish(void);
 static void console_id_load(void);
 static void sync_after_restore(const char *user,const char *title,const char *file);
+static long long sync_base(const char *user,const char *title);
+static void sync_received(const char *user,const char *title,char sha[65]);
 static int backup_one(const char *user,const char *title,char published[144],int *unchanged);
 static int batch_start(const char *user);
 static int schedule_save(void);
@@ -1033,7 +1035,7 @@ static long long http_time(const char *text) {
     long long y=year-(mon<2),era=y/400,yoe=y-era*400,mp=(mon+9)%12,doy=(153*mp+2)/5+day-1,doe=yoe*365+yoe/4-yoe/100+doy;
     return (era*146097+doe-719468)*86400LL+h*3600+m*60+sec;
 }
-struct cloud_version {char file[128],user[17],sha[65],peer[64];long long created;};
+struct cloud_version {char file[128],user[17],sha[65],peer[64],current[65];long long created,live;};
 /* ---------- Other PS5s on the local network ----------
  * peers.conf lists "ip:port" of other consoles running PSCloud. Each console serves its
  * newest backup per profile and game read-only under /api/peer/, so sync works without a
@@ -1086,10 +1088,22 @@ static int local_latest(const char *user,const char *title,struct cloud_version 
     } else if(scan>=0)close(scan);
     close(dir);return found;
 }
+static long long live_time(const char *user,const char *title) {
+    char path[1400];snprintf(path,sizeof path,"%s/%s/savedata_prospero/%s",home,user,title);int fd=pscloud_open_directory(path);
+    long long t=fd>=0?(long long)newest_container(fd):0;if(fd>=0)close(fd);return t;
+}
+static void local_current(const char *user,const char *title,const struct cloud_version *latest,long long live,char current[65]) {
+    current[0]=0;long long received=sync_base(user,title);char sha[65];sync_received(user,title,sha);
+    /* Not played since receiving a save: still that save, even if backed up again since
+     * (a backup of the same data made here is arranged differently). */
+    if(received&&*sha&&live<=received+60) {snprintf(current,65,"%s",sha);return;}
+    if(latest&&*latest->file&&live<=latest->created+60)snprintf(current,65,"%s",latest->sha);
+}
 static int peer_latest(const char *peer,const char *user,const char *title,struct cloud_version *out) {
     char path[200],body[1024];size_t got=0;snprintf(path,sizeof path,"/api/peer/latest?user=%s&title=%s",user,title);
     if(peer_get(peer,path,body,sizeof body-1,&got,8)!=200)return 0;
     memset(out,0,sizeof *out);json_text(body,"file",out->file,sizeof out->file);json_text(body,"sha256",out->sha,sizeof out->sha);out->created=json_number(body,"created");
+    json_text(body,"current",out->current,sizeof out->current);out->live=json_number(body,"live");
     if(!valid_archive(out->file)||strlen(out->sha)!=64)return 0;
     snprintf(out->user,sizeof out->user,"%.16s",user);snprintf(out->peer,sizeof out->peer,"%.63s",peer);return 1;
 }
@@ -1134,7 +1148,8 @@ static void peer_latest_json(int sock,const char *query) {
     char user[32],title[16];struct cloud_version v;
     if(parameter(query,"user",user,sizeof user)||!safe_word(user,16)||parameter(query,"title",title,sizeof title)||!pscloud_title_valid(title)) {reject(sock,400,"Invalid request");return;}
     if(!local_latest(user,title,&v)) {reject(sock,404,"No backup");return;}
-    char json[400];snprintf(json,sizeof json,"{\"file\":\"%s\",\"sha256\":\"%s\",\"created\":%lld}",v.file,v.sha,v.created);respond(sock,200,"application/json",json,strlen(json));
+    long long live=live_time(user,title);char current[65];local_current(user,title,&v,live,current);
+    char json[600];snprintf(json,sizeof json,"{\"file\":\"%s\",\"sha256\":\"%s\",\"created\":%lld,\"current\":\"%s\",\"live\":%lld}",v.file,v.sha,v.created,current,live);respond(sock,200,"application/json",json,strlen(json));
 }
 static void peer_file(int sock,const char *query) {
     char file[128],path[1600];if(parameter(query,"file",file,sizeof file)||!valid_archive(file)||strncmp(file,"portable-",9)) {reject(sock,400,"Invalid file");return;}
@@ -1226,12 +1241,16 @@ static long long sync_base(const char *user,const char *title) {
     char path[1400];snprintf(path,sizeof path,"%s/sync/%s-%s",root,user,title);FILE *f=fopen(path,"r");long long when=0;
     if(f) {if(fscanf(f,"WHEN=%lld",&when)!=1)when=0;fclose(f);}return when;
 }
-static void sync_mark(const char *user,const char *title) {
-    char path[1400],text[64];snprintf(path,sizeof path,"%s/sync",root);(void)mkdir(path,0700);
-    snprintf(path,sizeof path,"%s/sync/%s-%s",root,user,title);snprintf(text,sizeof text,"WHEN=%lld\n",(long long)time(NULL));atomic_config(path,text);
+static void sync_mark(const char *user,const char *title,const char *sha) {
+    char path[1400],text[128];snprintf(path,sizeof path,"%s/sync",root);(void)mkdir(path,0700);
+    snprintf(path,sizeof path,"%s/sync/%s-%s",root,user,title);snprintf(text,sizeof text,"WHEN=%lld\nSHA=%s\n",(long long)time(NULL),sha&&strlen(sha)==64?sha:"-");atomic_config(path,text);
 }
-enum {SYNC_UNKNOWN,SYNC_NONE,SYNC_IN,SYNC_CLOUD,SYNC_LOCAL,SYNC_CONFLICT};
-static const char *const sync_names[]={"unknown","not_in_cloud","in_sync","cloud_newer","local_newer","conflict"};
+static void sync_received(const char *user,const char *title,char sha[65]) {
+    char path[1400];snprintf(path,sizeof path,"%s/sync/%s-%s",root,user,title);FILE *f=fopen(path,"r");long long when;sha[0]=0;
+    if(f) {if(fscanf(f,"WHEN=%lld\nSHA=%64s",&when,sha)!=2||strlen(sha)!=64)sha[0]=0;fclose(f);}
+}
+enum {SYNC_UNKNOWN,SYNC_NONE,SYNC_IN,SYNC_CLOUD,SYNC_LOCAL,SYNC_CONFLICT,SYNC_ONLY_HERE};
+static const char *const sync_names[]={"unknown","not_in_cloud","in_sync","cloud_newer","local_newer","conflict","only_here"};
 static int sync_state(const char *user,const char *title,struct cloud_version *newest_other,long long *local_time) {
     struct settings cloud={0};int has_cloud=!pscloud_configure(cloudpath,&cloud);
     char peers[8][64];int peer_count=peers_list(peers);
@@ -1250,7 +1269,17 @@ static int sync_state(const char *user,const char *title,struct cloud_version *n
         for(int k=0;k<peer_count;k++)if(peer_latest(peers[k],linked[i],title,&v)&&v.created>newest_other->created) {*newest_other=v;any_other=1;}
     }
     memset(cloud.password,0,sizeof cloud.password);
+    if(!any_other&&n)return *local_time?SYNC_ONLY_HERE:SYNC_NONE; /* linked, but the other side has no copy */
     if(!got&&!any_other)return SYNC_NONE;
+    if(*newest_other->peer) {
+        /* Over the network both sides say which save they hold; the same save means in sync. */
+        struct cloud_version latest;int have=local_latest(user,title,&latest);char mine[65];local_current(user,title,have?&latest:NULL,*local_time,mine);
+        if(*mine&&*newest_other->current&&!strcmp(mine,newest_other->current))return SYNC_IN;
+        long long synced=sync_base(user,title),theirs=newest_other->created;
+        int here_changed=!synced||*local_time>synced+60,there_changed=!synced||theirs>synced+60;
+        if(synced&&here_changed&&there_changed&&theirs>synced&&*local_time>synced)return SYNC_CONFLICT;
+        return theirs>*local_time+60?SYNC_CLOUD:SYNC_LOCAL;
+    }
     long long base=sync_base(user,title);if(got&&own.created>base)base=own.created;
     if(!base) /* never synced: the newer side wins */
         return any_other&&newest_other->created>*local_time?SYNC_CLOUD:SYNC_LOCAL;
@@ -1260,19 +1289,25 @@ static int sync_state(const char *user,const char *title,struct cloud_version *n
 static void sync_status_json(int sock,const char *query) {
     char user[32],title[16];if(parameter(query,"user",user,sizeof user)||!safe_word(user,16)||parameter(query,"title",title,sizeof title)||!pscloud_title_valid(title)) {reject(sock,400,"Choose a profile and game");return;}
     struct cloud_version other;long long local_time=0;webdav_quiet=1;int state=sync_state(user,title,&other,&local_time);webdav_quiet=0;
-    char name[64]="",shown[400]="";
+    char name[64]="",shown[400]="",firmware[16]="";
     if(*other.user) {
         if(profile_name(other.user,name,sizeof name))snprintf(name,sizeof name,"Profile %s",other.user);
-        if(*other.peer) {char body[8192];size_t got=0;if(peer_get(other.peer,"/api/peer/info",body,sizeof body-1,&got,5)==200) {
-            char pattern[64];snprintf(pattern,sizeof pattern,"\"user\":\"%s\",\"name\":\"",other.user);char *at=strstr(body,pattern);
-            if(at) {at+=strlen(pattern);size_t k=0;while(*at&&*at!='"'&&k+1<sizeof name)name[k++]=*at++;name[k]=0;}}}
+        if(*other.peer) {
+            char body[8192];size_t got=0;
+            if(peer_get(other.peer,"/api/peer/info",body,sizeof body-1,&got,5)==200) {
+                char pattern[64];snprintf(pattern,sizeof pattern,"\"user\":\"%s\",\"name\":\"",other.user);char *at=strstr(body,pattern);
+                if(at) {at+=strlen(pattern);size_t k=0;while(*at&&*at!='"'&&k+1<sizeof name)name[k++]=*at++;name[k]=0;}
+                json_text(body,"firmware",firmware,sizeof firmware);
+                for(char *q=firmware;*q;q++)if(!strchr("0123456789.",*q))*q=0;
+            }
+        }
         escaped(shown,sizeof shown,name);
     }
     char linked[4][17],peers[8][64];int links=links_for(user,linked),peer_count=peers_list(peers);
     struct settings cloud={0};int has_cloud=!pscloud_configure(cloudpath,&cloud);memset(cloud.password,0,sizeof cloud.password);
     /* other_found: the linked profile has a copy somewhere; without it "newer" means nothing to compare */
-    char json[1900];snprintf(json,sizeof json,"{\"state\":\"%s\",\"local_time\":%lld,\"base\":%lld,\"cloud\":{\"file\":\"%s\",\"user\":\"%s\",\"name\":\"%s\",\"created\":%lld,\"sha256\":\"%s\",\"source\":\"%s\",\"peer\":\"%s\"},\"links\":%d,\"other_found\":%s,\"peers\":%d,\"has_cloud\":%s}",
-        sync_names[state],local_time,sync_base(user,title),other.file,other.user,shown,other.created,other.sha,*other.peer?"network":"cloud",other.peer,links,*other.file?"true":"false",peer_count,has_cloud?"true":"false");
+    char json[1900];snprintf(json,sizeof json,"{\"state\":\"%s\",\"local_time\":%lld,\"base\":%lld,\"cloud\":{\"file\":\"%s\",\"user\":\"%s\",\"name\":\"%s\",\"created\":%lld,\"sha256\":\"%s\",\"source\":\"%s\",\"peer\":\"%s\",\"firmware\":\"%s\"},\"links\":%d,\"other_found\":%s,\"peers\":%d,\"has_cloud\":%s}",
+        sync_names[state],local_time,sync_base(user,title),other.file,other.user,shown,other.created,other.sha,*other.peer?"network":"cloud",other.peer,firmware,links,*other.file?"true":"false",peer_count,has_cloud?"true":"false");
     respond(sock,200,"application/json",json,strlen(json));
 }
 /* Fetch the newest linked cloud version into share/ and run the staged check for this
@@ -1307,16 +1342,17 @@ static int sync_fetch(const char *user,const char *title,char file[128],char sha
     if(bad) {unlink(path);const char *e=pscloud_share_error();snprintf(why,why_max,"Check failed: %s",*e?e:"see Activity");return -1;}
     char proof[1700];snprintf(proof,sizeof proof,"%s/%s.check-%s",share,file,user);atomic_config(proof,sha);
     snprintf(path,sizeof path,"%s/sync",root);(void)mkdir(path,0700);
-    char pending[1400],text[256];snprintf(pending,sizeof pending,"%s/sync/%s-%s.pending",root,user,title);snprintf(text,sizeof text,"FILE=%s\n",file);atomic_config(pending,text);
+    char pending[1400],text[256];snprintf(pending,sizeof pending,"%s/sync/%s-%s.pending",root,user,title);snprintf(text,sizeof text,"FILE=%s\nSHA=%s\n",file,other.sha);atomic_config(pending,text);
     pscloud_log("EVENT","Newer save for %s fetched from %s and checked; ready to replace",title,*other.peer?other.peer:"the cloud");
     return 0;
 }
 /* After a replace: if it used the fetched sync file, this game is now in sync. */
 static void sync_after_restore(const char *user,const char *title,const char *file) {
-    char pending[1400],line[256]={0};snprintf(pending,sizeof pending,"%s/sync/%s-%s.pending",root,user,title);FILE *f=fopen(pending,"r");if(!f)return;
+    char pending[1400],line[256]={0},sha_line[128]={0};snprintf(pending,sizeof pending,"%s/sync/%s-%s.pending",root,user,title);FILE *f=fopen(pending,"r");if(!f)return;
     if(!fgets(line,sizeof line,f))line[0]=0;
+    if(!fgets(sha_line,sizeof sha_line,f))sha_line[0]=0;
     fclose(f);char expect[200];snprintf(expect,sizeof expect,"FILE=%s\n",file);
-    if(!strcmp(line,expect)) {sync_mark(user,title);unlink(pending);}
+    if(!strcmp(line,expect)) {char sha[65]={0};if(!strncmp(sha_line,"SHA=",4))sscanf(sha_line+4,"%64s",sha);sync_mark(user,title,sha);unlink(pending);}
 }
 static void cloud_profiles_json(int sock) {
     struct settings cloud={0};if(pscloud_configure(cloudpath,&cloud)) {respond(sock,200,"application/json","{\"profiles\":[],\"links\":[]}",28);return;}

@@ -759,6 +759,11 @@ class DashboardTests(unittest.TestCase):
             self.assertEqual(self.image.read_bytes(),self.original)
             status,done=self.request('/api/share-restore',self.selected(closed='yes',confirm='yes',file=got['file'],sha256=got['sha256']));self.assertEqual(status,200,done)
             self.assertEqual(self.request('/api/sync-status?user=1eb70483&title=PPSA02433')[1]['state'],'in_sync')
+            # Played here afterwards: this PS5 is newer, never "in sync" while the other holds the older save.
+            future=time.time()+5000
+            for f in (self.image,second):os.utime(f,(future,future))
+            data=self.request('/api/sync-status?user=1eb70483&title=PPSA02433')[1]
+            self.assertEqual((data['state'],data['cloud']['firmware']),('local_newer',data['cloud']['firmware']))
             # Peer endpoints only serve backups, by valid name.
             c=http.client.HTTPConnection('127.0.0.1',port_b,timeout=10);c.request('GET','/api/peer/file?file=../../etc/passwd');self.assertEqual(c.getresponse().status,400);c.close()
         finally:

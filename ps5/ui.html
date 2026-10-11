@@ -113,7 +113,7 @@ function notify(text,error=false){$('toast').textContent=text;$('toast').classLi
 async function api(path,data){
  const options={headers:{'X-PSCloud-Request':'1'},credentials:'same-origin'};
  if(data){options.method='POST';options.body=new URLSearchParams(data);}
- const safeRead=!data&&['/api/state','/api/preferences','/api/games','/api/queue','/api/backups','/api/log','/api/google/status'].includes(path.split('?')[0]);
+ const safeRead=!data&&['/api/state','/api/preferences','/api/games','/api/queue','/api/backups','/api/log','/api/google/status','/api/users','/api/sync-status','/api/peers','/api/cloud-profiles','/api/game-settings','/api/storage','/api/usb','/api/usb-files','/api/remote','/api/encryption','/api/cloud-housekeeping','/api/running'].includes(path.split('?')[0]);
  const delay=ms=>new Promise(resolve=>setTimeout(resolve,ms));
  for(let attempt=0;;attempt++){
   let r;try{r=await fetch(path,options);}catch(e){if(safeRead&&attempt<3){await delay(250*2**attempt);continue;}throw e;}
@@ -274,22 +274,23 @@ const SYNC_TEXT={in_sync:['ok','In sync','This PS5 and the cloud have the same p
 async function loadSync(g){const box=$('syncBanner');box.className='syncbanner';box.replaceChildren(el('span','subtitle','Checking your other PS5 and the cloud…'));
  let r;try{r=await api('/api/sync-status?'+new URLSearchParams({user:g.user,title:g.title}));}catch(e){r={state:'unknown'};}
  if(!selected||selected.title!==g.title||selected.user!==g.user)return;
- const where=r.cloud&&r.cloud.source==='network'?'on your network':'in the cloud',who=(r.cloud&&r.cloud.name)||'your other PS5';
+ const net=r.cloud&&r.cloud.source==='network',ip=net?r.cloud.peer.replace(/:8082$/,''):'';
+ const where=net?'on your PS5 '+(r.cloud.firmware||'')+' ('+ip+')':'in the cloud',who=(r.cloud&&r.cloud.name)||'your other PS5';
  let tone,title,text;
  if(r.state==='unknown'){[tone,title,text]=['muted','Sync is not set up','Add your other PS5 under Other PS5s on your network, or connect a cloud, in Cloud settings.'];}
  else if(!r.links&&!r.other_found){[tone,title,text]=['muted','Not linked yet','Link this profile with your profile on the other PS5 in Cloud settings, then this shows which one is newer.'];}
  else if(r.state==='in_sync'){[tone,title,text]=['ok','In sync','This PS5 and your other PS5 have the same progress.'];}
- else if(r.state==='cloud_newer'){[tone,title,text]=['info','Your other PS5 is newer',who+' has newer progress '+where+', saved '+snapshotDate(r.cloud.created)+'.'];}
- else if(r.state==='conflict'){[tone,title,text]=['danger','Both changed','This PS5 and '+who+' ('+where+') both have progress the other does not. Choose which one to keep.'];}
- else if(!r.other_found){[tone,title,text]=['warn','Only on this PS5','Your other PS5 has no copy of this game yet. Send it there, or back it up.'];}
- else {[tone,title,text]=['warn','This PS5 is newer','You played here after the copy '+where+' ('+snapshotDate(r.cloud.created)+').'];}
+ else if(r.state==='cloud_newer'){[tone,title,text]=['info','Your other PS5 is newer','Profile '+who+' '+where+' has newer progress, saved '+snapshotDate(r.cloud.created)+'.'];}
+ else if(r.state==='conflict'){[tone,title,text]=['danger','Both changed','This PS5 and profile '+who+' '+where+' both have progress the other does not. Choose which one to keep.'];}
+ else if(r.state==='only_here'||!r.other_found){[tone,title,text]=['warn','Only on this PS5','Your other PS5 has no copy of this game yet. Send it there, or back it up.'];}
+ else {[tone,title,text]=['warn','This PS5 is newer','You played here after the copy of profile '+who+' '+where+' (saved '+snapshotDate(r.cloud.created)+').'];}
  box.className='syncbanner '+tone;box.replaceChildren();const words=el('div');words.append(el('strong','',title),el('small','',text));box.append(words);
  const actions=el('div','usbactions');const add=(label,cls,fn)=>{const b=el('button',cls,label);b.addEventListener('click',fn);actions.append(b);};
  if(r.state==='unknown'||(!r.links&&!r.other_found))add('Open Cloud settings','ghost',()=>view('settings'));
  else {
   if(r.state==='cloud_newer'||r.state==='conflict')add('Get the newer save','primary',()=>getCloudSave(g));
-  if((r.state==='local_newer'||r.state==='conflict'||r.state==='not_in_cloud')&&r.peers)add('Send to my other PS5',r.state==='conflict'?'ghost':'primary',()=>sendToOther(g));
-  if(r.state==='local_newer'||r.state==='not_in_cloud')add('Back up now','ghost',()=>{showDetailTab('backup');if(!$('closed').checked)notify('Close the game and switch on Game closed first.',true);else $('backup').click();});
+  if((r.state==='local_newer'||r.state==='conflict'||r.state==='not_in_cloud'||r.state==='only_here')&&r.peers)add('Send to my other PS5',r.state==='conflict'?'ghost':'primary',()=>sendToOther(g));
+  if(r.state==='local_newer'||r.state==='not_in_cloud'||r.state==='only_here')add('Back up now','ghost',()=>{showDetailTab('backup');if(!$('closed').checked)notify('Close the game and switch on Game closed first.',true);else $('backup').click();});
  }
  box.append(actions);}
 /* Manual send: back up here, then the other PS5 fetches, checks and (if it allows) replaces. */
@@ -383,7 +384,7 @@ async function loadGames(){
 function filterGames(){const q=$('gameSearch').value.trim().toLowerCase();for(const card of $('gamegrid').querySelectorAll('article.game'))card.classList.toggle('hidden',!!q&&!card.dataset.search.includes(q));}
 $('gameSearch').addEventListener('input',filterGames);
 function params(){return {user:selected.user,title:selected.title,slot:$('slots').value};}
-async function openGame(g){selected=g;sharedCandidate=null;$('shareClosed').checked=false;$('shareConfirm').checked=false;$('shareFile').value='';$('shareStatus').textContent='';$('shareFix').classList.add('hidden');renderShareSlots(g);$('shareSkip').checked=false;$('shareAllowVersion').checked=false;$('gamename').textContent=g.name;$('gameid').textContent=g.title;$('gameuser').textContent=profileName(g.user)+' · PS5 profile '+g.user;detailHeader(g);$('closed').checked=false;$('slots').replaceChildren();const supported=g.slots.filter(s=>s.supported);if(supported.length){const option=document.createElement('option');option.value='WholeGame';option.textContent=slotName('WholeGame');$('slots').append(option);}for(const s of supported.filter(s=>g.title==='PPSA02433'&&['PlayerSaveSlot0Save','PlayerSaveProfileSaveData'].includes(s.slot))){const option=document.createElement('option');option.value=s.slot;option.textContent=slotName(s.slot);$('slots').append(option);}shareButtons();view('detail');$('versioncount').textContent='Load on demand';$('versions').innerHTML='<div class="info">Choose Refresh versions to load cloud history. Sharing above works locally without waiting for your cloud provider.</div>';if(dashboardFirmware!=='11.40')await loadBackups();}
+async function openGame(g){selected=g;sharedCandidate=null;$('shareClosed').checked=false;$('shareConfirm').checked=false;$('shareFile').value='';$('shareStatus').textContent='';$('shareFix').classList.add('hidden');renderShareSlots(g);$('shareSkip').checked=false;$('shareAllowVersion').checked=false;$('gamename').textContent=g.name;$('gameid').textContent=g.title;$('gameuser').textContent='Profile: '+profileName(g.user);$('gameuser').title='PS5 profile ID '+g.user;detailHeader(g);$('closed').checked=false;$('slots').replaceChildren();const supported=g.slots.filter(s=>s.supported);if(supported.length){const option=document.createElement('option');option.value='WholeGame';option.textContent=slotName('WholeGame');$('slots').append(option);}for(const s of supported.filter(s=>g.title==='PPSA02433'&&['PlayerSaveSlot0Save','PlayerSaveProfileSaveData'].includes(s.slot))){const option=document.createElement('option');option.value=s.slot;option.textContent=slotName(s.slot);$('slots').append(option);}shareButtons();view('detail');$('versioncount').textContent='Load on demand';$('versions').innerHTML='<div class="info">Choose Refresh versions to load cloud history. Sharing above works locally without waiting for your cloud provider.</div>';if(dashboardFirmware!=='11.40')await loadBackups();}
 async function loadBackups(force=false){
  if(dashboardFirmware!=='11.40'&&!preferences.compact_backups){$('versioncount').textContent='Compact backups available';$('versions').innerHTML='<div class="info">Enable Compact cloud backups in settings for whole-game backup/history on this firmware, or use Share saves above. Encrypted restore is only available on 11.40.</div>';return;}
  if(!selected)return;$('versions').replaceChildren();const loading=document.createElement('div');loading.className='empty loading';loading.textContent='Checking cloud versions…';$('versions').append(loading);
