@@ -108,6 +108,24 @@ class DashboardTests(unittest.TestCase):
         status,data=self.request('/api/preferences',{'auto_upload':'0','activity_refresh':'1','compact_backups':'0'});self.assertEqual(status,200)
         self.assertEqual((data['compact_backups'],data['compact_required']),(True,True))
 
+    def test_activity_log_waits_for_changes_and_answers_when_one_happens(self):
+        import threading
+        status,data=self.request('/api/log');self.assertEqual(status,200)
+        size=data['size'];log=self.root/'pscloud.log'
+        self.assertEqual(log.stat().st_size if log.exists() else 0,size)
+        status,data=self.request('/api/log?wait=1&since=-1');self.assertEqual(status,200)  # no size known yet: immediate
+        def append():
+            time.sleep(2)
+            with open(log,'a') as f:f.write('2026-10-11 10:00:00 EVENT Test line
+')
+        threading.Thread(target=append).start()
+        started=time.monotonic();status,data=self.request('/api/log?wait=1&since=%d'%size);took=time.monotonic()-started
+        self.assertEqual(status,200);self.assertIn('Test line',data['log']);self.assertGreater(data['size'],size)
+        self.assertGreater(took,1.5);self.assertLess(took,8)
+        # Other requests are not blocked while a client waits.
+        threading.Thread(target=lambda:self.request('/api/log?wait=1&since=%d'%data['size'])).start()
+        time.sleep(0.5);started=time.monotonic();self.assertEqual(self.request('/api/state')[0],200);self.assertLess(time.monotonic()-started,3)
+
     def test_idle_browser_connection_does_not_block_dashboard(self):
         idle=http.client.HTTPConnection('127.0.0.1',self.port,timeout=5);idle.connect()
         try:

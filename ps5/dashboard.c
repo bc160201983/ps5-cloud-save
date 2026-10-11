@@ -115,6 +115,7 @@ static _Atomic int auto_upload=1,activity_refresh=1;
 static _Atomic int local_keep_latest;
 static _Atomic int compact_backups;
 static _Atomic int game_close_backup;
+static _Atomic int log_waiters;
 /* Firmware is read once at start. Every firmware the SDK runs on is accepted; encrypted
  * (legacy) backup/restore stays limited to 11.40, so other firmware always uses compact. */
 static unsigned firmware_id=0x11400000U;
@@ -1019,10 +1020,21 @@ static void serve(int sock,int *locked) {
         snprintf(json,sizeof json,"{\"version\":\"%s\",\"firmware\":\"%s\",\"firmware_tested\":%s,\"pid\":%ld,\"cloud_http\":%d,\"configured\":%s,\"connected\":%s,\"url\":\"%s\",\"username\":\"%s\"}",PSCLOUD_VERSION,firmware_text,firmware_tested()?"true":"false",(long)getpid(),status,configured?"true":"false",status==200 || status==207?"true":"false",address,username);
         respond(sock,200,"application/json",json,strlen(json));return;
     }
-    if(!strcmp(method,"GET") && !strcmp(url,"/api/log")) {
-        int fd=open(logpath,O_RDONLY | O_NOFOLLOW | O_NONBLOCK);struct stat st;char data[8193]={0};
-        if(fd>=0) {if(!fstat(fd,&st) && S_ISREG(st.st_mode)) {off_t offset=st.st_size>8192?st.st_size-8192:0;ssize_t got=pread(fd,data,8192,offset);if(got>=0)data[got]=0;}close(fd);}
-        char text[50000],json[50100];escaped(text,sizeof text,data);snprintf(json,sizeof json,"{\"log\":\"%s\"}",text);respond(sock,200,"application/json",json,strlen(json));return;
+    if(!strcmp(method,"GET") && (!strcmp(url,"/api/log") || !strncmp(url,"/api/log?",9))) {
+        const char *logquery=url[8]=='?'?url+9:NULL;
+        /* With wait=1&since=<size>, hold the request until the log changes (up to 25 s),
+         * so the Activity page updates as things happen instead of on a timer. */
+        char value[32];long long since=-1;
+        int wait=logquery&&!parameter(logquery,"wait",value,sizeof value)&&!strcmp(value,"1");
+        if(logquery&&!parameter(logquery,"since",value,sizeof value))since=strtoll(value,NULL,10);
+        if(wait&&since>=0) {
+            int slot=atomic_fetch_add(&log_waiters,1)<4; /* Leave client threads for other requests. */
+            for(int i=0;slot&&i<25&&!stopped;i++) {struct stat now;if(stat(logpath,&now)||(long long)now.st_size!=since)break;sleep(1);}
+            atomic_fetch_sub(&log_waiters,1);
+        }
+        int fd=open(logpath,O_RDONLY | O_NOFOLLOW | O_NONBLOCK);struct stat st;char data[8193]={0};long long size=0;
+        if(fd>=0) {if(!fstat(fd,&st) && S_ISREG(st.st_mode)) {size=(long long)st.st_size;off_t offset=st.st_size>8192?st.st_size-8192:0;ssize_t got=pread(fd,data,8192,offset);if(got>=0)data[got]=0;}close(fd);}
+        char text[50000],json[50100];escaped(text,sizeof text,data);snprintf(json,sizeof json,"{\"log\":\"%s\",\"size\":%lld}",text,size);respond(sock,200,"application/json",json,strlen(json));return;
     }
     /* Slow cloud/save operations remain serialized for safety. Other clients
      * get an immediate busy response, never wait behind a multi-minute upload.

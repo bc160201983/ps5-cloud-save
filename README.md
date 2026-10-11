@@ -1,4 +1,16 @@
-# PS5 Cloud Save — development milestone 0.19.1
+# PS5 Cloud Save — development milestone 0.19.2
+
+## Version 0.19.2 — live Activity page
+
+The Activity page now updates when the console log changes instead of every 10
+seconds. The page asks /api/log?wait=1&since=<size>; the console holds the request
+and answers as soon as the log grows (checking the file size once a second), or
+after 25 seconds with no change, and the page asks again. At most 4 such waits run
+at once, so other requests are never starved. Nothing is requested while the page
+is hidden or another page is open. The "Refresh the Activity page automatically"
+setting is removed because it is no longer needed (ACTIVITY_REFRESH stays in
+preferences.conf for compatibility). Verified by host tests.
+
 
 ## Version 0.19.1 — clearer backup settings
 
