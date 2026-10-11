@@ -279,6 +279,7 @@ async function loadSync(g){const box=$('syncBanner');box.className='syncbanner';
  let tone,title,text;
  if(r.state==='unknown'){[tone,title,text]=['muted','Sync is not set up','Add your other PS5 under Other PS5s on your network, or connect a cloud, in Cloud settings.'];}
  else if(!r.links&&!r.other_found){[tone,title,text]=['muted','Not linked yet','Link this profile with your profile on the other PS5 in Cloud settings, then this shows which one is newer.'];}
+ else if(r.state==='other_offline'){[tone,title,text]=['muted','Other PS5 not reachable','Your other PS5 did not answer. Turn it on and start PSCloud there, then open this game again.'];}
  else if(r.state==='in_sync'){[tone,title,text]=['ok','In sync','This PS5 and your other PS5 have the same progress.'];}
  else if(r.state==='cloud_newer'){[tone,title,text]=['info','Your other PS5 is newer','Profile '+who+' '+where+' has newer progress, saved '+snapshotDate(r.cloud.created)+'.'];}
  else if(r.state==='conflict'){[tone,title,text]=['danger','Both changed','This PS5 and profile '+who+' '+where+' both have progress the other does not. Choose which one to keep.'];}

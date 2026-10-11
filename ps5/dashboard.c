@@ -1101,7 +1101,9 @@ static void local_current(const char *user,const char *title,const struct cloud_
 }
 static int peer_latest(const char *peer,const char *user,const char *title,struct cloud_version *out) {
     char path[200],body[1024];size_t got=0;snprintf(path,sizeof path,"/api/peer/latest?user=%s&title=%s",user,title);
-    if(peer_get(peer,path,body,sizeof body-1,&got,8)!=200)return 0;
+    long status=peer_get(peer,path,body,sizeof body-1,&got,8);
+    if(!status)return -1; /* not reachable */
+    if(status!=200)return 0;
     memset(out,0,sizeof *out);json_text(body,"file",out->file,sizeof out->file);json_text(body,"sha256",out->sha,sizeof out->sha);out->created=json_number(body,"created");
     json_text(body,"current",out->current,sizeof out->current);out->live=json_number(body,"live");
     if(!valid_archive(out->file)||strlen(out->sha)!=64)return 0;
@@ -1249,8 +1251,8 @@ static void sync_received(const char *user,const char *title,char sha[65]) {
     char path[1400];snprintf(path,sizeof path,"%s/sync/%s-%s",root,user,title);FILE *f=fopen(path,"r");long long when;sha[0]=0;
     if(f) {if(fscanf(f,"WHEN=%lld\nSHA=%64s",&when,sha)!=2||strlen(sha)!=64)sha[0]=0;fclose(f);}
 }
-enum {SYNC_UNKNOWN,SYNC_NONE,SYNC_IN,SYNC_CLOUD,SYNC_LOCAL,SYNC_CONFLICT,SYNC_ONLY_HERE};
-static const char *const sync_names[]={"unknown","not_in_cloud","in_sync","cloud_newer","local_newer","conflict","only_here"};
+enum {SYNC_UNKNOWN,SYNC_NONE,SYNC_IN,SYNC_CLOUD,SYNC_LOCAL,SYNC_CONFLICT,SYNC_ONLY_HERE,SYNC_OFFLINE};
+static const char *const sync_names[]={"unknown","not_in_cloud","in_sync","cloud_newer","local_newer","conflict","only_here","other_offline"};
 static int sync_state(const char *user,const char *title,struct cloud_version *newest_other,long long *local_time) {
     struct settings cloud={0};int has_cloud=!pscloud_configure(cloudpath,&cloud);
     char peers[8][64];int peer_count=peers_list(peers);
@@ -1263,12 +1265,13 @@ static int sync_state(const char *user,const char *title,struct cloud_version *n
     if(got<0)got=0;
     /* a backup this PS5 made is visible to the other console over the network */
     struct cloud_version mine;if(peer_count&&local_latest(user,title,&mine)&&mine.created>own.created) {own=mine;got=1;}
-    char linked[4][17];int n=links_for(user,linked),any_other=0;
+    char linked[4][17];int n=links_for(user,linked),any_other=0,unreachable=0;
     for(int i=0;i<n;i++) {
         if(has_cloud&&cloud_newest(&cloud,linked[i],title,&v)>0&&v.created>newest_other->created) {*newest_other=v;any_other=1;}
-        for(int k=0;k<peer_count;k++)if(peer_latest(peers[k],linked[i],title,&v)&&v.created>newest_other->created) {*newest_other=v;any_other=1;}
+        for(int k=0;k<peer_count;k++) {int r=peer_latest(peers[k],linked[i],title,&v);if(r<0)unreachable=1;else if(r&&v.created>newest_other->created) {*newest_other=v;any_other=1;}}
     }
     memset(cloud.password,0,sizeof cloud.password);
+    if(!any_other&&n&&unreachable)return SYNC_OFFLINE; /* cannot tell: the other PS5 did not answer */
     if(!any_other&&n)return *local_time?SYNC_ONLY_HERE:SYNC_NONE; /* linked, but the other side has no copy */
     if(!got&&!any_other)return SYNC_NONE;
     if(*newest_other->peer) {

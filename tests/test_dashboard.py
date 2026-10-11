@@ -766,8 +766,11 @@ class DashboardTests(unittest.TestCase):
             self.assertEqual((data['state'],data['cloud']['firmware']),('local_newer',data['cloud']['firmware']))
             # Peer endpoints only serve backups, by valid name.
             c=http.client.HTTPConnection('127.0.0.1',port_b,timeout=10);c.request('GET','/api/peer/file?file=../../etc/passwd');self.assertEqual(c.getresponse().status,400);c.close()
-        finally:
+            # The other PS5 switched off: say so, rather than "only on this PS5".
             b.terminate();b.communicate(timeout=5)
+            self.assertEqual(self.request('/api/sync-status?user=1eb70483&title=PPSA02433')[1]['state'],'other_offline')
+        finally:
+            if b.poll() is None:b.terminate();b.communicate(timeout=5)
 
     def test_send_a_newer_save_to_the_other_ps5(self):
         import test_portable,socket
