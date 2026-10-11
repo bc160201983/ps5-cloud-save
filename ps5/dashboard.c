@@ -1186,6 +1186,7 @@ static void sync_tick(void) {
     }
 }
 struct background_job {struct settings settings;char spool[1400],files[256][144];unsigned count;};
+static void cloud_prune_uploaded(const struct background_job *job);
 static void *background_upload(void *arg) {
     struct background_job *job=arg;int result=0;
     for(unsigned i=0;i<job->count;i++) {
@@ -1193,12 +1194,90 @@ static void *background_upload(void *arg) {
         result|=pscloud_worker_upload(job->spool,job->files[i],&job->settings);
     }
     if(background_cancelled)result=1;
+    if(!result)cloud_prune_uploaded(job);
     if(!result && !pthread_mutex_trylock(&operation_mutex)) {prune_local_history();pthread_mutex_unlock(&operation_mutex);}
     background_result=result;
     pscloud_log(result?"WARN":"EVENT",result?"Background upload stopped or failed; local backups retained":"Background upload verified and completed");
     volatile unsigned char *secret=(volatile unsigned char *)&job->settings;for(size_t i=0;i<sizeof job->settings;i++)secret[i]=0;
     free(job);background_active=0;
     pthread_mutex_lock(&clients_mutex);clients--;pthread_cond_broadcast(&clients_done);pthread_mutex_unlock(&clients_mutex);return NULL;
+}
+
+/* ---------- Cloud housekeeping ----------
+ * cloud-keep.conf "KEEP=N": after each upload, keep the N newest versions of that save in
+ * the cloud (0 = keep everything). Older versions lose their archive, then their identity. */
+static int cloud_keep;
+static void cloud_keep_load(void) {
+    char path[1400];snprintf(path,sizeof path,"%s/cloud-keep.conf",root);FILE *f=fopen(path,"r");int keep=0;
+    if(f) {if(fscanf(f,"KEEP=%d",&keep)!=1||keep<0||keep>999)keep=0;fclose(f);}cloud_keep=keep;
+}
+struct cloud_entry {char file[128];long long created;};
+static int newest_first(const void *a,const void *b) {const struct cloud_entry *x=a,*y=b;return x->created<y->created?1:x->created>y->created?-1:strcmp(y->file,x->file);}
+/* Returns how many versions were removed, or -1. */
+static int cloud_prune(const struct settings *cloud,const struct pscloud_snapshot *who,int keep) {
+    if(keep<=0)return 0;
+    char folder[256],url[4400];if(pscloud_snapshot_folder(who,folder,sizeof folder))return -1;
+    snprintf(url,sizeof url,"%s/%s/.pscloud/",cloud->url,folder);
+    char *xml=malloc(512*1024+1);if(!xml)return -1;struct response r={xml,0,512*1024};long status=webdav(cloud,url,"PROPFIND",&r);
+    if(status==404) {free(xml);return 0;}
+    if(status!=207&&status!=200) {free(xml);return -1;}
+    xml[r.size]=0;struct cloud_entry *list=calloc(256,sizeof *list);unsigned n=0;
+    for(char *cursor=xml;list&&(cursor=strstr(cursor,"href>"))&&n<256;) {
+        cursor+=5;char *end=strchr(cursor,'<');if(!end)break;char *begin=cursor;for(char *p=cursor;p<end;p++)if(*p=='/')begin=p+1;
+        size_t len=(size_t)(end-begin);if(len<10||len-9>=sizeof list[0].file||strncmp(end-9,".identity",9))continue;
+        memcpy(list[n].file,begin,len-9);list[n].file[len-9]=0;if(!valid_archive(list[n].file))continue;
+        struct pscloud_snapshot snap;if(remote_snapshot(cloud,who,list[n].file,&snap))continue; /* unreadable: never delete */
+        list[n].created=snap.created;n++;
+    }
+    free(xml);if(!list)return -1;
+    qsort(list,n,sizeof *list,newest_first);int removed=0;
+    for(unsigned i=(unsigned)keep;i<n;i++) {
+        snprintf(url,sizeof url,"%s/%s/%s",cloud->url,folder,list[i].file);long a=webdav(cloud,url,"DELETE",NULL);
+        if(a!=404&&(a<200||a>=300))continue;
+        snprintf(url,sizeof url,"%s/%s/.pscloud/%s.identity",cloud->url,folder,list[i].file);webdav(cloud,url,"DELETE",NULL);removed++;
+    }
+    free(list);return removed;
+}
+/* Account quota and the PSCloud folder size, from one PROPFIND with explicit properties. */
+static long cloud_quota(const struct settings *cloud,unsigned long long *used,unsigned long long *available) {
+    *used=*available=0;CURL *c=curl_easy_init();if(!c)return 0;
+    char buffer[16384];struct response r={buffer,0,sizeof buffer-1};
+    static const char body[]="<?xml version=\"1.0\"?><d:propfind xmlns:d=\"DAV:\"><d:prop><d:quota-used-bytes/><d:quota-available-bytes/></d:prop></d:propfind>";
+    curl_easy_setopt(c,CURLOPT_URL,cloud->url);curl_easy_setopt(c,CURLOPT_PROTOCOLS_STR,"https");curl_easy_setopt(c,CURLOPT_USERAGENT,"PSCloud/" PSCLOUD_VERSION);
+    curl_easy_setopt(c,CURLOPT_USERNAME,cloud->user);curl_easy_setopt(c,CURLOPT_PASSWORD,cloud->password);curl_easy_setopt(c,CURLOPT_CAINFO,cloud->ca);
+    curl_easy_setopt(c,CURLOPT_CONNECTTIMEOUT,10L);curl_easy_setopt(c,CURLOPT_TIMEOUT,25L);curl_easy_setopt(c,CURLOPT_NOSIGNAL,1L);
+    curl_easy_setopt(c,CURLOPT_CUSTOMREQUEST,"PROPFIND");curl_easy_setopt(c,CURLOPT_POSTFIELDS,body);curl_easy_setopt(c,CURLOPT_POSTFIELDSIZE,(long)(sizeof body-1));
+    struct curl_slist *headers=curl_slist_append(NULL,"Depth: 0");headers=curl_slist_append(headers,"Content-Type: application/xml");curl_easy_setopt(c,CURLOPT_HTTPHEADER,headers);
+    curl_easy_setopt(c,CURLOPT_WRITEFUNCTION,collect);curl_easy_setopt(c,CURLOPT_WRITEDATA,&r);
+    CURLcode result=curl_easy_perform(c);long status=0;curl_easy_getinfo(c,CURLINFO_RESPONSE_CODE,&status);curl_slist_free_all(headers);curl_easy_cleanup(c);
+    if(result!=CURLE_OK)return 0;
+    buffer[r.size]=0;
+    char *u=strstr(buffer,"quota-used-bytes>"),*a=strstr(buffer,"quota-available-bytes>");
+    if(u)*used=strtoull(u+17,NULL,10);
+    if(a) {long long v=strtoll(a+22,NULL,10);*available=v>0?(unsigned long long)v:0;}
+    return status;
+}
+static void cloud_housekeeping_json(int sock) {
+    struct settings cloud={0};unsigned long long used=0,available=0;long status=0;int configured=!pscloud_configure(cloudpath,&cloud);
+    if(configured)status=cloud_quota(&cloud,&used,&available);
+    memset(cloud.password,0,sizeof cloud.password);
+    char json[256];snprintf(json,sizeof json,"{\"configured\":%s,\"keep\":%d,\"known\":%s,\"used\":%llu,\"available\":%llu}",configured?"true":"false",cloud_keep,status==207?"true":"false",used,available);
+    respond(sock,200,"application/json",json,strlen(json));
+}
+/* After uploads: prune each uploaded save's folder. Quiet; runs on the upload thread. */
+static void cloud_prune_uploaded(const struct background_job *job) {
+    if(cloud_keep<=0)return;
+    int dir=pscloud_open_directory(job->spool);if(dir<0)return;
+    webdav_quiet=1;
+    for(unsigned i=0;i<job->count;i++) {
+        char file[144],identity[160];snprintf(file,sizeof file,"%s",job->files[i]);size_t n=strlen(file);
+        if(n>6&&!strcmp(file+n-6,".ready"))file[n-6]=0;
+        snprintf(identity,sizeof identity,"%s.identity",file);struct pscloud_snapshot snap;
+        if(pscloud_snapshot_read(dir,identity,&snap))continue;
+        int removed=cloud_prune(&job->settings,&snap,cloud_keep);
+        if(removed>0) {char name[256];pscloud_app_name(appmeta,snap.title,name,sizeof name);pscloud_log("EVENT","Removed %d older cloud versions of %s (keeping the newest %d)",removed,name,cloud_keep);}
+    }
+    webdav_quiet=0;close(dir);
 }
 /* Starts the upload thread for a prepared job; frees the job on failure. */
 static int launch_background(struct background_job *job) {
@@ -1452,6 +1531,13 @@ static void action(int sock,const char *path,const char *form) {
     if(!strcmp(path,"/api/usb-copy-all")) {usb_copy_all(sock,form);return;}
     if(!strcmp(path,"/api/usb-delete")) {usb_delete(sock,form);return;}
     if(!strcmp(path,"/api/cleanup")) {cleanup_apply(sock,form);return;}
+    if(!strcmp(path,"/api/cloud-keep")) {
+        char keep[8];if(parameter(form,"keep",keep,sizeof keep)) {message(sock,400,"Choose how many versions to keep");return;}
+        int k=atoi(keep);if(k<0||k>999||(k==0&&strcmp(keep,"0"))) {message(sock,400,"Choose how many versions to keep");return;}
+        char path_conf[1400],text[32];snprintf(path_conf,sizeof path_conf,"%s/cloud-keep.conf",root);snprintf(text,sizeof text,"KEEP=%d\n",k);
+        if(atomic_config(path_conf,text)) {message(sock,500,"Setting could not be saved");return;}
+        cloud_keep=k;message(sock,200,k?"Older cloud versions will be removed after each upload":"All cloud versions are kept");return;
+    }
     if(!strcmp(path,"/api/links")) {
         char user[32],list[200]={0};if(parameter(form,"user",user,sizeof user)||!safe_word(user,16)) {message(sock,400,"Choose a profile");return;}
         if(!parameter(form,"linked",list,sizeof list)&&*list) {char copy[200];snprintf(copy,sizeof copy,"%s",list);
@@ -1487,6 +1573,15 @@ static void action(int sock,const char *path,const char *form) {
     }
     if(selection(form,&chosen)) {message(sock,400,"Unsupported save selection");return;}
     if(!strcmp(path,"/api/usb-save-game")) {usb_save_game(sock,form,&chosen);return;}
+    if(!strcmp(path,"/api/cloud-prune")) {
+        char keep[8];int k=cloud_keep;if(!parameter(form,"keep",keep,sizeof keep))k=atoi(keep);
+        if(k<=0) {message(sock,400,"Choose how many versions to keep first");return;}
+        if(background_active) {message(sock,409,"Wait for the upload to finish");return;}
+        struct settings cloud={0};if(pscloud_configure(cloudpath,&cloud)) {message(sock,400,"Connect your cloud first");return;}
+        int removed=cloud_prune(&cloud,&chosen,k);memset(cloud.password,0,sizeof cloud.password);
+        if(removed<0) {message(sock,502,"Cloud cleanup failed; nothing on this PS5 changed");return;}
+        char text[160];snprintf(text,sizeof text,removed?"Removed %d older cloud versions":"Nothing to remove (%d)",removed);message(sock,200,text);return;
+    }
     if(!strcmp(path,"/api/sync-get")) {
         char closed[8],file[128],sha[65],why[300];
         if(parameter(form,"closed",closed,sizeof closed)||strcmp(closed,"yes")) {message(sock,400,"Close the game and switch on Game closed first");return;}
@@ -1852,6 +1947,7 @@ static void serve(int sock,int *locked) {
     if(!strcmp(method,"GET") && !strcmp(url,"/api/slot-icon")) {slot_icon(sock,query);return;}
     if(!strcmp(method,"GET") && !strcmp(url,"/api/sync-status")) {sync_status_json(sock,query);return;}
     if(!strcmp(method,"GET") && !strcmp(url,"/api/cloud-profiles")) {cloud_profiles_json(sock);return;}
+    if(!strcmp(method,"GET") && !strcmp(url,"/api/cloud-housekeeping")) {cloud_housekeeping_json(sock);return;}
     if(!strcmp(method,"GET") && !strcmp(url,"/api/game-settings")) {game_settings_json(sock,query);return;}
     if(!strcmp(method,"GET") && !strcmp(url,"/api/storage")) {storage_json(sock);return;}
     if(!strcmp(method,"GET") && !strcmp(url,"/api/cleanup")) {cleanup_preview(sock);return;}
@@ -2150,7 +2246,7 @@ int main(int argc,char **argv) {
     move_into_folder();
 #endif
     snprintf(googlepath,sizeof googlepath,"%s/google.conf",root);pscloud_google_load(googlepath,&google);
-    game_settings_load();schedule_load();console_id_load();
+    game_settings_load();schedule_load();console_id_load();cloud_keep_load();
     pscloud_log_open(logpath);load_preferences();signal(SIGPIPE,SIG_IGN);signal(SIGTERM,stop_server);signal(SIGINT,stop_server);
     if(curl_global_init(CURL_GLOBAL_DEFAULT))return 2;
     int server=socket(AF_INET,SOCK_STREAM,0);if(server<0)return 2;

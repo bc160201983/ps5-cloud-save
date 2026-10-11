@@ -730,6 +730,24 @@ class DashboardTests(unittest.TestCase):
         self.request('/api/game-settings',{'title':'PPSA02433','close_backup':'1','backup_all':'1','auto_sync':'0','auto_apply':'1'})
         data=self.request('/api/game-settings?title=PPSA02433')[1];self.assertEqual((data['auto_sync'],data['auto_apply']),(False,False))  # replace needs download
 
+    def test_cloud_keeps_only_the_newest_versions_when_asked(self):
+        folder='/backups/Crash%20Bandicoot%204%20-%20PPSA02433/User-1eb70483/WholeGame/'
+        names=['portable-PPSA02433-'+c*32+'.zip' for c in 'abcd']
+        for i,name in enumerate(names):
+            self.fixture.objects[folder+name]=b'zip'
+            self.fixture.objects[folder+'.pscloud/'+name+'.identity']=('USER_ID=1eb70483\nTITLE=PPSA02433\nSAVE_NAME=WholeGame\nSHA256='+'0'*64+'\nCREATED_UNIX=%d\n'%(1000+i)).encode()
+        broken='portable-PPSA02433-'+'e'*32+'.zip';self.fixture.objects[folder+'.pscloud/'+broken+'.identity']=b'not an identity'
+        data=self.request('/api/cloud-housekeeping')[1];self.assertEqual((data['configured'],data['keep']),(True,0))
+        self.assertEqual(self.request('/api/cloud-prune',self.selected(slot='WholeGame'))[0],400)  # nothing chosen yet
+        self.assertEqual(self.request('/api/cloud-keep',{'keep':'x'})[0],400)
+        self.assertEqual(self.request('/api/cloud-keep',{'keep':'2'})[0],200)
+        self.assertEqual(self.request('/api/cloud-housekeeping')[1]['keep'],2)
+        status,data=self.request('/api/cloud-prune',self.selected(slot='WholeGame'));self.assertEqual(status,200,data);self.assertIn('Removed 2',data['message'])
+        left=sorted(p.rsplit('/',1)[1] for p in self.fixture.objects if p.startswith(folder) and p.endswith('.zip'))
+        self.assertEqual(left,names[2:])
+        self.assertIn(folder+'.pscloud/'+broken+'.identity',self.fixture.objects)  # unreadable: never deleted
+        self.assertIn('KEEP=2',(self.root/'cloud-keep.conf').read_text())
+
     def test_local_only_backup_then_explicit_upload(self):
         self.assertEqual(self.request('/api/preferences',{'auto_upload':'0','activity_refresh':'1'})[0],200)
         chosen=self.selected(closed='yes')
