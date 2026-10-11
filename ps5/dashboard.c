@@ -1867,9 +1867,9 @@ static void action(int sock,const char *path,const char *form) {
         char result[600]="",last[600]="No linked profile was found on your other PS5";int sent=0;
         for(int i=0;i<np&&!sent;i++)for(int k=0;k<nl&&!sent;k++) {
             char info[8192];size_t got=0;if(peer_get(peers[i],"/api/peer/info",info,sizeof info-1,&got,5)!=200) {snprintf(last,sizeof last,"Your other PS5 at %s is not reachable",peers[i]);continue;}
-            char needle[40];snprintf(needle,sizeof needle,"\"user\":\"%s\"",linked[k]);if(!strstr(info,needle))continue;
+            char needle[40];snprintf(needle,sizeof needle,"\"user\":\"%.16s\"",linked[k]);if(!strstr(info,needle))continue;
             CURL *c=curl_easy_init();if(!c)continue;char url_push[600],body[1024];struct peer_body r={body,0,sizeof body-1};
-            snprintf(url_push,sizeof url_push,"http://%s/api/peer/push?from=%s&to=%s&title=%s&replace=%s",peers[i],chosen.user,linked[k],chosen.title,!strcmp(replace,"1")?"1":"0");
+            snprintf(url_push,sizeof url_push,"http://%.63s/api/peer/push?from=%.16s&to=%.16s&title=%.9s&replace=%s",peers[i],chosen.user,linked[k],chosen.title,!strcmp(replace,"1")?"1":"0");
             curl_easy_setopt(c,CURLOPT_URL,url_push);curl_easy_setopt(c,CURLOPT_PROTOCOLS_STR,"http");curl_easy_setopt(c,CURLOPT_POST,1L);curl_easy_setopt(c,CURLOPT_POSTFIELDS,"");
             curl_easy_setopt(c,CURLOPT_CONNECTTIMEOUT,4L);curl_easy_setopt(c,CURLOPT_TIMEOUT,600L);curl_easy_setopt(c,CURLOPT_NOSIGNAL,1L);
             curl_easy_setopt(c,CURLOPT_WRITEFUNCTION,peer_collect);curl_easy_setopt(c,CURLOPT_WRITEDATA,&r);
