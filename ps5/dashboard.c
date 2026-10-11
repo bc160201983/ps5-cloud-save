@@ -559,7 +559,8 @@ static void storage_json(int sock) {
         char path[2900];escaped(path,sizeof path,places[i].path);
         int w=snprintf(json+pos,sizeof json-(size_t)pos,"%s{\"key\":\"%s\",\"label\":\"%s\",\"purpose\":\"%s\",\"path\":\"%s\",\"exists\":%s,\"files\":%u,\"bytes\":%llu}",
             i?",":"",places[i].key,places[i].label,places[i].purpose,path,exists?"true":"false",files,bytes);
-        if(w<0||(size_t)w>=sizeof json-(size_t)pos-64)break;pos+=w;
+        if(w<0||(size_t)w>=sizeof json-(size_t)pos-64)break;
+        pos+=w;
     }
     struct statvfs fs;unsigned long long free_bytes=0,total=0;
     if(!statvfs(root,&fs)) {free_bytes=(unsigned long long)fs.f_bavail*fs.f_frsize;total=(unsigned long long)fs.f_blocks*fs.f_frsize;}
@@ -596,7 +597,8 @@ static void usb_scan(const char *drive,const char *rel,unsigned depth,char *json
         else if(S_ISREG(st.st_mode)&&usb_relative(child)) {
             char shown[2100];escaped(shown,sizeof shown,child);
             int w=snprintf(json+*pos,cap-(size_t)*pos,"%s{\"path\":\"%s\",\"size\":%lld,\"modified\":%lld}",*count?",":"",shown,(long long)st.st_size,(long long)st.st_mtime);
-            if(w<0||(size_t)w>=cap-(size_t)*pos-16)break;*pos+=w;(*count)++;
+            if(w<0||(size_t)w>=cap-(size_t)*pos-16)break;
+            *pos+=w;(*count)++;
         }
     }
     closedir(d);
@@ -623,7 +625,8 @@ static void usb_file(int sock,const char *query) {
 static void usb_game_folder(const char *title,char *out,size_t max) {
     char name[256],clean[96];pscloud_app_name(appmeta,title,name,sizeof name);size_t n=0;
     for(const char *p=name;*p&&n<sizeof clean-1;p++) {unsigned char c=(unsigned char)*p;clean[n++]=(c<32||strchr("\\/:*?\"<>|",c))?'_':(char)c;}
-    while(n&&(clean[n-1]==' '||clean[n-1]=='.'))n--;clean[n]=0;
+    while(n&&(clean[n-1]==' '||clean[n-1]=='.'))n--;
+    clean[n]=0;
     if(!strcmp(clean,title)||!n)snprintf(out,max,"%s",title);else snprintf(out,max,"%s (%s)",clean,title);
 }
 /* Copy a PSCloud ZIP to <drive>/PSCloud/<kind>/<game>/ through a temporary file, then read
@@ -674,7 +677,8 @@ static void usb_copy_all(int sock,const char *form) {
         while((e=readdir(d))&&!stopped) {
             char file[128];size_t n=strlen(e->d_name);
             size_t cut=n>=6&&!strcmp(e->d_name+n-6,".ready")?6:n>=5&&!strcmp(e->d_name+n-5,".sent")?5:0;
-            if(n-cut>=sizeof file)continue;memcpy(file,e->d_name,n-cut);file[n-cut]=0;
+            if(n-cut>=sizeof file)continue;
+            memcpy(file,e->d_name,n-cut);file[n-cut]=0;
             if(!valid_archive(file))continue;
             char shown[600];int r=usb_copy(drive,k?"Shared saves":"Backups",source,file,shown,sizeof shown);
             if(r>0)copied++;else if(!r)same++;else failed++;
