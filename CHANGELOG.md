@@ -3,6 +3,24 @@
 Every release, newest first, with what was verified on a console and what was not.
 The current overview is in [README.md](README.md).
 
+## Version 0.30.1 — getting the newer save finishes where you clicked
+
+Fixes from the first console tests of 0.30.0:
+- **Get the newer save** and **Send to my other PS5** stopped with "Install this game on
+  this console" when the receiving PS5 did not have the game. The check now lets those saves
+  through, and the replace creates the slots.
+- **Get the newer save** no longer jumps to the Share tab. The banner shows **Newer save
+  ready** with **Replace my save now** (asks once, keeps a rollback copy) and **Not now**.
+- PSCloud checks itself whether a game is running. The "Game closed" switch is only needed
+  when it cannot tell.
+- On the game page, **Create the save slots this profile does not have yet** is on by
+  default. **Write the save anyway** is on when the game is not installed. A slot that cannot
+  be created (for example from an older ZIP) is skipped as before, instead of stopping the
+  replace.
+
+Verified by host tests. On the consoles, only the two refusals above were reproduced; the
+full flow is not yet verified there.
+
 ## Version 0.30.0 — real save times, saves the other PS5 does not have, lighter uploads
 
 **Sync compares when the game saved each slot.** The PS5 keeps, per save slot, the time the
