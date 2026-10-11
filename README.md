@@ -30,6 +30,11 @@ standalone legacy tools (pscloud-backup, -restore, -export, -upload, -download,
 Verified: host tests, including packages from 1.00 to 13.60, rejection of malformed
 firmware values, export and staged check while simulating firmware 9.60, and the
 dashboard forcing compact backups and reporting "untested" on 9.60.
+All 143 host tests and native builds passed in CI, and CI confirmed the dashboard
+build's SDK copy contains values for firmware 1.00 through 13.60. Deployed on
+2026-10-11 to both consoles: 11.40 and 7.00 each report v0.17.0 as tested firmware,
+existing preferences were kept, and 7.00 reports compact backups as required. No
+console on other firmware has run it yet.
 
 
 ## Version 0.16.0 — back up on game close, clearer receive
