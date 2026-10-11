@@ -1,6 +1,6 @@
-# PS5 Cloud Save — development milestone 0.18.1
+# PS5 Cloud Save — development milestone 0.18.2
 
-## Version 0.18.1 — game-close backup waits for the game to really close
+## Version 0.18.2 (0.18.1 corrected) — game-close backup waits for the game to really close
 
 **Bug found on the 11.40 console:** with "Back up automatically when a game closes"
 on, Marvel's Wolverine was backed up 7 times in 15 minutes while it was still being
@@ -9,9 +9,14 @@ only while writing it, so "no save mounted" was read as "game closed" after each
 autosave. One upload attempt also failed with transport 35 (a TLS connection error);
 that backup stayed queued and uploaded on the next attempt.
 
-**Fix:** before a game-close backup, the watcher now reads the console's process list
-(sysctl kern.proc plus sceKernelGetAppInfo, as in the SDK's ps sample) and waits
-while any process of that game is running. It logs once per wait ("still running;
+**Fix:** before a game-close backup, the watcher checks whether the game is running
+and waits while it is. It asks the system service for the foreground game
+(sceSystemServiceGetAppIdOfRunningBigApp and sceSystemServiceGetAppTitleId, the
+approach ProsperoMgr uses) and also scans the process list (sysctl kern.proc plus
+sceKernelGetAppInfo). A read-only diagnostic payload (pscloud-ps.elf) showed on
+11.40 that the title ID sits at byte 0x10 of the app info (eboot.bin = PPSA03671),
+not where the SDK ps sample's struct puts it; the first 0.18.1 build read the wrong
+bytes and never saw a running game, which this build corrects. It logs once per wait ("still running;
 backup waits until it is closed"). If the process list cannot be read, it only backs
 up after 5 minutes with no save changes. /api/save-status also reports `running`
 (true, false, or null when unknown), and Receive a shared save now waits on the

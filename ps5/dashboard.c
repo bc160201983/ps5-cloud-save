@@ -37,9 +37,12 @@
 #include <sys/types.h>
 #include <sys/sysctl.h>
 #include <sys/user.h>
-/* Layout as used by the SDK's ps sample. */
-struct pscloud_app_info {uint32_t app_id;uint64_t unknown1;uint32_t app_type;char title_id[10];char unknown2[0x3c];};
-int sceKernelGetAppInfo(pid_t pid,struct pscloud_app_info *info);
+/* Measured on 11.40: the title ID is at byte 0x10 of the app info (e.g. eboot.bin ->
+ * "PPSA03671"), not where the SDK ps sample's struct places it. Use a roomy raw buffer. */
+int sceKernelGetAppInfo(pid_t pid,void *info);
+/* The foreground game, as ProsperoMgr reads it. */
+int sceSystemServiceGetAppIdOfRunningBigApp(void);
+int sceSystemServiceGetAppTitleId(int app_id,char *title_id);
 #endif
 /* Whether a process of this game is running: 1 yes, 0 no, -1 process list unavailable.
  * Games may mount saves only while writing, so an unmounted save does not mean closed. */
@@ -52,6 +55,9 @@ static int title_running(const char *title) {
     if(strstr(list,"unavailable"))return -1;
     return strstr(list,title)!=NULL;
 #else
+    int app=sceSystemServiceGetAppIdOfRunningBigApp();
+    if(app>0) {char running[16]={0};if(!sceSystemServiceGetAppTitleId(app,running)&&!strncmp(running,title,9))return 1;}
+    /* Also scan processes: covers a game that is open but not the foreground app. */
     int mib[4]={CTL_KERN,KERN_PROC,KERN_PROC_PROC,0};size_t size=0;
     if(sysctl(mib,4,NULL,&size,NULL,0)||!size)return -1;
     size+=size/4;char *buffer=malloc(size);if(!buffer)return -1;
@@ -61,9 +67,9 @@ static int title_running(const char *title) {
         struct kinfo_proc *ki=(struct kinfo_proc *)(buffer+offset);
         if(ki->ki_structsize<=0||offset+(size_t)ki->ki_structsize>size)break;
         offset+=(size_t)ki->ki_structsize;seen++;
-        struct pscloud_app_info info;memset(&info,0,sizeof info);
-        if(sceKernelGetAppInfo(ki->ki_pid,&info))continue;
-        info.title_id[9]=0;if(!strcmp(info.title_id,title))found=1;
+        char info[256];memset(info,0,sizeof info);
+        if(sceKernelGetAppInfo(ki->ki_pid,info))continue;
+        if(!memcmp(info+0x10,title,9)&&!info[0x19])found=1;
     }
     free(buffer);return found?1:seen?0:-1;
 #endif
