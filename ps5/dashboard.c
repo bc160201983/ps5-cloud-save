@@ -917,7 +917,7 @@ static int session(const char *request) {
 static void game_icon(int sock,const char *query) {
     char title[10],path[1400];
     if(parameter(query,"title",title,sizeof title) || !pscloud_title_valid(title)) {reject(sock,400,"Invalid game ID");return;}
-    snprintf(path,sizeof path,"%s/%s",appmeta,title);int dir=pscloud_open_directory(path);
+    int dir=pscloud_app_meta_dir(appmeta,title,path,sizeof path)?-1:pscloud_open_directory(path);
     int fd=dir>=0?openat(dir,"icon0.png",O_RDONLY | O_NOFOLLOW | O_NONBLOCK):-1;if(dir>=0)close(dir);
     struct stat st;if(fd<0 || fstat(fd,&st) || !S_ISREG(st.st_mode) || st.st_size<8 || st.st_size>4*1024*1024) {if(fd>=0)close(fd);reject(sock,404,"Installed game icon unavailable");return;}
     unsigned char *data=malloc((size_t)st.st_size);if(!data) {close(fd);reject(sock,500,"Out of memory");return;}

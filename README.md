@@ -1,4 +1,20 @@
-# PS5 Cloud Save — development milestone 0.19.2
+# PS5 Cloud Save — development milestone 0.19.3
+
+## Version 0.19.3 — games that keep saves under another ID
+
+Ghost of Tsushima (PPSA03210) was installed on the 11.40 console but missing from
+the library. Its param.json sets `savedata.titleIdForSharing` to PPSA02225, so its
+saves live under PPSA02225, which the library showed as an unnamed "PPSA02225 · Game
+not installed" card. The game-info lookup (name, icon, version, installed check, and
+the version used by sharing) now resolves a save ID to:
+1. `<appmeta>/<ID>` when it exists (unchanged);
+2. otherwise a folder in appmeta or appmeta/external whose param.json `titleId` is
+   that ID, including folders named by content ID (an approach taken from
+   ProsperoMgr);
+3. otherwise an installed game whose `savedata.titleIdForSharing` is that ID.
+
+Verified by host tests that recreate this layout. Not yet checked on the console.
+
 
 ## Version 0.19.2 — live Activity page
 

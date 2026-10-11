@@ -125,6 +125,26 @@ class DashboardTests(unittest.TestCase):
         threading.Thread(target=lambda:self.request('/api/log?wait=1&since=%d'%data['size'])).start()
         time.sleep(0.5);started=time.monotonic();self.assertEqual(self.request('/api/state')[0],200);self.assertLess(time.monotonic()-started,3)
 
+    def test_saves_kept_under_a_shared_title_id_show_the_installed_game(self):
+        # Ghost of Tsushima (PPSA03210) keeps its saves under PPSA02225 via savedata.titleIdForSharing.
+        meta=self.root/'appmeta/PPSA03210';meta.mkdir(parents=True)
+        (meta/'param.json').write_text(json.dumps({'titleId':'PPSA03210','contentVersion':'02.024.000',
+            'savedata':{'titleIdForSharing':'PPSA02433'},'localizedParameters':{'en-US':{'titleName':'Ghost of Tsushima'}}}))
+        (meta/'icon0.png').write_bytes(b'\x89PNG\r\n\x1a\n'+b'\0'*16)
+        status,data=self.request('/api/save-status?user=1eb70483&title=PPSA02433');self.assertEqual(status,200)
+        self.assertEqual((data['name'],data['installed']),('Ghost of Tsushima',True))
+        connection=http.client.HTTPConnection('127.0.0.1',self.port,timeout=10)
+        connection.request('GET','/api/icon?title=PPSA02433',headers={'Cookie':self.cookie,'X-PSCloud-Request':'1'})
+        response=connection.getresponse();self.assertEqual(response.status,200);self.assertTrue(response.read().startswith(b'\x89PNG'));connection.close()
+        # A folder named by content ID on external storage is found by its titleId.
+        external=self.root/'appmeta/external/UP0000-PPSA12345_00-EXAMPLE0000000';external.mkdir(parents=True)
+        (external/'param.json').write_text(json.dumps({'titleId':'PPSA12345','localizedParameters':{'en-US':{'titleName':'External Game'}}}))
+        status,data=self.request('/api/save-status?user=1eb70483&title=PPSA12345');self.assertEqual(data['name'],'External Game')
+        # An installed game with its own ID still wins over a sharing match.
+        own=self.root/'appmeta/PPSA02433';own.mkdir(parents=True)
+        (own/'param.json').write_text(json.dumps({'titleId':'PPSA02433','contentVersion':'01.000.000','localizedParameters':{'en-US':{'titleName':'Crash Bandicoot 4'}}}))
+        self.assertEqual(self.request('/api/save-status?user=1eb70483&title=PPSA02433')[1]['name'],'Crash Bandicoot 4')
+
     def test_idle_browser_connection_does_not_block_dashboard(self):
         idle=http.client.HTTPConnection('127.0.0.1',self.port,timeout=5);idle.connect()
         try:
