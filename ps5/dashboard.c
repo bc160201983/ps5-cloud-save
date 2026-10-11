@@ -1001,12 +1001,14 @@ static void registry_publish(void) {
     snprintf(url,sizeof url,"%s/.pscloud-profiles/",cloud.url);webdav(&cloud,url,"MKCOL",&ignored);
     DIR *d=opendir(home);struct dirent *u;
     while(d&&(u=readdir(d))) {
-        if(!safe_word(u->d_name,16))continue;char name[64];if(profile_name(u->d_name,name,sizeof name))continue;
+        if(!safe_word(u->d_name,16))continue;
+        char name[64];if(profile_name(u->d_name,name,sizeof name))continue;
         for(char *q=name;*q;q++)if(*q=='"'||*q=='\\'||(unsigned char)*q<32)*q=' ';
         int n=snprintf(text,sizeof text,"NAME=%s\nCONSOLE=%s\nFIRMWARE=%x.%02x\nUPDATED=%lld\n",shown,console_id,firmware_id>>24,(firmware_id>>16)&255,(long long)time(NULL));
-        snprintf(url,sizeof url,"%s/.pscloud-profiles/%s.txt",cloud.url,u->d_name);(void)name;webdav_put(&cloud,url,text,(size_t)n);
+        snprintf(url,sizeof url,"%s/.pscloud-profiles/%s.txt",cloud.url,u->d_name);webdav_put(&cloud,url,text,(size_t)n);
     }
-    if(d)closedir(d);webdav_quiet=0;memset(cloud.password,0,sizeof cloud.password);
+    if(d)closedir(d);
+    webdav_quiet=0;memset(cloud.password,0,sizeof cloud.password);
 }
 /* links.conf: "<local profile> <cloud profile>[,<cloud profile>...]" */
 static int links_for(const char *user,char linked[4][17]) {
@@ -1118,7 +1120,8 @@ static int sync_fetch(const char *user,const char *title,char file[128],char sha
 /* After a replace: if it used the fetched sync file, this game is now in sync. */
 static void sync_after_restore(const char *user,const char *title,const char *file) {
     char pending[1400],line[256]={0};snprintf(pending,sizeof pending,"%s/sync/%s-%s.pending",root,user,title);FILE *f=fopen(pending,"r");if(!f)return;
-    if(!fgets(line,sizeof line,f))line[0]=0;fclose(f);char expect[200];snprintf(expect,sizeof expect,"FILE=%s\n",file);
+    if(!fgets(line,sizeof line,f))line[0]=0;
+    fclose(f);char expect[200];snprintf(expect,sizeof expect,"FILE=%s\n",file);
     if(!strcmp(line,expect)) {sync_mark(user,title);unlink(pending);}
 }
 static void cloud_profiles_json(int sock) {
@@ -1132,13 +1135,18 @@ static void cloud_profiles_json(int sock) {
             cursor+=5;char *end=strchr(cursor,'<');if(!end)break;char *begin=cursor;for(char *p=cursor;p<end;p++)if(*p=='/')begin=p+1;
             size_t n=(size_t)(end-begin);if(n<5||n>40||strncmp(end-4,".txt",4))continue;char id[32];memcpy(id,begin,n-4);id[n-4]=0;if(!safe_word(id,16))continue;
             char text[600];struct response t={text,0,sizeof text-1};snprintf(url,sizeof url,"%s/.pscloud-profiles/%s.txt",cloud.url,id);
-            if(webdav(&cloud,url,"GET",&t)!=200)continue;text[t.size]=0;
+            if(webdav(&cloud,url,"GET",&t)!=200)continue;
+            text[t.size]=0;
             char name[200]="",console[32]="",fw[16]="";char *a=strstr(text,"NAME="),*b=strstr(text,"CONSOLE="),*c=strstr(text,"FIRMWARE=");
-            if(a)sscanf(a+5,"%199[^\n]",name);if(b)sscanf(b+8,"%31[^\n]",console);if(c)sscanf(c+9,"%15[^\n]",fw);
+            if(a)sscanf(a+5,"%199[^\n]",name);
+            if(b)sscanf(b+8,"%31[^\n]",console);
+            if(c)sscanf(c+9,"%15[^\n]",fw);
             for(char *q=name;*q;q++)if(*q=='"'||*q=='\\'||(unsigned char)*q<32)*q=' ';
-            if(!safe_word(console,16))console[0]=0;for(char *q=fw;*q;q++)if(!strchr("0123456789.",*q))*q=0;
+            if(!safe_word(console,16))console[0]=0;
+            for(char *q=fw;*q;q++)if(!strchr("0123456789.",*q))*q=0;
             int w=snprintf(json+pos,sizeof json-(size_t)pos,"%s{\"user\":\"%s\",\"name\":\"%s\",\"console\":\"%s\",\"firmware\":\"%s\",\"this_console\":%s}",count?",":"",id,name,console,fw,!strcmp(console,console_id)?"true":"false");
-            if(w<0||(size_t)w>=sizeof json-(size_t)pos-600)break;pos+=w;count++;
+            if(w<0||(size_t)w>=sizeof json-(size_t)pos-600)break;
+            pos+=w;count++;
         }}
     free(xml);webdav_quiet=0;memset(cloud.password,0,sizeof cloud.password);
     pos+=snprintf(json+pos,sizeof json-(size_t)pos,"],\"links\":{");
@@ -1146,7 +1154,8 @@ static void cloud_profiles_json(int sock) {
     while(f&&fgets(line,sizeof line,f)) {char who[32],list[200];if(sscanf(line,"%31s %199s",who,list)!=2||!safe_word(who,16))continue;
         for(char *q=list;*q;q++)if(!strchr("0123456789abcdefABCDEF,",*q))*q=0;
         pos+=snprintf(json+pos,sizeof json-(size_t)pos,"%s\"%s\":\"%s\"",links++?",":"",who,list);}
-    if(f)fclose(f);snprintf(json+pos,sizeof json-(size_t)pos,"}}");respond(sock,200,"application/json",json,strlen(json));
+    if(f)fclose(f);
+    snprintf(json+pos,sizeof json-(size_t)pos,"}}");respond(sock,200,"application/json",json,strlen(json));
 }
 /* Background: games with "download newer saves automatically" are checked every 15 minutes. */
 static void sync_tick(void) {
@@ -1156,7 +1165,8 @@ static void sync_tick(void) {
         if(!copy[i].auto_sync||title_running(copy[i].title)>0)continue;
         DIR *users=opendir(home);struct dirent *u;
         while(users&&(u=readdir(users))&&!stopped) {
-            if(!safe_word(u->d_name,16))continue;char linked[4][17];if(!links_for(u->d_name,linked))continue;
+            if(!safe_word(u->d_name,16))continue;
+            char linked[4][17];if(!links_for(u->d_name,linked))continue;
             struct cloud_version other;long long local_time;webdav_quiet=1;int state=sync_state(u->d_name,copy[i].title,&other,&local_time);webdav_quiet=0;
             if(state!=SYNC_CLOUD)continue;
             char name[256],file[128],sha[65],why[300];pscloud_app_name(appmeta,copy[i].title,name,sizeof name);
