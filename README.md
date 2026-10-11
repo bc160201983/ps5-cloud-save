@@ -1,4 +1,27 @@
-# PS5 Cloud Save — development milestone 0.22.0
+# PS5 Cloud Save — development milestone 0.22.1
+
+## Version 0.22.1 — USB without duplicates, plain wording
+
+Found while testing on the 11.40 console with a USB drive: every press of "Save current
+save to USB" wrote another identical copy (six 5.2 KB copies of the same save), because
+each export gets a new name and time. Now:
+- **Save to USB now** (`/api/usb-save-game`) exports the game, copies it, and removes the
+  temporary export from the PS5. Before copying, PSCloud compares the save's contents
+  (the checksums of its save slots, ignoring when it was exported) with the files already
+  on the drive; an unchanged save is reported as "Already on USB, unchanged" and nothing
+  is written. "Copy older backups" and "Copy all saves to USB" use the same check.
+- New copies go to one folder per game: `PSCloud/<Game name> (<ID>)/`. Files in the
+  earlier `Backups/` and `Shared saves/` folders are still listed and recognised.
+- Each file shows as "Save from <date>", the newest marked **Newest**, with
+  **Restore…** (opens this game's Share tab with the file loaded, ready for the usual
+  check, then replace with a rollback copy) and **Delete** (removes only the copy on the
+  drive, after confirmation; `/api/usb-delete`, limited to the PSCloud folder).
+- The buttons explain themselves: "Save to USB now" (this game's progress as it is right
+  now) and "Also copy older backups".
+
+Verified by host tests (unchanged save not copied twice, no export left behind, game must
+be confirmed closed, delete limited to PSCloud) and a local preview.
+
 
 ## Where PSCloud keeps your files
 
@@ -20,9 +43,11 @@ The dashboard's **Storage** page shows each location with its size and file coun
 PSCloud only writes inside the drive's `PSCloud` folder:
 
 ```
-PSCloud/Backups/<Game name> (<ID>)/portable-<ID>-<snapshot>.zip
-PSCloud/Shared saves/<Game name> (<ID>)/portable-<ID>-<snapshot>.zip
+PSCloud/<Game name> (<ID>)/portable-<ID>-<snapshot>.zip
 ```
+
+(0.20.0 to 0.22.0 used `PSCloud/Backups/…` and `PSCloud/Shared saves/…`; those files are
+still listed.) A save whose contents are already on the drive is not copied again.
 
 Every copy is written to a temporary file first, then read back and compared by
 SHA-256 before it counts as copied. A shared save ZIP placed anywhere under `PSCloud/`

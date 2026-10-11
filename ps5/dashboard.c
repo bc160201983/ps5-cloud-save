@@ -631,22 +631,62 @@ static void usb_game_folder(const char *title,char *out,size_t max) {
 }
 /* Copy a PSCloud ZIP to <drive>/PSCloud/<kind>/<game>/ through a temporary file, then read
  * the copy back and compare checksums. 1 = copied, 0 = identical copy already there. */
+/* What a save package contains, ignoring when it was made: SHA-256 of its manifest's SLOT
+ * lines (each slot's name, size and checksum). Two exports of an unchanged save match. */
+static int package_fingerprint(const char *path,char out[65]) {
+    int fd=open(path,O_RDONLY|O_NOFOLLOW);if(fd<0)return -1;
+    unsigned char head[65536];ssize_t n=pread(fd,head,sizeof head,0);close(fd);
+    if(n<30||memcmp(head,"PK\3\4",4))return -1;
+    size_t name=head[26]|((size_t)head[27]<<8),extra=head[28]|((size_t)head[29]<<8),size=head[18]|((size_t)head[19]<<8)|((size_t)head[20]<<16)|((size_t)head[21]<<24);
+    if(name!=12||memcmp(head+30,"manifest.txt",12)||30+name+extra+size>(size_t)n)return -1;
+    const char *text=(const char *)head+30+name+extra,*end=text+size;
+    EVP_MD_CTX *ctx=EVP_MD_CTX_new();if(!ctx||!EVP_DigestInit_ex(ctx,EVP_sha256(),NULL)) {EVP_MD_CTX_free(ctx);return -1;}
+    unsigned lines=0;
+    for(const char *line=text;line<end;) {
+        const char *next=memchr(line,'\n',(size_t)(end-line));size_t len=next?(size_t)(next-line):(size_t)(end-line);
+        if(len>5&&!memcmp(line,"SLOT=",5)) {EVP_DigestUpdate(ctx,line,len);EVP_DigestUpdate(ctx,"\n",1);lines++;}
+        if(!next)break;line=next+1;
+    }
+    unsigned char digest[32];unsigned dsize=0;int ok=lines&&EVP_DigestFinal_ex(ctx,digest,&dsize)&&dsize==32;EVP_MD_CTX_free(ctx);
+    if(!ok)return -1;
+    for(unsigned i=0;i<32;i++)snprintf(out+2*i,3,"%02x",digest[i]);return 0;
+}
+/* An existing copy of this save on the drive: same file checksum, or the same contents
+ * (fingerprint) under another name. Looks in the game folder and the older layout's folders. */
+static int usb_find_same(const char *drive,const char *folder,const char *hash,const char *fingerprint,char *found,size_t max) {
+    static const char *const places[]={"","Backups/","Shared saves/"};
+    for(unsigned i=0;i<3;i++) {
+        char dir[1600];snprintf(dir,sizeof dir,"%s/PSCloud/%s%s",drive,places[i],folder);
+        DIR *d=opendir(dir);if(!d)continue;struct dirent *e;
+        while((e=readdir(d))) {
+            size_t n=strlen(e->d_name);if(e->d_name[0]=='.'||n<5||strcasecmp(e->d_name+n-4,".zip"))continue;
+            char path[2000],other[65];snprintf(path,sizeof path,"%s/%s",dir,e->d_name);
+            int same=(*fingerprint&&!package_fingerprint(path,other)&&!strcmp(other,fingerprint));
+            if(!same) {int fd=open(path,O_RDONLY|O_NOFOLLOW);same=fd>=0&&!pscloud_file_hash(fd,other)&&!strcmp(other,hash);if(fd>=0)close(fd);}
+            if(same) {snprintf(found,max,"PSCloud/%s%s/%s",places[i],folder,e->d_name);closedir(d);return 1;}
+        }
+        closedir(d);
+    }
+    return 0;
+}
+/* Copy a PSCloud ZIP to <drive>/PSCloud/<Game (ID)>/ through a temporary file, then read the
+ * copy back and compare checksums. 1 = copied, 0 = the same save is already there. */
 static int usb_copy(const char *drive,const char *kind,const char *source_dir,const char *file,char *shown,size_t shown_max) {
+    (void)kind; /* backups and shared saves share one format and one folder per game */
     char title[10];memcpy(title,file+(strncmp(file,"portable-",9)?10:9),9);title[9]=0;
     char folder[200],dir[1600],src[1600],dst[2000],tmp[2000];usb_game_folder(title,folder,sizeof folder);
     snprintf(src,sizeof src,"%s/%s",source_dir,file);
-    snprintf(dir,sizeof dir,"%s/PSCloud",drive);(void)mkdir(dir,0777);
-    snprintf(dir,sizeof dir,"%s/PSCloud/%s",drive,kind);(void)mkdir(dir,0777);
-    snprintf(dir,sizeof dir,"%s/PSCloud/%s/%s",drive,kind,folder);(void)mkdir(dir,0777);
-    snprintf(dst,sizeof dst,"%s/%s",dir,file);snprintf(tmp,sizeof tmp,"%s/.%s.part",dir,file);
-    snprintf(shown,shown_max,"PSCloud/%s/%s/%s",kind,folder,file);
     int in=open(src,O_RDONLY|O_NOFOLLOW);
     if(in<0) {snprintf(src,sizeof src,"%s/%s.ready",source_dir,file);in=open(src,O_RDONLY|O_NOFOLLOW);} /* waiting to upload */
     if(in<0) {snprintf(src,sizeof src,"%s/%s.sent",source_dir,file);in=open(src,O_RDONLY|O_NOFOLLOW);} /* already uploaded */
     if(in<0)return -1;
-    char want[65],have[65];if(pscloud_file_hash(in,want)) {close(in);return -1;}
-    int existing=open(dst,O_RDONLY|O_NOFOLLOW);
-    if(existing>=0) {int same=!pscloud_file_hash(existing,have)&&!strcmp(want,have);close(existing);if(same) {close(in);return 0;}}
+    char want[65],have[65],fingerprint[65]={0};if(pscloud_file_hash(in,want)) {close(in);return -1;}
+    if(package_fingerprint(src,fingerprint))fingerprint[0]=0;
+    if(usb_find_same(drive,folder,want,fingerprint,shown,shown_max)) {close(in);return 0;}
+    snprintf(dir,sizeof dir,"%s/PSCloud",drive);(void)mkdir(dir,0777);
+    snprintf(dir,sizeof dir,"%s/PSCloud/%s",drive,folder);(void)mkdir(dir,0777);
+    snprintf(dst,sizeof dst,"%s/%s",dir,file);snprintf(tmp,sizeof tmp,"%s/.%s.part",dir,file);
+    snprintf(shown,shown_max,"PSCloud/%s/%s",folder,file);
     if(lseek(in,0,SEEK_SET)) {close(in);return -1;}
     int out=open(tmp,O_WRONLY|O_CREAT|O_TRUNC,0666);if(out<0) {close(in);return -1;}
     char *buffer=malloc(1U<<20);int bad=!buffer;
@@ -657,6 +697,26 @@ static int usb_copy(const char *drive,const char *kind,const char *source_dir,co
     if(!bad) {int check=open(dst,O_RDONLY|O_NOFOLLOW);bad=check<0||pscloud_file_hash(check,have)||strcmp(want,have);if(check>=0)close(check);}
     if(bad) {unlink(tmp);pscloud_log("WARN","USB copy of %s failed or did not verify",file);return -1;}
     pscloud_log("EVENT","Copied %s to USB (%s), checksum verified",file,shown);return 1;
+}
+/* Save a game's current progress straight to USB: export, copy (skipped when unchanged),
+ * then drop the temporary export so it does not pile up on the PS5. */
+static void usb_save_game(int sock,const char *form,const struct pscloud_snapshot *chosen) {
+    char drive[1200],closed[8],file[128],hash[65],shown[600],text[900];
+    if(usb_drive(form,drive,sizeof drive)) {message(sock,400,"Plug in a USB drive (exFAT) and choose it");return;}
+    if(parameter(form,"closed",closed,sizeof closed)||strcmp(closed,"yes")) {message(sock,400,"Close the game and switch on Game closed first");return;}
+    if(pscloud_share_game(home,root,appmeta,chosen->user,chosen->title,0,NULL,0,NULL,file,hash)) {message(sock,500,"Could not read this game's save; check Activity");return;}
+    char share[1400];snprintf(share,sizeof share,"%s/share",root);
+    int r=usb_copy(drive,"Saves",share,file,shown,sizeof shown);
+    char path[1600];snprintf(path,sizeof path,"%s/%s",share,file);unlink(path);
+    if(r<0) {message(sock,500,"Copy to USB failed; check the drive has space and is exFAT");return;}
+    snprintf(text,sizeof text,r?"Saved to USB: %s":"Already on USB, unchanged: %s",shown);message(sock,200,text);
+}
+static void usb_delete(int sock,const char *form) {
+    char drive[1200],rel[512],path[1800];
+    if(usb_drive(form,drive,sizeof drive)||parameter(form,"path",rel,sizeof rel)||!usb_relative(rel)) {message(sock,400,"USB file not found");return;}
+    snprintf(path,sizeof path,"%s/%s",drive,rel);struct stat st;
+    if(lstat(path,&st)||!S_ISREG(st.st_mode)||unlink(path)) {message(sock,404,"USB file not found");return;}
+    pscloud_log("EVENT","Deleted %s from USB",rel);message(sock,200,"Deleted from USB");
 }
 static void usb_copy_action(int sock,const char *form) {
     char drive[1200],kind[16],file[128],shown[600];
@@ -952,6 +1012,7 @@ static void action(int sock,const char *path,const char *form) {
     if(!strcmp(path,"/api/sync-start")) {start_background(sock,form);return;}
     if(!strcmp(path,"/api/usb-copy")) {usb_copy_action(sock,form);return;}
     if(!strcmp(path,"/api/usb-copy-all")) {usb_copy_all(sock,form);return;}
+    if(!strcmp(path,"/api/usb-delete")) {usb_delete(sock,form);return;}
     if(!strcmp(path,"/api/sync")) {int result=upload_queue();message(sock,result?502:200,result?"Upload pending; local backups retained":"Queued backups uploaded");return;}
     if(!strcmp(path,"/api/sync-one")) {
         char file[128],ready[144];struct pscloud_snapshot s;
@@ -960,6 +1021,7 @@ static void action(int sock,const char *path,const char *form) {
         message(sock,result?502:200,result?"Selected upload pending; local backup retained":"Selected backup available in cloud");return;
     }
     if(selection(form,&chosen)) {message(sock,400,"Unsupported save selection");return;}
+    if(!strcmp(path,"/api/usb-save-game")) {usb_save_game(sock,form,&chosen);return;}
     if(!strncmp(path,"/api/share-",11)) {
         char file[128]={0},sha[65]={0},confirm[8],expected[65],directory[1400];
         if(parameter(form,"closed",closed,sizeof closed)||strcmp(closed,"yes")) {message(sock,400,"Close the selected game and confirm before sharing");return;}

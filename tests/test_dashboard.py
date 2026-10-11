@@ -187,13 +187,13 @@ class DashboardTests(unittest.TestCase):
         self.assertTrue(places['shared']['path'].endswith('/share'));self.assertTrue(places['log']['path'].endswith('pscloud.log'))
         self.assertEqual([d['id'] for d in self.request('/api/usb')[1]['drives']],['usb0'])
         status,data=self.request('/api/usb-copy',{'drive':'usb0','kind':'backup','file':backup});self.assertEqual(status,200,data)
-        copied=usb/'usb0/PSCloud/Backups/Crash Bandicoot 4 (PPSA02433)'/backup
+        copied=usb/'usb0/PSCloud/Crash Bandicoot 4 (PPSA02433)'/backup
         self.assertEqual(copied.read_bytes(),b'backup-bytes');self.assertIn('Copied to USB',data['message'])
         self.assertIn('Already on USB',self.request('/api/usb-copy',{'drive':'usb0','kind':'backup','file':backup})[1]['message'])
         other='portable-PPSA01341-'+'c'*32+'.zip';(self.root/'share'/other).write_bytes(b'other-game')
         status,data=self.request('/api/usb-copy-all',{'drive':'usb0','title':'PPSA02433'});self.assertEqual(status,200,data)
         self.assertFalse(any(p.name==other for p in usb.rglob('*.zip')))  # only the chosen game
-        self.assertEqual((usb/'usb0/PSCloud/Shared saves/Crash Bandicoot 4 (PPSA02433)'/shared).read_bytes(),b'shared-bytes')
+        self.assertEqual((usb/'usb0/PSCloud/Crash Bandicoot 4 (PPSA02433)'/shared).read_bytes(),b'shared-bytes')
         self.assertIn('1 copied, 1 already there',data['message'])
         files=self.request('/api/usb-files?drive=usb0')[1]['files'];self.assertEqual(len(files),2)
         self.assertEqual(self.request('/api/usb-copy-all',{'drive':'usb0','title':'bad'})[0],400)
@@ -203,6 +203,20 @@ class DashboardTests(unittest.TestCase):
             with self.subTest(query=query):self.assertNotEqual(self.binary('/api/usb-file?'+urllib.parse.urlencode(query))[0],200)
         self.assertEqual(self.request('/api/usb-copy',{'drive':'usb0','kind':'backup','file':'../x.zip'})[0],400)
         self.assertEqual(list((usb/'usb0').iterdir()),[usb/'usb0/PSCloud'])  # nothing written outside PSCloud
+        # The same save exported again (new name, new export time) is recognised and not copied twice.
+        import test_sharing
+        first='portable-PPSA02433-'+'d'*32+'.zip';again='portable-PPSA02433-'+'e'*32+'.zip'
+        (self.root/'share'/first).write_bytes(test_sharing.portable(title='PPSA02433',firmware='07000000'))
+        (self.root/'share'/again).write_bytes(test_sharing.portable(title='PPSA02433',firmware='11400000'))
+        self.assertIn('Copied to USB',self.request('/api/usb-copy',{'drive':'usb0','kind':'shared','file':first})[1]['message'])
+        status,data=self.request('/api/usb-copy',{'drive':'usb0','kind':'shared','file':again})
+        self.assertEqual(status,200);self.assertIn('Already on USB',data['message']);self.assertIn(first,data['message'])
+        self.assertFalse(any(p.name==again for p in usb.rglob('*.zip')))
+        # Delete stays inside PSCloud.
+        target='PSCloud/Crash Bandicoot 4 (PPSA02433)/'+first
+        self.assertEqual(self.request('/api/usb-delete',{'drive':'usb0','path':'PSCloud/../x.zip'})[0],400)
+        self.assertEqual(self.request('/api/usb-delete',{'drive':'usb0','path':target})[0],200)
+        self.assertFalse((usb/'usb0'/target).exists())
 
     def test_idle_browser_connection_does_not_block_dashboard(self):
         idle=http.client.HTTPConnection('127.0.0.1',self.port,timeout=5);idle.connect()
@@ -516,6 +530,21 @@ class DashboardTests(unittest.TestCase):
         self.assertEqual(status,200,data);self.assertGreater(time.monotonic()-started,2)
         self.assertIn('Waiting for the current upload to finish',(self.root/'pscloud.log').read_text())
         self.assertEqual(len(list(spool.glob('portable-PPSA02433-*.zip.ready'))),1)
+
+    def test_save_game_to_usb_skips_an_unchanged_save_and_leaves_no_export_behind(self):
+        import test_portable
+        self.process.terminate();self.process.communicate(timeout=5)
+        fixture=self.fixture.root/'compact';test_portable.PortableTests.sfo(self,fixture/SLOT,SLOT,b'\x44'*8)
+        metadata=self.root/'appmeta/PPSA02433';metadata.mkdir(parents=True);(metadata/'param.json').write_text(json.dumps({'contentVersion':'01.000.002'}))
+        usb=self.fixture.root/'usb';(usb/'usb0').mkdir(parents=True)
+        self.start_server(PSCLOUD_TEST_GENERIC_PAYLOADS=str(fixture),PSCLOUD_TEST_USB_ROOT=str(usb))
+        form=self.selected(slot='WholeGame',drive='usb0')
+        self.assertEqual(self.request('/api/usb-save-game',form)[0],400)  # game not confirmed closed
+        status,data=self.request('/api/usb-save-game',dict(form,closed='yes'));self.assertEqual(status,200,data);self.assertIn('Saved to USB',data['message'])
+        status,data=self.request('/api/usb-save-game',dict(form,closed='yes'));self.assertEqual(status,200,data);self.assertIn('Already on USB, unchanged',data['message'])
+        self.assertEqual(len(list(usb.rglob('portable-PPSA02433-*.zip'))),1)
+        self.assertEqual(list((self.root/'share').glob('portable-*.zip')),[])
+        self.assertEqual(self.image.read_bytes(),self.original)
 
     def test_game_close_backup_waits_while_the_game_is_still_running(self):
         import test_portable
