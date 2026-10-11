@@ -86,3 +86,29 @@ once and close it, then continue the import and check automatically.
 Still open before PSCloud can create a missing slot: what a new slot's
 `sce_sys/param.sfo` must hold (test 2 compares two slots of one game), and
 whether the system and game accept a slot added to `savedata.db`.
+
+## Create test 2 (11.40, 2026-10-11): two slots of one game compared
+
+Release `create-test-2` repeated test 1 (same result). It then opened copies of
+two slots of PPSA10595 (`global1`, `customizesavedata01`) inside
+`/data/pscloud/create-test`:
+
+- `sce_sys` holds `param.sfo` (2860 bytes, 15 entries) and `keystone`.
+- These entries are the same in both slots: `ACCOUNT_ID` (little-endian, equals the
+  DB `account_id`), `ATTRIBUTE`, `CATEGORY` "sd", `FORMAT` "ppr", `LINEAGE_ID`
+  (zero), `SAVEDATA_LIST_PARAM`, `SYSTEM_BLOCKS` and `TITLE_ID`.
+- These are per slot: `SAVEDATA_DIRECTORY`, `MAINTITLE`, `SUBTITLE`, `DETAIL`,
+  `SAVEDATA_BLOCKS` (equals DB `blocks`), and `SAVEDATA_REVISION`. The revision is
+  a time-based UUID whose node part (`9047484fb504`) is the same for both slots.
+- `PARAMS` (1024 bytes) layout as seen:
+  - +0x04: the profile number.
+  - +0x08: 32 bytes, the same in both slots (not tied to the slot).
+  - +0x28: 1.
+  - Then the title ID twice.
+  - +0x4c: a per-slot number (0x133 and 0x2).
+  - +0x5c: a per-slot number (0x14 and 0x10).
+  - +0x68: the slot's save time as Unix seconds. It equals the DB `mtime` exactly.
+
+So a missing slot's metadata can be built from another slot of the same game on
+the receiving console. Still to be tested: whether the system and game accept a
+slot added to `savedata.db`.
