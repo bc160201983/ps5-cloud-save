@@ -297,12 +297,13 @@ int pscloud_create_slot(const char *home,const char *system_root,const char *roo
         if(!sfo||!keystone) {free(sfo);free(keystone);goto done;}
         memcpy(sfo,from->sfo,from->sfo_size);memcpy(keystone,from->keystone,from->keystone_size);
         unsigned char *account=sfo_find(sfo,from->sfo_size,"ACCOUNT_ID",&index,&length,&m),*mine=sfo_find(sys.sfo,sys.sfo_size,"ACCOUNT_ID",&index,&tl,&tm);
-        unsigned char *params=sfo_find(sfo,from->sfo_size,"PARAMS",&index,&length,&m),*my_params=sfo_find(sys.sfo,sys.sfo_size,"PARAMS",&index,&tl,&tm);
+        size_t plen=0;unsigned char *params=sfo_find(sfo,from->sfo_size,"PARAMS",&index,&plen,&m),*my_params=sfo_find(sys.sfo,sys.sfo_size,"PARAMS",&index,&tl,&tm);
         unsigned char *title_field=sfo_find(sfo,from->sfo_size,"TITLE_ID",&index,&length,&m);
         int bad=!account||!mine||!title_field||memcmp(title_field,title,10);
         if(!bad)memcpy(account,mine,8);
-        if(!bad&&params&&my_params)memcpy(params+4,my_params+4,4);
-        if(!bad&&params) {char g[17];memcpy(g,params+0x2c,16);g[16]=0;if(pscloud_title_valid(g))snprintf(game_title,sizeof game_title,"%s",g);}
+        (void)my_params;
+        if(!bad&&params&&plen>=8)put32(params+4,(uint32_t)strtoul(user,NULL,16)); /* PARAMS+0x04 is the profile number */
+        if(!bad&&params&&plen>=0x3c) {char g[17];memcpy(g,params+0x2c,16);g[16]=0;if(pscloud_title_valid(g))snprintf(game_title,sizeof game_title,"%s",g);}
         if(bad) {free(sfo);free(keystone);*why="The package's save metadata does not belong to this game";goto done;}
         free(sys.sfo);free(sys.keystone);sys.sfo=sfo;sys.sfo_size=from->sfo_size;sys.keystone=keystone;sys.keystone_size=from->keystone_size;
         if(!sys.keystone_st.st_mode)sys.keystone_st=sys.sfo_st;
