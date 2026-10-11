@@ -588,7 +588,7 @@ class DashboardTests(unittest.TestCase):
         self.assertEqual(self.binary('/api/slot-icon?'+urllib.parse.urlencode({'user':'1eb70483','title':'PPSA02433','slot':'../x'}))[0],400)
 
     def test_per_game_settings_are_saved_and_default_to_on(self):
-        self.assertEqual(self.request('/api/game-settings?title=PPSA02433')[1],{'title':'PPSA02433','close_backup':True,'backup_all':True})
+        self.assertEqual(self.request('/api/game-settings?title=PPSA02433')[1],{'title':'PPSA02433','close_backup':True,'backup_all':True,'auto_sync':False,'auto_apply':False})
         status,_=self.request('/api/game-settings',{'title':'PPSA02433','close_backup':'0','backup_all':'1'});self.assertEqual(status,200)
         self.assertEqual(self.request('/api/game-settings?title=PPSA02433')[1]['close_backup'],False)
         self.assertIn('PPSA02433 CLOSE=0 ALL=1',(self.root/'games.conf').read_text())
