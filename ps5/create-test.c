@@ -18,6 +18,7 @@
 #include "common/appmeta.h"
 #include "common/log.h"
 #include "common/mount.h"
+#include "common/snapshot.h"
 
 #define FOLDER "/data/pscloud/create-test"
 #define IMAGE FOLDER "/new-save.img"
@@ -145,7 +146,7 @@ static void dump_sfo(const char *label,const char *path) {
     }
     free(data);
 }
-static void sibling_check(struct pscloud_mount_state *state) {
+__attribute__((unused)) static void sibling_check(struct pscloud_mount_state *state) {
     DIR *users=opendir("/user/home");struct dirent *u;int done=0;
     while(users&&(u=readdir(users))&&!done) {
         if(u->d_name[0]=='.')continue;
@@ -181,6 +182,58 @@ static void sibling_check(struct pscloud_mount_state *state) {
     if(!done)say("no game with two save slots under 256 MB found");
 }
 
+/* Read-only: for one small slot of every game (and every Ghost of Tsushima slot),
+ * print the start of PARAMS and a hash of sce_sys/keystone, to see what that
+ * 32-byte value depends on. Works on copies like sibling_check. */
+static void params_head(const char *label,const char *sfo) {
+    int fd=open(sfo,O_RDONLY|O_NOFOLLOW);struct stat st;
+    if(fd<0||fstat(fd,&st)||st.st_size<20||st.st_size>65536) {say("%s param.sfo unreadable",label);if(fd>=0)close(fd);return;}
+    size_t size=(size_t)st.st_size;unsigned char *data=malloc(size);ssize_t n=data?read(fd,data,size):-1;close(fd);
+    int blank=1;for(ssize_t i=0;i<n;i++)if(data[i]) {blank=0;break;}
+    if(n!=(ssize_t)size||blank||le32(data)!=0x46535000) {say("%s param.sfo %s (size %zu)",label,blank?"all zero":"not an SFO",size);free(data);return;}
+    size_t keys=le32(data+8),values=le32(data+12),count=le32(data+16);
+    for(size_t i=0;i<count&&20+16*i+16<=size;i++) {
+        const unsigned char *e=data+20+16*i;size_t ko=keys+le16(e),offset=values+le32(e+12),length=le32(e+4);
+        if(ko>=size||offset>size||length>size-offset||strcmp((const char *)data+ko,"PARAMS")||length<0x70)continue;
+        char line[0x70*2+1];for(size_t k=0;k<0x70;k++)snprintf(line+2*k,3,"%02x",data[offset+k]);say("%s PARAMS %s",label,line);
+    }
+    free(data);
+}
+static void keystone_hash(const char *label,const char *path) {
+    int fd=open(path,O_RDONLY|O_NOFOLLOW);char hash[65];
+    if(fd<0) {say("%s keystone missing",label);return;}
+    struct stat st;fstat(fd,&st);int bad=pscloud_file_hash(fd,hash);close(fd);say("%s keystone %lld bytes sha256 %s",label,(long long)st.st_size,bad?"?":hash);
+}
+static void survey(struct pscloud_mount_state *state) {
+    DIR *users=opendir("/user/home");struct dirent *u;int games_done=0;
+    while(users&&(u=readdir(users))) {
+        if(u->d_name[0]=='.')continue;
+        char base[300];snprintf(base,sizeof base,"/user/home/%.32s/savedata_prospero",u->d_name);DIR *games=opendir(base);struct dirent *g;
+        while(games&&(g=readdir(games))) {
+            if(!pscloud_title_valid(g->d_name))continue;
+            int ghost=!strcmp(g->d_name,"PPSA02225");if(!ghost&&games_done>=14)continue;
+            char folder[400];snprintf(folder,sizeof folder,"%s/%s",base,g->d_name);DIR *f=opendir(folder);struct dirent *e;int taken=0;
+            while(f&&(e=readdir(f))&&(ghost||!taken)) {
+                struct stat st;char path[700];snprintf(path,sizeof path,"%s/%.200s",folder,e->d_name);
+                if(strncmp(e->d_name,"sdimg_",6)||!strncmp(e->d_name,"sdimg_sce_bu",12)||stat(path,&st)||!S_ISREG(st.st_mode)||st.st_size>(ghost?512LL:64LL)*1024*1024)continue;
+                if(!ghost&&!strcmp(e->d_name,"sdimg_sce_sdmemory"))continue;
+                char label[120];snprintf(label,sizeof label,"%.12s %s %.40s",u->d_name,g->d_name,e->d_name+6);
+                if(copy_file(path,FOLDER "/survey.img")) {say("%s copy failed",label);continue;}
+                if(pscloud_mount_copy(state,FOLDER "/survey.img",MOUNT)) {say("%s would not open",label);unlink(FOLDER "/survey.img");continue;}
+                char sfo[300],key[300];snprintf(sfo,sizeof sfo,"%s/sce_sys/param.sfo",MOUNT);snprintf(key,sizeof key,"%s/sce_sys/keystone",MOUNT);
+                params_head(label,sfo);keystone_hash(label,key);
+                if(ghost)dump_sfo(label,sfo);
+                if(pscloud_mount_end(state,MOUNT)) {say("%s did not close; stop",label);if(f)closedir(f);if(games)closedir(games);if(users)closedir(users);return;}
+                unlink(FOLDER "/survey.img");taken=1;
+            }
+            if(f)closedir(f);
+            if(taken&&!ghost)games_done++;
+        }
+        if(games)closedir(games);
+    }
+    if(users)closedir(users);
+}
+
 int main(void) {
     mkdir("/data/pscloud",0700);mkdir(FOLDER,0700);
     result=fopen(FOLDER "/result.txt","w");
@@ -197,7 +250,7 @@ int main(void) {
     struct pscloud_mount_state state;memset(&state,0,sizeof state);
     if(pscloud_mount_begin(&state)) {say("RESULT: could not get save-mount rights; stop.");goto out;}
     unlink(IMAGE);mkdir(MOUNT,0700);
-    sibling_check(&state);
+    survey(&state);
     if(state.mounted) {say("RESULT: a copy is still open; stop.");goto leave;}
     int fd=open(IMAGE,O_CREAT|O_TRUNC|O_RDWR,0600);
     if(fd<0) {say("RESULT: cannot create %s (errno %d)",IMAGE,errno);goto leave;}
