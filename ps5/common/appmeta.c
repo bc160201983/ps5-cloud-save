@@ -270,7 +270,7 @@ static void slot_row(const unsigned char *rec,size_t size,void *ctx) {
     if(db_column(rec,size,c->c_title,title,sizeof title,NULL)||strcmp(title,c->title))return;
     if(db_column(rec,size,c->c_dir,dir,sizeof dir,NULL)||db_column(rec,size,c->c_mtime,when,sizeof when,NULL))return;
     long long t=iso_time(when);if(!t||!*dir)return;
-    snprintf(c->out[c->n].slot,sizeof c->out[c->n].slot,"%s",dir);c->out[c->n].saved=t;c->n++;
+    snprintf(c->out[c->n].slot,sizeof c->out[c->n].slot,"%.63s",dir);c->out[c->n].saved=t;c->n++;
 }
 int pscloud_save_db_times(const char *path,const char *title,struct pscloud_db_slot *out,int max) {
     if(!pscloud_title_valid(title))return -1;

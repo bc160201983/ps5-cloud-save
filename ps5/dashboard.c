@@ -1358,8 +1358,8 @@ static int sync_state(const char *user,const char *title,struct cloud_version *n
             else {memset(newest_other,0,sizeof *newest_other);snprintf(newest_other->user,sizeof newest_other->user,"%.16s",linked[i]);snprintf(newest_other->peer,sizeof newest_other->peer,"%.63s",peers[k]);}
         }
         newest_other->created=c.there_max;*local_time=c.here_max;
-        int here=c.here_newer+c.only_here,there_count=c.there_newer+c.only_there;
-        return here&&there_count?SYNC_CONFLICT:there_count?SYNC_CLOUD:here?SYNC_LOCAL:SYNC_IN;
+        int here_count=c.here_newer+c.only_here,there_count=c.there_newer+c.only_there;
+        return here_count&&there_count?SYNC_CONFLICT:there_count?SYNC_CLOUD:here_count?SYNC_LOCAL:SYNC_IN;
     }
     if(!any_other&&n&&unreachable)return SYNC_OFFLINE; /* cannot tell: the other PS5 did not answer */
     if(!any_other&&n)return *local_time?SYNC_ONLY_HERE:SYNC_NONE; /* linked, but the other side has no copy */
