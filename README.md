@@ -17,8 +17,11 @@ the sync banner names the other console, e.g. "Profile M-Bilal on your PS5 11.40
 (192.168.0.193) has newer progress". The page now retries profile and status requests while
 the dashboard is briefly busy, so names no longer fall back to "Profile 179a0cd8".
 
+When the other PS5 does not answer, the banner says **Other PS5 not reachable** instead of
+guessing.
+
 Verified by host tests with two PSCloud instances (in sync after receiving, then "This PS5
-is newer" after playing here).
+is newer" after playing here, and "not reachable" once the other instance stops).
 
 ## Version 0.29.1 — per-game sync, send to the other PS5, honest sync status
 
