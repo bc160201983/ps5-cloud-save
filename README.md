@@ -64,9 +64,15 @@ PSCloud brings together everything you need to keep your progress safe:
     automatically. Turn it on once and it applies to both consoles.
 - **Share saves with anyone.** Export a game's progress as a ZIP and receive one from
   another PS5. Only the progress is shared, and the receiving console keeps its own save keys.
+- **Write saves this PS5 does not have yet** *(experimental)*. Missing slots are created the
+  way the console creates saves, even when the game is not installed or was never played on
+  this profile.
+- **Sync compares real save times.** Each slot is compared by the time the game saved it,
+  from the PS5's own save list, not by file dates.
 - **Your own cloud.** Upload to Nextcloud, ownCloud, Koofr, pCloud, Box, Synology/QNAP and
-  other WebDAV services over HTTPS. Every upload is read back and checksum-verified. Choose
-  how many versions to keep.
+  other WebDAV services over HTTPS. Each upload's size is checked before it counts, without
+  downloading it again; a full download-and-compare check is optional. Choose how many
+  versions to keep.
 - **Encryption.** Optionally lock everything you upload with your own password (AES-256).
 - **USB drives.** Save a game to an exFAT USB drive, copy all backups, and restore from it.
   The same save is never copied twice.
@@ -116,7 +122,8 @@ PS5 to update saves on this PS5**. A rollback copy is still kept.
 | | |
 |---|---|
 | **Tested on consoles (7.00 and 11.40)** | Backups and uploads; game-close backup; sharing between 7.00 and 11.40 (Marvel's Wolverine loaded in-game); readable save names; storage view; finding the other PS5 on the network |
-| **Tested only by automated tests** | A full sync or send between two consoles; encryption against a real cloud; USB drives; nightly backup; behaviour in rest mode |
+| **Tested on consoles, in parts** | Creating a save container and adding a slot to the PS5's save list (test payloads on 7.00 and 11.40); game keystones are identical across consoles |
+| **Tested only by automated tests** | A full sync or send between two consoles; per-slot save-time comparison; creating missing slots and writing saves of games not installed or never played (system menu and in-game loading not yet checked); size-only upload check; encryption against a real cloud; USB drives; nightly backup; behaviour in rest mode |
 | **Firmware** | Tested on 7.00 and 11.40. Other firmware from 1.00 to 13.60 is supported but not yet tested; the dashboard says so. |
 
 Each release in the [changelog](CHANGELOG.md) lists exactly what was verified on a console.
@@ -126,7 +133,8 @@ Each release in the [changelog](CHANGELOG.md) lists exactly what was verified on
 ## 📁 Where PSCloud keeps files
 
 Everything is in `/data/pscloud/` on the PS5. Your own saves in `/user/home/<profile>/` are
-only read, except when you choose Restore or Replace. See
+only read, except when you choose Restore or Replace. Creating a missing slot also adds one
+row to the PS5's save list (a copy is kept first). See
 [docs/where-files-live.md](docs/where-files-live.md) for every folder and what is kept
 automatically.
 

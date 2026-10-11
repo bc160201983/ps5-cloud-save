@@ -3,6 +3,60 @@
 Every release, newest first, with what was verified on a console and what was not.
 The current overview is in [README.md](README.md).
 
+## Version 0.30.0 — real save times, saves the other PS5 does not have, lighter uploads
+
+**Sync compares when the game saved each slot.** The PS5 keeps, per save slot, the time the
+game last saved it in its save list (`savedata.db`, read only). Sync now uses that instead
+of file dates. Replacing a save changes the file date but not the game's time, which is
+why 7.00 looked newest while 11.40 had the newer Wolverine save. Slots received from the
+other PS5 keep the time they were saved there until the game saves them again. Before
+sending, PSCloud asks the other PS5 to back up its current save first.
+
+**Write saves this PS5 does not have yet (experimental).** When a shared save has slots the
+profile lacks, PSCloud can create them, the way the console creates saves:
+- a new save container from the console's own create call;
+- the game's `sce_sys` (keystone and save details);
+- one row in the PS5's save list.
+
+This works when:
+- the game is not installed here (**The game is not installed here: write the save
+  anyway**);
+- the profile never had the game. The source slot's keystone and details then come with the
+  package, and the account and profile number come from another save on this profile.
+
+On the receive screen, **Write it now** does this without installing or playing first. A
+slot that fails is removed again. The save list is copied to
+`rollback/savedata-<profile>.db.before-create` before each change.
+
+**Shared packages are format V2:** each slot also carries its `sce_sys`. For existing slots
+the receiving console still keeps its own. Older PSCloud versions cannot read V2 packages,
+so update both consoles.
+
+**Uploads no longer download everything again.** By default an upload counts when:
+- it went over HTTPS, which detects damage in transit;
+- the server accepted it;
+- a size check shows exactly the bytes sent.
+
+Only then is the backup's SHA-256 recorded. "Already in the cloud" is decided from that
+record and the size, also without downloading. **Cloud settings → After each upload** can
+switch the full download-and-compare back on.
+
+**Cancel stops the upload completely.** Before, cancel did not stop the check after an
+upload, and the upload could still be recorded.
+
+Verified on the consoles:
+- 11.40 and 7.00: the create call makes a container PSCloud can open again.
+- Both consoles: the layout of `param.sfo`, `PARAMS` and the save list database.
+- Both consoles: a game's keystone is the same on both consoles, across 10 games.
+- 11.40: two test slots were added to TEKKEN 8 with database rows, and the database stayed
+  intact.
+
+Not yet verified on a console:
+- whether the system menu and the game accept created slots;
+- the full write flow from the dashboard;
+- the per-slot time comparison;
+- the size-only upload check.
+
 ## Version 0.29.2 — "in sync" means both hold the same save
 
 **Bug found on the consoles:** Marvel's Wolverine showed "In sync" on 11.40 while 7.00 held
