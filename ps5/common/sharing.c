@@ -46,7 +46,7 @@ int pscloud_firmware_valid(unsigned fw) {
     return !(fw&0xffffU)&&major&&(major>>4)<10&&(major&15)<10&&(minor>>4)<10&&(minor&15)<10;
 }
 struct entry {char name[1024];const unsigned char *data;size_t size;};
-struct package {unsigned count,fw;char version[32];char slots[SLOTS][64];size_t capacity[SLOTS];struct entry entries[SLOTS+1];};
+struct package {unsigned count,fw,v2;char version[32];char slots[SLOTS][64];size_t capacity[SLOTS];struct entry entries[2*SLOTS+1];struct entry sys[SLOTS];};
 static unsigned u16(const unsigned char *p) {return p[0]|((unsigned)p[1]<<8);}
 static uint32_t u32(const unsigned char *p) {return u16(p)|((uint32_t)u16(p+2)<<16);}
 static uint32_t crc(const unsigned char *p,size_t n) {uint32_t c=0xffffffffU;while(n--) {c^=*p++;for(unsigned i=0;i<8;i++)c=(c>>1)^(0xedb88320U&(0U-(c&1U)));}return c^0xffffffffU;}
@@ -87,12 +87,13 @@ static int zip_index(const unsigned char *a,size_t size,struct entry *out,unsign
     *count=n;return 0;
 }
 static int package_parse(const unsigned char *a,size_t size,const char *title,struct package *p) {
-    unsigned n=0;if(zip_index(a,size,p->entries,SLOTS+1,&n)||n<2||strcmp(p->entries[0].name,"manifest.txt")||p->entries[0].size>30000)return -1;
+    unsigned n=0;if(zip_index(a,size,p->entries,2*SLOTS+1,&n)||n<2||strcmp(p->entries[0].name,"manifest.txt")||p->entries[0].size>30000)return -1;
     char text[30001],expected[30001];memcpy(text,p->entries[0].data,p->entries[0].size);text[p->entries[0].size]=0;
     if(strlen(text)!=p->entries[0].size)return -1;
-    char parsed_title[10];unsigned count=0;int used=0;
-    if(sscanf(text,"FORMAT=PSCLOUD_PORTABLE_GAME_V1\nTITLE=%9s\nSOURCE_FIRMWARE=%8x\nGAME_VERSION=%31s\nSLOTS=%u\n%n",parsed_title,&p->fw,p->version,&count,&used)!=4||!used||strcmp(parsed_title,title)||!count||count>SLOTS||count+1!=n||!pscloud_firmware_valid(p->fw))return -1;
-    int length=snprintf(expected,sizeof expected,"FORMAT=PSCLOUD_PORTABLE_GAME_V1\nTITLE=%s\nSOURCE_FIRMWARE=%08x\nGAME_VERSION=%s\nSLOTS=%u\n",title,p->fw,p->version,count);
+    char parsed_title[10];unsigned count=0,format=0;int used=0;
+    if(sscanf(text,"FORMAT=PSCLOUD_PORTABLE_GAME_V%u\nTITLE=%9s\nSOURCE_FIRMWARE=%8x\nGAME_VERSION=%31s\nSLOTS=%u\n%n",&format,parsed_title,&p->fw,p->version,&count,&used)!=5||!used||(format!=1&&format!=2)||strcmp(parsed_title,title)||!count||count>SLOTS||(format==1?count+1:2*count+1)!=n||!pscloud_firmware_valid(p->fw))return -1;
+    p->v2=format==2;
+    int length=snprintf(expected,sizeof expected,"FORMAT=PSCLOUD_PORTABLE_GAME_V%u\nTITLE=%s\nSOURCE_FIRMWARE=%08x\nGAME_VERSION=%s\nSLOTS=%u\n",format,title,p->fw,p->version,count);
     if(length!=used||memcmp(expected,text,(size_t)used))return -1;
     const char *line=text+used;
     for(unsigned i=0;i<count;i++) {
@@ -106,8 +107,24 @@ static int package_parse(const unsigned char *a,size_t size,const char *title,st
         struct entry *files=calloc(FILES,sizeof *files);unsigned number=0;
         int bad=!files||zip_index(p->entries[i+1].data,p->entries[i+1].size,files,FILES,&number);free(files);if(bad)return -1;
     }
+    /* V2: each slot's sce_sys (param.sfo, keystone), used only to create a slot the receiver lacks. */
+    for(unsigned i=0;p->v2&&i<count;i++) {
+        unsigned index=0;char hash[65],actual[65],name[80];used=0;
+        if(sscanf(line,"SYS=%u:%64s\n%n",&index,hash,&used)!=2||!used||index!=i||strlen(hash)!=64)return -1;
+        length=snprintf(expected,sizeof expected,"SYS=%u:%s\n",i,hash);if(length!=used||memcmp(line,expected,(size_t)used))return -1;
+        struct entry *e=&p->entries[count+1+i];snprintf(name,sizeof name,"sys-%u.zip",i);
+        if(strcmp(e->name,name)||digest(e->data,e->size,actual)||strcmp(hash,actual))return -1;
+        struct entry files[8];unsigned number=0;if(zip_index(e->data,e->size,files,8,&number))return -1;
+        p->sys[i]=*e;line+=used;
+    }
     if(*line)return -1;
     p->count=count;return 0;
+}
+/* A file from a slot's sce_sys archive in the package (NULL when absent). */
+static const unsigned char *sys_file(const struct entry *sys,const char *name,size_t *size) {
+    struct entry files[8];unsigned n=0;if(!sys->data||zip_index(sys->data,sys->size,files,8,&n))return NULL;
+    for(unsigned i=0;i<n;i++)if(!strcmp(files[i].name,name)) {*size=files[i].size;return files[i].data;}
+    return NULL;
 }
 int pscloud_share_validate(const unsigned char *a,size_t size,const char *title) {
     /* Avoid hashing entire legacy encrypted images just to detect their type. */
@@ -214,7 +231,7 @@ static void discard_completed_stage(int parent,int stage,const char *name,unsign
     for(unsigned i=0;i<count;i++) {
         char file[64];snprintf(file,sizeof file,"before-%u.img",i);if(unlinkat(stage,file,0))clean=0;
         snprintf(file,sizeof file,"image-%u.img",i);if(unlinkat(stage,file,0))clean=0;
-        if(exporting) {snprintf(file,sizeof file,"slot-%u.zip",i);if(unlinkat(stage,file,0))clean=0;}
+        if(exporting) {snprintf(file,sizeof file,"slot-%u.zip",i);if(unlinkat(stage,file,0))clean=0;snprintf(file,sizeof file,"sys-%u.zip",i);if(unlinkat(stage,file,0))clean=0;}
         snprintf(file,sizeof file,"mount-%u",i);if(unlinkat(stage,file,AT_REMOVEDIR))clean=0;
     }
     if(exporting&&unlinkat(stage,"manifest.txt",0))clean=0;
@@ -402,6 +419,16 @@ int pscloud_share_game(const char *home,const char *root,const char *appmeta,con
     parent=pscloud_open_directory(root);if(parent<0)goto done;
     lock=openat(parent,".mount.lock",O_CREAT|O_RDWR|O_NOFOLLOW,0600);if(lock<0||flock(lock,LOCK_EX|LOCK_NB)||pscloud_active_marker(parent)||pscloud_no_foreign_mount()) {refuse("A save is mounted or another save operation is active; close the game and retry");goto done;}
     snprintf(path,sizeof path,"%s/%s/savedata_prospero/%s",home,user,title);source=pscloud_open_directory(path);
+    if(source<0&&mode==1&&create_missing) {pscloud_log("INFO","No save of this game in this profile yet; all slots will be created when the save is written");result=0;goto done;}
+    if(source<0&&mode==2&&create_missing) {
+        for(unsigned i=0;i<p->count;i++) {
+            const char *why="";struct pscloud_source_sys from={0};
+            from.sfo=sys_file(&p->sys[i],"param.sfo",&from.sfo_size);from.keystone=sys_file(&p->sys[i],"keystone",&from.keystone_size);
+            if(pscloud_create_slot(home,system_root,root,user,title,p->slots[i],p->capacity[i],&from,&why)) {refuse("Slot %s could not be created: %s",p->slots[i],why);goto done;}
+            strcpy(created[created_count++],p->slots[i]);
+        }
+        source=pscloud_open_directory(path);
+    }
     if(source<0) {refuse("This profile has no saves for this game; play it once to create a save");goto done;}
     if(!mode&&inventory(source,p)) {refuse("No exportable save slots found for this game");goto done;}
     if(!mode&&select_slots(p,only)) {refuse("Selected slots are invalid or no longer exist");goto done;}
@@ -411,8 +438,9 @@ int pscloud_share_game(const char *home,const char *root,const char *appmeta,con
         for(unsigned i=0;i<p->count;i++) {
             char name[80];struct stat st;snprintf(name,sizeof name,"sdimg_%s",p->slots[i]);
             if(fstatat(source,name,&st,AT_SYMLINK_NOFOLLOW)&&create_missing&&mode==2) {
-                const char *why="";
-                if(pscloud_create_slot(home,system_root,root,user,title,p->slots[i],p->capacity[i],"Added by PSCloud",&why)) {refuse("Slot %s could not be created: %s",p->slots[i],why);goto done;}
+                const char *why="";struct pscloud_source_sys from={0};
+                from.sfo=sys_file(&p->sys[i],"param.sfo",&from.sfo_size);from.keystone=sys_file(&p->sys[i],"keystone",&from.keystone_size);
+                if(pscloud_create_slot(home,system_root,root,user,title,p->slots[i],p->capacity[i],&from,&why)) {refuse("Slot %s could not be created: %s",p->slots[i],why);goto done;}
                 strcpy(created[created_count++],p->slots[i]);
             }
             else if(fstatat(source,name,&st,AT_SYMLINK_NOFOLLOW)&&create_missing) {pscloud_log("INFO","Slot %s will be created when the save is written",p->slots[i]);continue;}
@@ -420,10 +448,10 @@ int pscloud_share_game(const char *home,const char *root,const char *appmeta,con
                 if(!skip_missing) {refuse("This profile has no save slot %s; play further to create it or skip missing slots",p->slots[i]);goto done;}
                 pscloud_log("WARN","Receiver has no slot %s; skipped by request",p->slots[i]);continue;
             }
-            if(kept!=i) {memcpy(p->slots[kept],p->slots[i],sizeof p->slots[0]);p->capacity[kept]=p->capacity[i];p->entries[kept+1]=p->entries[i+1];}
+            if(kept!=i) {memcpy(p->slots[kept],p->slots[i],sizeof p->slots[0]);p->capacity[kept]=p->capacity[i];p->entries[kept+1]=p->entries[i+1];p->sys[kept]=p->sys[i];}
             kept++;
         }
-        if(!kept&&created_count==0&&create_missing) {refuse("Only new slots are in this package; nothing else to check. Write the save to create them");goto done;}
+        if(!kept&&created_count==0&&create_missing) {pscloud_log("INFO","Every slot in this package is new here; they are created when the save is written");result=0;goto done;}
         if(!kept) {refuse("None of the package save slots exist in this profile; play the game once to create a save");goto done;}
         p->count=kept;
     }
@@ -458,6 +486,14 @@ int pscloud_share_game(const char *home,const char *root,const char *appmeta,con
         if(!bad&&mode&&extract_payload(dir,&p->entries[i+1])) {bad=1;refuse("Slot %s data could not be written into this console's save container (too large or unsafe)",p->slots[i]);}
         if(!bad&&mode&&(metadata_read(dir,title,p->slots[i],&meta,after)||strcmp(metadata,after))) {bad=1;refuse("Slot %s metadata changed during import; nothing was replaced",p->slots[i]);}
         if(!bad&&!mode) {unsigned files=0;unsigned long long bytes=0;snprintf(path,sizeof path,"%s/slot-%u.zip",stage_path,i);bad=pscloud_zip_export(dir,path,&files,&bytes);if(bad)refuse("Slot %s could not be exported",p->slots[i]);}
+        if(!bad&&!mode) {
+            /* The slot's sce_sys travels too, so a console that never had this game can create the slot. */
+            int sys=openat(dir,"sce_sys",O_RDONLY|O_DIRECTORY|O_NOFOLLOW);unsigned files=0;unsigned long long bytes=0;
+            snprintf(path,sizeof path,"%s/sys-%u.zip",stage_path,i);
+            if(sys<0)bad=1;
+            else {bad=pscloud_zip_export(sys,path,&files,&bytes);close(sys);}
+            if(bad)refuse("Slot %s metadata could not be exported",p->slots[i]);
+        }
         if(dir>=0)close(dir);
         if(bad)goto done;
         if(pscloud_mount_end(&state,mount))goto done;
@@ -471,10 +507,12 @@ int pscloud_share_game(const char *home,const char *root,const char *appmeta,con
         if(fstatat(source,name,&current,AT_SYMLINK_NOFOLLOW)||current.st_ino!=before[i].st_ino||current.st_dev!=before[i].st_dev||pscloud_file_hash(original[i],hash)||strcmp(hash,baseline[i]))goto done;
     }
     if(!mode) {
-        char manifest[30000];int length=snprintf(manifest,sizeof manifest,"FORMAT=PSCLOUD_PORTABLE_GAME_V1\nTITLE=%s\nSOURCE_FIRMWARE=%08x\nGAME_VERSION=%s\nSLOTS=%u\n",title,fw,version,p->count);
-        char names[SLOTS+1][64];const char *ordered[SLOTS+1];strcpy(names[0],"manifest.txt");ordered[0]=names[0];
+        char manifest[30000];int length=snprintf(manifest,sizeof manifest,"FORMAT=PSCLOUD_PORTABLE_GAME_V2\nTITLE=%s\nSOURCE_FIRMWARE=%08x\nGAME_VERSION=%s\nSLOTS=%u\n",title,fw,version,p->count);
+        char names[2*SLOTS+1][64];const char *ordered[2*SLOTS+1];strcpy(names[0],"manifest.txt");ordered[0]=names[0];
         for(unsigned i=0;i<p->count;i++) {char hash[65];snprintf(names[i+1],sizeof names[i+1],"slot-%u.zip",i);ordered[i+1]=names[i+1];int fd=openat(stage,names[i+1],O_RDONLY|O_NOFOLLOW);int bad=fd<0||pscloud_file_hash(fd,hash);if(fd>=0)close(fd);if(bad)goto done;
             int n=snprintf(manifest+length,sizeof manifest-(size_t)length,"SLOT=%u:%s:%zu:%s\n",i,p->slots[i],p->capacity[i],hash);if(n<0||(size_t)n>=sizeof manifest-(size_t)length)goto done;length+=n;}
+        for(unsigned i=0;i<p->count;i++) {char hash[65];snprintf(names[p->count+1+i],sizeof names[0],"sys-%u.zip",i);ordered[p->count+1+i]=names[p->count+1+i];int fd=openat(stage,names[p->count+1+i],O_RDONLY|O_NOFOLLOW);int bad=fd<0||pscloud_file_hash(fd,hash);if(fd>=0)close(fd);if(bad)goto done;
+            int n=snprintf(manifest+length,sizeof manifest-(size_t)length,"SYS=%u:%s\n",i,hash);if(n<0||(size_t)n>=sizeof manifest-(size_t)length)goto done;length+=n;}
         if(write_bytes(stage,"manifest.txt",(const unsigned char *)manifest,(size_t)length))goto done;
         (void)mkdirat(parent,"share",0700);
         int share_directory=openat(parent,"share",O_RDONLY|O_DIRECTORY|O_NOFOLLOW);struct stat share_stat;
@@ -482,7 +520,7 @@ int pscloud_share_game(const char *home,const char *root,const char *appmeta,con
         if(share_directory>=0)close(share_directory);
         if(directory_bad)goto done;
         snprintf(published,128,"portable-%s-%s.zip",title,id);snprintf(path,sizeof path,"%s/share/%s",root,published);unsigned files=0;unsigned long long bytes=0;
-        if(pscloud_zip_export_named(stage,path,ordered,p->count+1,&files,&bytes))goto done;
+        if(pscloud_zip_export_named(stage,path,ordered,2*p->count+1,&files,&bytes))goto done;
         int fd=open(path,O_RDONLY|O_NOFOLLOW);struct stat st;int bad=fd<0||fstat(fd,&st)||st.st_size>PSCLOUD_SHARE_LIMIT||pscloud_file_hash(fd,checksum);if(fd>=0)close(fd);if(bad) {published[0]=0;goto done;}
         unsigned char *verified=NULL;size_t verified_size=0;char directory[1400];snprintf(directory,sizeof directory,"%s/share",root);
         int share=pscloud_open_directory(directory);bad=share<0||pscloud_read_archive(share,published,&verified,&verified_size)||pscloud_share_validate(verified,verified_size,title);

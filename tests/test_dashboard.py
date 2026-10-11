@@ -736,7 +736,7 @@ class DashboardTests(unittest.TestCase):
         package=test_sharing.portable(slots=(SLOT,'save2'),title='PPSA02433');sha=hashlib.sha256(package).hexdigest()
         name='portable-PPSA02433-'+'a'*32+'.zip';(self.root/'share').mkdir(exist_ok=True);(self.root/'share'/name).write_bytes(package)
         base=self.selected(slot='WholeGame',closed='yes',file=name,sha256=sha)
-        status,refused=self.request('/api/share-check',base);self.assertEqual(status,400);self.assertIn('not',refused['message'])
+        status,refused=self.request('/api/share-check',base);self.assertEqual(status,400);self.assertIn('Install this game',refused['message'])
         options=dict(base,not_installed='yes',create_missing='yes')
         status,checked=self.request('/api/share-check',options);self.assertEqual(status,200,checked)
         created=self.image.parent/'sdimg_save2';self.assertFalse(created.exists())  # a check creates nothing
@@ -749,7 +749,7 @@ class DashboardTests(unittest.TestCase):
         self.assertIn(b'save2\0',(fixture/'save2/sce_sys/param.sfo').read_bytes())
         self.assertEqual((fixture/'save2/sce_sys/keystone').read_bytes(),b'K'*96)
         self.assertEqual((fixture/'save2/folder/progress.bin').read_bytes(),b'shared')
-        # Creating it again is refused: the slot exists now and is simply replaced.
+        # A second import finds the slot and just replaces it.
         status,again=self.request('/api/share-check',options);self.assertEqual(status,200,again)
 
     def test_creating_a_slot_needs_another_slot_of_the_game(self):
@@ -766,6 +766,55 @@ class DashboardTests(unittest.TestCase):
         status,refused=self.request('/api/share-restore',dict(options,confirm='yes'));self.assertEqual(status,400)
         self.assertIn('start the game once',refused['message'])
         self.assertFalse((self.image.parent/'sdimg_save2').exists());self.assertEqual(self.image.read_bytes(),before)
+
+    @staticmethod
+    def sfo_bytes(fields):
+        keys=b'';values=b'';entries=[]
+        for key,fmt,value,size in fields:
+            length=len(value)+1 if fmt==0x0204 else len(value)
+            entries.append(struct.pack('<HHIII',len(keys),fmt,length,size,len(values)));keys+=key.encode()+b'\0';values+=value.ljust(size,b'\0')
+        offset=20+16*len(fields);keys=keys.ljust((len(keys)+3)//4*4,b'\0')
+        return struct.pack('<IIIII',0x46535000,0x101,offset,offset+len(keys),len(fields))+b''.join(entries)+keys+values
+
+    def test_writes_a_save_for_a_game_this_profile_never_had(self):
+        import test_sharing,test_portable,sqlite3
+        self.process.terminate();self.process.communicate(timeout=5)
+        fixture=self.fixture.root/'generic'
+        # This profile only has a save of another game (PPSA02433), with its own account.
+        test_portable.PortableTests.sfo(self,fixture/SLOT,SLOT,b'\x44'*8)
+        self.save_db(self.root,'1eb70483',[(SLOT,'2026-10-01T10:00:00.00Z')])
+        self.start_server(PSCLOUD_TEST_GENERIC_PAYLOADS=str(fixture))
+        # A V2 package of PPSA09999 from the other PS5: game files plus the slot's sce_sys.
+        params=bytearray(1024);params[4:8]=b'\x99\x99\x99\x99';params[8:40]=b'C'*32;params[0x2c:0x35]=b'PPSA09998'
+        source_sfo=self.sfo_bytes([('ACCOUNT_ID',0x0004,b'\x77'*8,8),('MAINTITLE',0x0204,b'Never Played',128),('PARAMS',0x0004,bytes(params),1024),
+            ('SAVEDATA_DIRECTORY',0x0204,b'slotA',32),('SAVEDATA_REVISION',0x0004,b'R'*16,16),('SUBTITLE',0x0204,b'Chapter 9',128),('TITLE_ID',0x0204,b'PPSA09999',12)])
+        inner=test_sharing.zip_bytes([('folder/progress.bin',b'shared'),('settings.dat',b'config')])
+        sys_zip=test_sharing.zip_bytes([('keystone',b'S'*96),('param.sfo',source_sfo)])
+        manifest=('FORMAT=PSCLOUD_PORTABLE_GAME_V2\nTITLE=PPSA09999\nSOURCE_FIRMWARE=11400000\nGAME_VERSION=01.000.000\nSLOTS=1\n'
+                  'SLOT=0:slotA:3145728:%s\nSYS=0:%s\n'%(hashlib.sha256(inner).hexdigest(),hashlib.sha256(sys_zip).hexdigest()))
+        package=test_sharing.zip_bytes([('manifest.txt',manifest.encode()),('slot-0.zip',inner),('sys-0.zip',sys_zip)]);sha=hashlib.sha256(package).hexdigest()
+        name='portable-PPSA09999-'+'c'*32+'.zip';(self.root/'share').mkdir(exist_ok=True);(self.root/'share'/name).write_bytes(package)
+        options=dict(user='1eb70483',title='PPSA09999',slot='WholeGame',closed='yes',file=name,sha256=sha,not_installed='yes',create_missing='yes')
+        status,checked=self.request('/api/share-check',options);self.assertEqual(status,200,checked)
+        folder=self.home/'1eb70483/savedata_prospero/PPSA09999';self.assertFalse(folder.exists())  # a check writes nothing
+        status,done=self.request('/api/share-restore',dict(options,confirm='yes'));self.assertEqual(status,200,done)
+        self.assertEqual((folder/'sdimg_slotA').stat().st_size,3145728)
+        db=sqlite3.connect(str(self.root/'system/system_data/savedata_prospero/1eb70483/db/user/savedata.db'))
+        row=db.execute("select main_title,sub_title,blocks,size_kib,game_title_id from savedata where title_id='PPSA09999' and dir_name='slotA'").fetchone();db.close()
+        self.assertEqual(row,('Never Played','Chapter 9',48,3072,'PPSA09998'))
+        written=(fixture/'slotA/sce_sys/param.sfo').read_bytes()
+        self.assertIn(b'\x44'*8,written);self.assertNotIn(b'\x77'*8,written)  # this profile's account, not the source's
+        self.assertIn(b'C'*32,written);self.assertNotIn(b'\x99\x99\x99\x99',written)  # source origin value kept, profile number replaced
+        self.assertEqual((fixture/'slotA/sce_sys/keystone').read_bytes(),b'S'*96)
+        self.assertEqual((fixture/'slotA/folder/progress.bin').read_bytes(),b'shared')
+
+    def test_export_carries_each_slots_metadata(self):
+        import zipfile,io
+        status,data=self.request('/api/share-export',self.selected(slot='WholeGame',closed='yes'))
+        if status!=200:self.skipTest(data.get('message'))
+        package=(self.root/'share'/data['file']).read_bytes();z=zipfile.ZipFile(io.BytesIO(package))
+        manifest=z.read('manifest.txt').decode();self.assertTrue(manifest.startswith('FORMAT=PSCLOUD_PORTABLE_GAME_V2\n'),manifest)
+        self.assertIn('sys-0.zip',z.namelist());self.assertIn('param.sfo',zipfile.ZipFile(io.BytesIO(z.read('sys-0.zip'))).namelist())
 
     def test_sync_with_another_ps5_on_the_local_network(self):
         import test_sharing,test_portable,socket

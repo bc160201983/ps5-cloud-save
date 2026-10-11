@@ -55,6 +55,11 @@ static unsigned char *sfo_find(unsigned char *data,size_t size,const char *key,u
     }
     return NULL;
 }
+static int sfo_get_text(const unsigned char *data,size_t size,const char *key,char *out,size_t max) {
+    unsigned char *index;size_t length,m;unsigned char *v=sfo_find((unsigned char *)data,size,key,&index,&length,&m);
+    out[0]=0;if(!v||le16(index+2)!=0x0204||!length)return -1;
+    size_t n=length<max?length:max;memcpy(out,v,n);out[n-1]=0;return 0;
+}
 static int sfo_set_text(unsigned char *data,size_t size,const char *key,const char *text) {
     unsigned char *index;size_t length,max,n=strlen(text)+1;unsigned char *v=sfo_find(data,size,key,&index,&length,&max);
     if(!v||le16(index+2)!=0x0204||n>max)return -1;
@@ -130,37 +135,48 @@ static int store_sys(const char *payload,const struct sys_files *s) {
     return 0;
 }
 static void db_path(const char *system_root,const char *user,char *out,size_t max) {snprintf(out,max,"%s/system_data/savedata_prospero/%s/db/user/savedata.db",system_root,user);}
-/* A template: another slot of this game in this profile that the save database lists. */
-static int pick_template(const char *folder,const char *db,const char *title,char *slot,size_t max) {
+/* A template slot the save database lists: of this game (any_game 0), or of any game in
+ * the profile (any_game 1, for a game this profile never had). */
+static int pick_template(const char *home,const char *user,const char *db,const char *title,int any_game,char *template_title,char *slot,size_t max) {
     sqlite3 *h=NULL;if(sqlite3_open_v2(db,&h,SQLITE_OPEN_READONLY,NULL)!=SQLITE_OK) {sqlite3_close(h);return -1;}
     sqlite3_busy_timeout(h,5000);sqlite3_stmt *q=NULL;int found=-1;
     if(sqlite3_prepare_v2(h,"SELECT 1 FROM savedata WHERE title_id=?1 AND dir_name=?2",-1,&q,NULL)==SQLITE_OK) {
-        DIR *d=opendir(folder);struct dirent *e;
-        /* Prefer a regular slot; the system-memory slot is the fallback. */
-        for(int pass=0;pass<2&&found;pass++) {
-            if(d)rewinddir(d);
-            while(d&&(e=readdir(d))&&found) {
-                if(strncmp(e->d_name,"sdimg_",6)||!strncmp(e->d_name,"sdimg_sce_bu",12)||!name_ok(e->d_name+6,63))continue;
-                if(!pass&&!strcmp(e->d_name,"sdimg_sce_sdmemory"))continue;
-                sqlite3_reset(q);sqlite3_bind_text(q,1,title,-1,SQLITE_STATIC);sqlite3_bind_text(q,2,e->d_name+6,-1,SQLITE_TRANSIENT);
-                if(sqlite3_step(q)==SQLITE_ROW) {snprintf(slot,max,"%s",e->d_name+6);found=0;}
+        char base[1200];snprintf(base,sizeof base,"%s/%s/savedata_prospero",home,user);DIR *games=opendir(base);struct dirent *g;
+        while(games&&(g=readdir(games))&&found) {
+            if(!pscloud_title_valid(g->d_name)||(any_game?!strcmp(g->d_name,title):strcmp(g->d_name,title)))continue;
+            char folder[1300];snprintf(folder,sizeof folder,"%s/%s",base,g->d_name);DIR *d=opendir(folder);struct dirent *e;
+            /* Prefer a regular slot; the system-memory slot is the fallback. */
+            for(int pass=0;pass<2&&found&&d;pass++) {
+                rewinddir(d);
+                while((e=readdir(d))&&found) {
+                    if(strncmp(e->d_name,"sdimg_",6)||!strncmp(e->d_name,"sdimg_sce_bu",12)||!name_ok(e->d_name+6,63))continue;
+                    if(!pass&&!strcmp(e->d_name,"sdimg_sce_sdmemory"))continue;
+                    sqlite3_reset(q);sqlite3_bind_text(q,1,g->d_name,-1,SQLITE_TRANSIENT);sqlite3_bind_text(q,2,e->d_name+6,-1,SQLITE_TRANSIENT);
+                    if(sqlite3_step(q)==SQLITE_ROW) {snprintf(slot,max,"%s",e->d_name+6);snprintf(template_title,16,"%s",g->d_name);found=0;}
+                }
             }
+            if(d)closedir(d);
         }
-        if(d)closedir(d);
+        if(games)closedir(games);
     }
     sqlite3_finalize(q);sqlite3_close(h);return found;
 }
-static int db_add(const char *db,const char *title,const char *template_slot,const char *slot,const char *subtitle,size_t capacity,time_t now,const char **why) {
+struct row_texts {const char *main,*sub,*detail,*game_title;};
+static int db_add(const char *db,const char *template_title,const char *template_slot,const char *title,const char *slot,const struct row_texts *t,size_t capacity,time_t now,const char **why) {
     sqlite3 *h=NULL;if(sqlite3_open_v2(db,&h,SQLITE_OPEN_READWRITE,NULL)!=SQLITE_OK) {sqlite3_close(h);*why="The save list database could not be opened";return -1;}
     sqlite3_busy_timeout(h,5000);char when[40];struct tm tm;gmtime_r(&now,&tm);strftime(when,sizeof when,"%Y-%m-%dT%H:%M:%S.00Z",&tm);
     const char *sql="INSERT INTO savedata (title_id,dir_name,main_title,sub_title,detail,tmp_dir_name,is_broken,user_param,blocks,free_blocks,size_kib,mtime,fake_broken,account_id,user_id,faked_owner,cloud_icon_url,cloud_revision,game_title_id,system_blocks,convert_performance,account_id_in_usb_path) "
-        "SELECT title_id,?3,main_title,?4,'',tmp_dir_name,0,user_param,?5,0,?6,?7,0,account_id,user_id,faked_owner,cloud_icon_url,0,game_title_id,system_blocks,convert_performance,account_id_in_usb_path "
+        "SELECT ?8,?3,COALESCE(?9,main_title),?4,?10,tmp_dir_name,0,CASE WHEN title_id=?8 THEN user_param ELSE 0 END,?5,0,?6,?7,0,account_id,user_id,faked_owner,CASE WHEN title_id=?8 THEN cloud_icon_url ELSE '' END,0,COALESCE(?11,game_title_id),system_blocks,convert_performance,account_id_in_usb_path "
         "FROM savedata WHERE title_id=?1 AND dir_name=?2 LIMIT 1";
     sqlite3_stmt *q=NULL;int bad=sqlite3_exec(h,"BEGIN IMMEDIATE",NULL,NULL,NULL)!=SQLITE_OK;
     if(!bad)bad=sqlite3_prepare_v2(h,sql,-1,&q,NULL)!=SQLITE_OK;
     if(!bad) {
-        sqlite3_bind_text(q,1,title,-1,SQLITE_STATIC);sqlite3_bind_text(q,2,template_slot,-1,SQLITE_STATIC);sqlite3_bind_text(q,3,slot,-1,SQLITE_STATIC);
-        sqlite3_bind_text(q,4,subtitle,-1,SQLITE_STATIC);sqlite3_bind_int64(q,5,(sqlite3_int64)(capacity/65536));sqlite3_bind_int64(q,6,(sqlite3_int64)(capacity/1024));sqlite3_bind_text(q,7,when,-1,SQLITE_STATIC);
+        sqlite3_bind_text(q,1,template_title,-1,SQLITE_STATIC);sqlite3_bind_text(q,2,template_slot,-1,SQLITE_STATIC);sqlite3_bind_text(q,3,slot,-1,SQLITE_STATIC);
+        sqlite3_bind_text(q,4,t->sub,-1,SQLITE_STATIC);sqlite3_bind_int64(q,5,(sqlite3_int64)(capacity/65536));sqlite3_bind_int64(q,6,(sqlite3_int64)(capacity/1024));sqlite3_bind_text(q,7,when,-1,SQLITE_STATIC);
+        sqlite3_bind_text(q,8,title,-1,SQLITE_STATIC);
+        if(t->main)sqlite3_bind_text(q,9,t->main,-1,SQLITE_STATIC);else sqlite3_bind_null(q,9);
+        sqlite3_bind_text(q,10,t->detail,-1,SQLITE_STATIC);
+        if(t->game_title)sqlite3_bind_text(q,11,t->game_title,-1,SQLITE_STATIC);else sqlite3_bind_null(q,11);
         bad=sqlite3_step(q)!=SQLITE_DONE||sqlite3_changes(h)!=1;
     }
     sqlite3_finalize(q);
@@ -240,48 +256,86 @@ static int read_step(const char *payload,void *ctx) {return load_sys(payload,ctx
 struct write_ctx {struct sys_files *sys;};
 static int write_step(const char *payload,void *ctx) {return store_sys(payload,((struct write_ctx *)ctx)->sys);}
 
-int pscloud_create_slot(const char *home,const char *system_root,const char *root,const char *user,const char *title,const char *slot,size_t capacity,const char *subtitle,const char **why) {
+int pscloud_create_slot(const char *home,const char *system_root,const char *root,const char *user,const char *title,const char *slot,size_t capacity,const struct pscloud_source_sys *from,const char **why) {
     static const char *none="";*why=none;
     if(!name_ok(user,16)||!pscloud_title_valid(title)||!name_ok(slot,31)||!strncmp(slot,"sce_",4)) {*why="Invalid profile, game or slot name";return -1;}
     capacity=(capacity+65535)/65536*65536;if(capacity<0x100000)capacity=0x100000;
     if(capacity>1024UL*1024*1024) {*why="The save slot is too large";return -1;}
-    char folder[1200],live[1300],db[1200],template_slot[64],template_image[1300];
+    int have_source=from&&from->sfo&&from->sfo_size>=20&&from->sfo_size<=SFO_MAX&&le32(from->sfo)==0x46535000&&from->keystone&&from->keystone_size&&from->keystone_size<=4096;
+    char folder[1200],live[1300],db[1200],template_title[16],template_slot[64],template_image[1300];
     snprintf(folder,sizeof folder,"%s/%s/savedata_prospero/%s",home,user,title);snprintf(live,sizeof live,"%s/sdimg_%s",folder,slot);db_path(system_root,user,db,sizeof db);
-    struct stat st,template_st;
+    struct stat st,template_st,template_folder;
     if(!lstat(live,&st)) {*why="This slot already exists";return -1;}
-    if(pick_template(folder,db,title,template_slot,sizeof template_slot)) {*why="This profile has no save for this game to take the game's identity from; start the game once until it saves";return -1;}
-    snprintf(template_image,sizeof template_image,"%s/sdimg_%s",folder,template_slot);
-    if(lstat(template_image,&template_st)||!S_ISREG(template_st.st_mode)) {*why="The other slot of this game could not be read";return -1;}
+    /* The game's identity from its own slot here; for a game this profile never had, from the
+     * source slot (keystone and texts), with this profile's account taken from another game. */
+    int same_game=!pick_template(home,user,db,title,0,template_title,template_slot,sizeof template_slot);
+    if(!same_game&&(!have_source||pick_template(home,user,db,title,1,template_title,template_slot,sizeof template_slot))) {
+        *why=have_source?"This profile has no saves at all to take its account from; play any game until it saves":"This profile has no save for this game to take the game's identity from; start the game once until it saves, or send a package made by PSCloud 0.30 or later";return -1;}
+    snprintf(template_image,sizeof template_image,"%s/%s/savedata_prospero/%s/sdimg_%s",home,user,template_title,template_slot);
+    if(lstat(template_image,&template_st)||!S_ISREG(template_st.st_mode)) {*why="Another save in this profile could not be read";return -1;}
+    {char tf[1200];snprintf(tf,sizeof tf,"%s/%s/savedata_prospero/%s",home,user,template_title);if(lstat(tf,&template_folder)) {*why="Another save in this profile could not be read";return -1;}}
     char journal[1300];snprintf(journal,sizeof journal,"%s-journal",db);
     if(!lstat(journal,&st)) {*why="The save list database is busy; try again in a moment";return -1;}
     int parent=pscloud_open_directory(root);if(parent<0) {*why="PSCloud folder unavailable";return -1;}
-    char id[33],stage[1300],image[1400],copy[1400],mount[1400];int result=-1,placed=0;struct sys_files sys;memset(&sys,0,sizeof sys);
+    char id[33],stage[1300],image[1400],copy[1400],mount[1400];int result=-1,placed=0,made_folder=0;struct sys_files sys;memset(&sys,0,sizeof sys);
+    char main_text[130]="",sub_text[130]="Added by PSCloud",detail_text[1030]="",game_title[16]="";
     if(pscloud_random_id(id)) {close(parent);return -1;}
     snprintf(stage,sizeof stage,"%s/create-stage-%s",root,id);snprintf(image,sizeof image,"%s/new.img",stage);snprintf(copy,sizeof copy,"%s/template.img",stage);snprintf(mount,sizeof mount,"%s/mnt",stage);
     if(mkdir(stage,0700)||mkdir(mount,0700)) {*why="Could not prepare a temporary folder";goto done;}
-    /* 1. The game's identity from the other slot, read from a copy. */
-    if(copy_path(template_image,copy,NULL)||with_mount(parent,copy,mount,template_slot,read_step,&sys)) {*why="The other slot of this game could not be opened";goto done;}
+    /* 1. Identity of the template slot, read from a copy. */
+    if(copy_path(template_image,copy,NULL)||with_mount(parent,copy,mount,template_slot,read_step,&sys)) {*why="Another save in this profile could not be opened";goto done;}
     unlink(copy);
+    if(have_source) {
+        sfo_get_text(from->sfo,from->sfo_size,"SUBTITLE",sub_text,sizeof sub_text);
+        sfo_get_text(from->sfo,from->sfo_size,"DETAIL",detail_text,sizeof detail_text);
+        sfo_get_text(from->sfo,from->sfo_size,"MAINTITLE",main_text,sizeof main_text);
+    }
+    if(!same_game) {
+        /* The source slot's metadata with this profile's account and profile number. */
+        unsigned char *index;size_t length,m,tl,tm;
+        unsigned char *sfo=malloc(from->sfo_size),*keystone=malloc(from->keystone_size);
+        if(!sfo||!keystone) {free(sfo);free(keystone);goto done;}
+        memcpy(sfo,from->sfo,from->sfo_size);memcpy(keystone,from->keystone,from->keystone_size);
+        unsigned char *account=sfo_find(sfo,from->sfo_size,"ACCOUNT_ID",&index,&length,&m),*mine=sfo_find(sys.sfo,sys.sfo_size,"ACCOUNT_ID",&index,&tl,&tm);
+        unsigned char *params=sfo_find(sfo,from->sfo_size,"PARAMS",&index,&length,&m),*my_params=sfo_find(sys.sfo,sys.sfo_size,"PARAMS",&index,&tl,&tm);
+        unsigned char *title_field=sfo_find(sfo,from->sfo_size,"TITLE_ID",&index,&length,&m);
+        int bad=!account||!mine||!title_field||memcmp(title_field,title,10);
+        if(!bad)memcpy(account,mine,8);
+        if(!bad&&params&&my_params)memcpy(params+4,my_params+4,4);
+        if(!bad&&params) {char g[17];memcpy(g,params+0x2c,16);g[16]=0;if(pscloud_title_valid(g))snprintf(game_title,sizeof game_title,"%s",g);}
+        if(bad) {free(sfo);free(keystone);*why="The package's save metadata does not belong to this game";goto done;}
+        free(sys.sfo);free(sys.keystone);sys.sfo=sfo;sys.sfo_size=from->sfo_size;sys.keystone=keystone;sys.keystone_size=from->keystone_size;
+        if(!sys.keystone_st.st_mode)sys.keystone_st=sys.sfo_st;
+    } else if(have_source&&sfo_set_text(sys.sfo,sys.sfo_size,"SUBTITLE",sub_text))pscloud_log("INFO","Slot subtitle kept from this console");
     time_t now=time(NULL);
-    if(sfo_patch(sys.sfo,sys.sfo_size,slot,subtitle?subtitle:"",capacity,now)) {*why="The slot name does not fit this game's save metadata";goto done;}
+    if(sfo_patch(sys.sfo,sys.sfo_size,slot,sub_text,capacity,now)) {*why="The slot name does not fit this game's save metadata";goto done;}
+    if(have_source&&*detail_text)(void)sfo_set_text(sys.sfo,sys.sfo_size,"DETAIL",detail_text);
     /* 2. A new container with that identity. */
     if(new_container(image,capacity,template_image)) {*why="This console refused to create a save container";goto done;}
     struct write_ctx w={&sys};
     if(with_mount(parent,image,mount,slot,write_step,&w)) {*why="The new save container could not be prepared";goto done;}
-    /* 3. Into the game's folder, owned like its other slots, then listed in the database. */
+    /* 3. Into the game's folder, owned like the template's, then listed in the database. */
+    if(lstat(folder,&st)) {
+        if(mkdir(folder,0700)||chown(folder,template_folder.st_uid,template_folder.st_gid)||chmod(folder,template_folder.st_mode&07777)) {rmdir(folder);*why="The game's save folder could not be created";goto done;}
+        made_folder=1;
+    }
     char temporary[1400];snprintf(temporary,sizeof temporary,"%s/.pscloud-new-%s",folder,slot);unlink(temporary);
     if(copy_path(image,temporary,&template_st)||rename(temporary,live)) {unlink(temporary);*why="The new slot could not be placed in the game's save folder";goto done;}
     placed=1;
     char backup[1300];snprintf(backup,sizeof backup,"%s/rollback",root);(void)mkdir(backup,0700);
     snprintf(backup,sizeof backup,"%s/rollback/savedata-%s.db.before-create",root,user);unlink(backup);
     if(copy_path(db,backup,NULL))pscloud_log("WARN","Save list database copy for safety could not be written");
-    if(db_add(db,title,template_slot,slot,subtitle?subtitle:"",capacity,now,why))goto done;
-    char icon_from[1300],icon_to[1300];icon_path(home,user,title,template_slot,icon_from,sizeof icon_from);icon_path(home,user,title,slot,icon_to,sizeof icon_to);
-    struct stat icon;if(!lstat(icon_from,&icon)&&S_ISREG(icon.st_mode)) {unlink(icon_to);if(copy_path(icon_from,icon_to,&icon))pscloud_log("WARN","Slot icon not copied");}
-    pscloud_log("EVENT","Created save slot %s for %s in profile %s (identity from slot %s, %zu bytes)",slot,title,user,template_slot,capacity);
+    struct row_texts texts={same_game?NULL:(*main_text?main_text:title),sub_text,detail_text,same_game||!*game_title?(same_game?NULL:title):game_title};
+    if(db_add(db,template_title,template_slot,title,slot,&texts,capacity,now,why))goto done;
+    if(same_game) {
+        char icon_from[1300],icon_to[1300];icon_path(home,user,title,template_slot,icon_from,sizeof icon_from);icon_path(home,user,title,slot,icon_to,sizeof icon_to);
+        struct stat icon;if(!lstat(icon_from,&icon)&&S_ISREG(icon.st_mode)) {unlink(icon_to);if(copy_path(icon_from,icon_to,&icon))pscloud_log("WARN","Slot icon not copied");}
+    }
+    pscloud_log("EVENT","Created save slot %s for %s in profile %s (%s from %s/%s, %zu bytes)",slot,title,user,same_game?"identity":"account",template_title,template_slot,capacity);
     result=0;
 done:
     if(result&&placed)unlink(live);
+    if(result&&made_folder)rmdir(folder);
     free_sys(&sys);unlink(image);unlink(copy);rmdir(mount);rmdir(stage);close(parent);
     if(result)pscloud_log("ERROR","Creating save slot %s for %s failed: %s",slot,title,*why);
     return result;
