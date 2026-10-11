@@ -63,3 +63,26 @@ and also why a receiver without its own save cannot be supplied one.
 Guide the receiver through the game's own first save: detect that the profile has
 no save for the package's game, ask the user to start the game until it saves
 once and close it, then continue the import and check automatically.
+
+## Create test 1 (11.40, 2026-10-11): result
+
+`pscloud-create-test.elf` (release `create-test-1`) ran entirely inside
+`/data/pscloud/create-test`:
+
+- `libSceFsInternalForVsh.sprx` offers `sceFsInitCreatePfsSaveDataOpt`,
+  `sceFsCreatePprPfsSaveDataImage` and `sceFsUfsAllocateSaveData`.
+- A 32 MiB container created with an all-zero key (block size 32768, flags 00 02)
+  gets a normal `pfsSKKey` sealed-key area at 0x800, like real game saves.
+- It opens with the creation key, takes a file, closes, and then reopens the
+  normal PSCloud way (key unsealed from 0x800; it unseals to the zero key).
+- The save database `savedata.db`: SQLite 3.46.1, rollback journal (no WAL),
+  `user_version` 10. Objects: table `savedata` (`id INTEGER PRIMARY KEY
+  AUTOINCREMENT`; `title_id`, `dir_name`, `main_title`, `mtime` and
+  `game_title_id` NOT NULL), table `sqlite_sequence`, and index `savedata_index`
+  on (title_id, dir_name, user_param, size_kib, mtime, game_title_id). `blocks` =
+  `size_kib`/64; `account_id` is stored as a decimal integer, `user_id` as the
+  profile number, and `account_id_in_usb_path` as `0000000000000000`.
+
+Still open before PSCloud can create a missing slot: what a new slot's
+`sce_sys/param.sfo` must hold (test 2 compares two slots of one game), and
+whether the system and game accept a slot added to `savedata.db`.
