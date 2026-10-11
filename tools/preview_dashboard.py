@@ -29,6 +29,8 @@ class Handler(BaseHTTPRequestHandler):
         elif path=='/api/preferences':
             self.send({'auto_upload':True,'activity_refresh':True,'game_close_available':True,'game_close_backup':False,'sharing_available':True,'compact_backups':True,'compact_required':False})
         elif path=='/api/health':self.send({'busy':False})
+        elif path=='/api/backup-all':self.send({'running':False,'total':24,'done':24,'backed':3,'unchanged':20,'skipped':1,'failed':0,'current':'','started':1791700000,'finished':int(__import__('time').time())-60,'schedule_hour':3,'schedule_last':'2026-10-11'})
+        elif path=='/api/game-settings':self.send({'title':'PPSA02433','close_backup':True,'backup_all':True})
         elif path=='/api/storage':self.send({'root':'/data/pscloud','free':412*2**30,'total':825*2**30,'places':[
             {'key':'backups','label':'Local backups','purpose':'Every backup made on this PS5.','path':'/data/pscloud/spool','exists':True,'files':14,'bytes':38*2**20},
             {'key':'shared','label':'Shared saves','purpose':'ZIPs exported for sharing and ones you received.','path':'/data/pscloud/share','exists':True,'files':3,'bytes':9*2**20},
@@ -45,8 +47,8 @@ class Handler(BaseHTTPRequestHandler):
             self.send({'users':[{'user':'00000001','name':'Player One'},{'user':'00000002','name':'Player Two'}]})
         elif path=='/api/games':
             self.send({'games':[{'user':'00000001','title':'PPSA02433','slot':slot,
-                                 'name':'Crash Bandicoot 4','supported':True}
-                                for slot in ['PlayerSaveSlot0Save','PlayerSaveProfileSaveData']]+
+                                 'name':'Crash Bandicoot 4','supported':True,'installed':True,'label':label,'sub':'','detail':detail}
+                                for slot,label,detail in [('PlayerSaveSlot0Save','Slot 1 · N. Sanity Beach','42% complete'),('PlayerSaveProfileSaveData','Crash Bandicoot 4','Settings')]]+
                                [{'user':'00000002','title':'PPSA01341','slot':'SAVEDATA00','name':'Astro Bot','supported':True}]})
         elif path=='/api/backups':
             self.send({'backups':[{'file':'ps5-11.40-PPSA02433-'+char*32+'.zip',

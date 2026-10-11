@@ -1,4 +1,25 @@
-# PS5 Cloud Save — development milestone 0.23.0
+# PS5 Cloud Save — development milestone 0.24.0
+
+## Version 0.24.0 — readable save names, per-game settings, back up all, nightly
+
+First part of the "closer to PS Plus cloud saves" plan (sync status, auto-download, cloud
+housekeeping, encryption and start-with-console follow in 0.25-0.28; PS4 saves later).
+- **Readable save names:** each slot shows the PS5's own labels from the save's
+  `param.sfo` copy in `savedata_prospero_meta` (MAINTITLE, SUBTITLE, DETAIL), for example
+  "Slot 1 [Auto] A Debt Repaid", everywhere a slot is named. The game's Back up tab lists
+  "Saves on this PS5" with each slot's own picture (`/api/slot-icon`).
+- **Per-game settings** (`/api/game-settings`, stored in `games.conf`): "Back up when I
+  close this game" and "Include in Back up all games", both on by default.
+- **Back up all games** (`/api/backup-all-start`, status `/api/backup-all`): runs in the
+  background one game at a time, skips running games and games switched off, counts
+  unchanged saves without queueing them again, and uploads the new backups together when
+  automatic upload is on. Progress shows on the home banner; a PS5 notification reports
+  the result.
+- **Nightly backup** (`/api/schedule`, `schedule.conf`): back up all games of every
+  profile once a day at a chosen hour (console clock), when no game is running.
+
+Verified by host tests (labels and pictures, settings, back up all counting new /
+unchanged / skipped, nightly runs once a day) and a local preview.
 
 ## Version 0.23.0 — less storage, everything in one folder
 
