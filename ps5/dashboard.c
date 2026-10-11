@@ -1255,6 +1255,8 @@ static long cloud_quota(const struct settings *cloud,unsigned long long *used,un
     char *u=strstr(buffer,"quota-used-bytes>"),*a=strstr(buffer,"quota-available-bytes>");
     if(u)*used=strtoull(u+17,NULL,10);
     if(a) {long long v=strtoll(a+22,NULL,10);*available=v>0?(unsigned long long)v:0;}
+    /* 207 with no numbers means the provider does not report space */
+    if(status==207&&!u) {static int warned;if(!warned) {warned=1;pscloud_log("INFO","Your cloud does not report how much space is used");}return 0;}
     return status;
 }
 static void cloud_housekeeping_json(int sock) {
