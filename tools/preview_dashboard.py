@@ -24,14 +24,16 @@ class Handler(BaseHTTPRequestHandler):
             html=html.replace('<header class="topbar">','<div class="info" style="margin:0 0 22px;color:#d6caff">Design preview · PS5 offline. Sample versions only; no actions affect your saves or cloud account.</div><header class="topbar">')
             self.send(html.encode(),'text/html; charset=utf-8');return
         if path=='/api/state':
-            self.send({'version':(ROOT/'VERSION').read_text().strip(),'configured':True,'connected':True,
+            self.send({'version':(ROOT/'VERSION').read_text().strip(),'firmware':'11.40','firmware_tested':True,'pid':42,'configured':True,'connected':True,
                        'url':'https://your-nextcloud.example/remote.php/dav/files/you/PS5Backups','username':'Your Nextcloud account'})
         elif path=='/api/preferences':
             self.send({'auto_upload':True,'activity_refresh':True,'game_close_available':True,'game_close_backup':False,'sharing_available':True,'compact_backups':True,'compact_required':False})
         elif path=='/api/health':self.send({'busy':False})
+        elif path=='/api/running':self.send({'known':True,'running':True,'title':'PPSA02433','name':'Crash Bandicoot 4','icon':'/api/icon?title=PPSA02433','backup_on_close':True})
+        elif path=='/api/transfer':self.send({'sequence':3,'phase':7,'active':False,'result':0,'cancelled':False,'name':'Crash Bandicoot 4','file':'portable-PPSA02433-x.zip','total':0,'done':0,'transport':0,'http':200})
         elif path=='/api/google/status':self.send({'configured':False,'authorized':False,'pending':False,'transfers_available':False})
         elif path=='/api/queue':
-            self.send({'items':[],'count':0,'truncated':False})
+            self.send({'items':[{'file':'portable-PPSA02433-a.zip','name':'Crash Bandicoot 4','user':'00000001','title':'PPSA02433','slot':'WholeGame','created':1791536400,'valid':True}],'count':1,'truncated':False})
         elif path=='/api/users':
             self.send({'users':[{'user':'00000001','name':'Player One'},{'user':'00000002','name':'Player Two'}]})
         elif path=='/api/games':

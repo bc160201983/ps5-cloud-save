@@ -1,4 +1,24 @@
-# PS5 Cloud Save — development milestone 0.18.2
+# PS5 Cloud Save — development milestone 0.19.0
+
+## Version 0.19.0 — cleaner home page, now playing
+
+- **Now playing:** the right side of the home banner shows the game that is running
+  (its icon and name, and whether it will be backed up when closed); with no game
+  running, the cloud picture returns. New read-only endpoint /api/running uses the
+  same detection as the game-close watcher. It refreshes every 10 seconds while the
+  home page is visible.
+- **Uploads page:** the upload queue moved from the home page to its own Uploads
+  page in the sidebar, with its own Upload all button.
+- **Profile switcher:** moved from the home page to a compact drop-down in the top
+  bar, visible on every page.
+- **Upload notification:** has a close (×) button, closes itself 8 seconds after an
+  upload finishes, and is not shown again for an upload already seen in that
+  browser. Other messages close when tapped.
+
+Verified: host tests and a local preview (home page, Uploads page, close button
+staying closed after a reload). The now-playing card has not been seen on a console
+yet.
+
 
 ## Version 0.18.2 (0.18.1 corrected) — game-close backup waits for the game to really close
 

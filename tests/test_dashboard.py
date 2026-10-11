@@ -420,6 +420,7 @@ class DashboardTests(unittest.TestCase):
                 time.sleep(0.5)
             self.fail('dashboard stayed busy')
         status,data=self.request('/api/save-status?user=1eb70483&title=PPSA02433');self.assertTrue(data['running'])
+        status,data=self.request('/api/running');self.assertEqual((status,data['running'],data['title'],data['icon']),(200,True,'PPSA02433','/api/icon?title=PPSA02433'))
         self.request('/api/preferences',{'auto_upload':'0','activity_refresh':'1','compact_backups':'1','game_close_backup':'1'})
         time.sleep(3)
         # The game autosaves while running and its save is not mounted between saves.
@@ -432,6 +433,7 @@ class DashboardTests(unittest.TestCase):
         while time.monotonic()<deadline and len(queue())!=1:time.sleep(0.5)
         self.assertEqual(len(queue()),1)
         self.assertFalse(self.request('/api/save-status?user=1eb70483&title=PPSA02433')[1]['running'])
+        self.assertEqual(self.request('/api/running')[1],{'known':True,'running':False,'backup_on_close':True})
 
     def test_generic_dashboard_import_check_and_download(self):
         import test_sharing

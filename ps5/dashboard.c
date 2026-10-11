@@ -74,6 +74,37 @@ static int title_running(const char *title) {
     free(buffer);return found?1:seen?0:-1;
 #endif
 }
+/* The game being played, for the home page: 1 found, 0 none, -1 unknown. */
+static int running_game(char title[16]) {
+    title[0]=0;
+#ifdef PSCLOUD_HOST_TEST
+    const char *path=getenv("PSCLOUD_TEST_RUNNING_TITLES");char list[256]={0};
+    FILE *f=path?fopen(path,"r"):NULL;if(!f)return 0;
+    size_t n=fread(list,1,sizeof list-1,f);fclose(f);list[n]=0;
+    if(strstr(list,"unavailable"))return -1;
+    char *game=strstr(list,"PPSA");if(!game)return 0;
+    memcpy(title,game,9);title[9]=0;return pscloud_title_valid(title)?1:0;
+#else
+    int app=sceSystemServiceGetAppIdOfRunningBigApp();
+    if(app>0&&!sceSystemServiceGetAppTitleId(app,title)&&pscloud_title_valid(title))return 1;
+    title[0]=0;
+    int mib[4]={CTL_KERN,KERN_PROC,KERN_PROC_PROC,0};size_t size=0;
+    if(sysctl(mib,4,NULL,&size,NULL,0)||!size)return -1;
+    size+=size/4;char *buffer=malloc(size);if(!buffer)return -1;
+    if(sysctl(mib,4,buffer,&size,NULL,0)) {free(buffer);return -1;}
+    int found=0;
+    for(size_t offset=0;offset+sizeof(int)<=size&&!found;) {
+        struct kinfo_proc *ki=(struct kinfo_proc *)(buffer+offset);
+        if(ki->ki_structsize<=0||offset+(size_t)ki->ki_structsize>size)break;
+        offset+=(size_t)ki->ki_structsize;
+        if(strcmp(ki->ki_comm,"eboot.bin"))continue;
+        char info[256];memset(info,0,sizeof info);
+        if(sceKernelGetAppInfo(ki->ki_pid,info))continue;
+        memcpy(title,info+0x10,9);title[9]=0;found=pscloud_title_valid(title);if(!found)title[0]=0;
+    }
+    free(buffer);return found;
+#endif
+}
 extern int pscloud_backup_main(int,char **);
 extern const char *pscloud_backup_archive(void);
 extern int pscloud_worker_main(int,char **);
@@ -1052,6 +1083,13 @@ static void serve(int sock,int *locked) {
     if(!strcmp(method,"GET") && !strcmp(url,"/api/games")) {games(sock);return;}
     if(!strcmp(method,"GET") && !strcmp(url,"/api/users")) {users(sock);return;}
     if(!strcmp(method,"GET") && !strcmp(url,"/api/save-status")) {save_status(sock,query);return;}
+    if(!strcmp(method,"GET") && !strcmp(url,"/api/running")) {
+        char title[16],name[256],escaped_name[1536],json[2048];int found=running_game(title);
+        if(found>0) {pscloud_app_name(appmeta,title,name,sizeof name);escaped(escaped_name,sizeof escaped_name,name);}
+        if(found>0)snprintf(json,sizeof json,"{\"known\":true,\"running\":true,\"title\":\"%s\",\"name\":\"%s\",\"icon\":\"/api/icon?title=%s\",\"backup_on_close\":%s}",title,escaped_name,title,game_close_backup?"true":"false");
+        else snprintf(json,sizeof json,"{\"known\":%s,\"running\":false,\"backup_on_close\":%s}",found<0?"false":"true",game_close_backup?"true":"false");
+        respond(sock,200,"application/json",json,strlen(json));return;
+    }
     if(!strcmp(method,"GET") && !strcmp(url,"/api/icon")) {game_icon(sock,query);return;}
     if(!strcmp(method,"GET") && !strcmp(url,"/api/backups")) {backups(sock,query);return;}
     if(!strcmp(method,"GET") && !strcmp(url,"/api/queue")) {queue_list(sock);return;}
