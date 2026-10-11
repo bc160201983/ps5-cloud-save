@@ -91,7 +91,8 @@ static int valid(const char *s) {
 struct remote_body {char text[1025];size_t size;};
 struct remote_hash {EVP_MD_CTX *ctx;curl_off_t size,limit;};
 static size_t hash_remote(char *p,size_t a,size_t b,void *ctx) {
-    struct remote_hash *h=ctx;if(b && a>(size_t)-1/b)return 0;size_t n=a*b;
+    struct remote_hash *h=ctx;if(stopped||(b && a>(size_t)-1/b))return 0; /* 0 aborts the readback when cancelled */
+    size_t n=a*b;
     if((curl_off_t)n<0 || (curl_off_t)n>h->limit-h->size || EVP_DigestUpdate(h->ctx,p,n)!=1)return 0;
     h->size+=(curl_off_t)n;transfer_done=(unsigned long long)h->size;return n;
 }
@@ -281,6 +282,7 @@ static int upload(const char *base,const char *user,const char *pass,const char 
     }
     int verified=verify_remote(url,user,pass,ca,send_hash,send_size);
     if(sealed>=0)close(sealed);
+    if(stopped) {fprintf(stderr,"Upload cancelled; nothing committed, local backup retained: %s\n",object);return 1;}
     if(verified!=1) {
         fprintf(stderr,"Remote archive verification failed; local backup retained for retry: %s\n",object);return 1;
     }
