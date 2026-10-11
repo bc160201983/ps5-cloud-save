@@ -64,7 +64,7 @@ static int json_string(const char *json,const char *key,char *out,size_t max) {
 int pscloud_app_meta_dir(const char *root,const char *title,char *out,size_t max) {
     if(!max||!pscloud_title_valid(title))return -1;
     char path[1400];struct stat st;
-    if(snprintf(path,sizeof path,"%s/%s/param.json",root,title)<(int)sizeof path && !stat(path,&st) && S_ISREG(st.st_mode)) {
+    if(snprintf(path,sizeof path,"%s/%s",root,title)<(int)sizeof path && !lstat(path,&st) && S_ISDIR(st.st_mode)) {
         return snprintf(out,max,"%s/%s",root,title)<(int)max?0:-1;
     }
     char sharing[1400]={0};
