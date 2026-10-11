@@ -771,6 +771,7 @@ class DashboardTests(unittest.TestCase):
         # This PS5 (A): the test dashboard, with compact backups and the share fixture.
         self.process.terminate();self.process.communicate(timeout=5)
         fixture=self.fixture.root/'generic';test_portable.PortableTests.sfo(self,fixture/'save1','save1',b'\x44'*8)
+        test_portable.PortableTests.sfo(self,fixture/SLOT,SLOT,b'\x44'*8)
         (self.image.parent/'sdimg_save1').write_bytes(self.original)
         metadata=self.root/'appmeta/PPSA02433';metadata.mkdir(parents=True);(metadata/'param.json').write_text(json.dumps({'contentVersion':'01.000.002'}))
         self.cloud.unlink()
