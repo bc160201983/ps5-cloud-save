@@ -29,6 +29,8 @@ class Handler(BaseHTTPRequestHandler):
         elif path=='/api/preferences':
             self.send({'auto_upload':True,'activity_refresh':True,'game_close_available':True,'game_close_backup':False,'sharing_available':True,'compact_backups':True,'compact_required':False})
         elif path=='/api/health':self.send({'busy':False})
+        elif path=='/api/sync-status':self.send({'state':'cloud_newer','local_time':1791700000,'base':0,'cloud':{'file':'x','user':'1eb70484','name':'bilal','created':1791720000,'sha256':''},'links':1})
+        elif path=='/api/cloud-profiles':self.send({'console':'a','profiles':[{'user':'1eb70484','name':'bilal','console':'b','firmware':'7.00','this_console':False},{'user':'00000001','name':'Player One','console':'a','firmware':'11.40','this_console':True}],'links':{'00000001':'1eb70484'}})
         elif path=='/api/backup-all':self.send({'running':False,'total':24,'done':24,'backed':3,'unchanged':20,'skipped':1,'failed':0,'current':'','started':1791700000,'finished':int(__import__('time').time())-60,'schedule_hour':3,'schedule_last':'2026-10-11'})
         elif path=='/api/game-settings':self.send({'title':'PPSA02433','close_backup':True,'backup_all':True})
         elif path=='/api/storage':self.send({'root':'/data/pscloud','free':412*2**30,'total':825*2**30,'places':[

@@ -1,4 +1,33 @@
-# PS5 Cloud Save — development milestone 0.24.0
+# PS5 Cloud Save — development milestone 0.25.0
+
+## Version 0.25.0 — sync between consoles
+
+Cloud backups are stored per console profile (`<game>/User-<profile>/WholeGame`), and the
+same person has a different profile ID on each PS5. So syncing starts with **linking**:
+- Each console publishes its profiles to `<cloud>/.pscloud-profiles/<profile>.txt` (name,
+  a random console ID kept in `console.id`, firmware) when it starts and hourly.
+- Cloud settings → **Link with your other PS5**: for each local profile, choose which
+  profile on the other console is the same person (`links.conf`, `/api/links`).
+
+**Sync status** (`/api/sync-status`, banner on each game page) compares the newest save
+time on this PS5 with the newest cloud version of this profile and its linked profiles, and
+the last sync point (`sync/<profile>-<ID>`, written after a replace from a synced save):
+in sync · this PS5 is newer · cloud is newer · **both changed (conflict)** · not in the
+cloud yet. The banner offers Back up now, **Get the newer save**, or both for a conflict.
+
+**Get the newer save** (`/api/sync-get`) downloads the newest linked version, verifies its
+checksum, stores it in `share/` and runs the usual staged check for this profile (version
+checks stay on; slots this profile lacks are skipped). The normal Replace my save step then
+uses it, with a rollback copy.
+
+**Per game, optional:** "Download newer saves automatically" checks every 15 minutes while
+the game is closed and notifies you when a checked newer save is ready; "…and replace my
+save automatically" also replaces it when there is no conflict (rollback copy kept).
+Background checks do not write every cloud request to Activity.
+
+Both consoles need PSCloud connected to the same cloud account. Verified by host tests
+(not linked, cloud newer, fetch and check without changing the save, replace, in sync, and
+a conflict when both change) and a local preview. Not yet tried between two consoles.
 
 ## Version 0.24.0 — readable save names, per-game settings, back up all, nightly
 
