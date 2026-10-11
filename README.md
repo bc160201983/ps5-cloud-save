@@ -23,8 +23,10 @@ up after 5 minutes with no save changes. /api/save-status also reports `running`
 "close the game" step while the game is running.
 
 Verified: host tests, including a simulated game that autosaves while running with
-no mounted save (no backup until it closes). Running-game detection on a real
-console has not been verified yet.
+no mounted save (no backup until it closes). On 2026-10-11, with v0.18.2 on the 11.40
+console and Marvel's Wolverine open, /api/save-status reported running=true for
+Wolverine and running=false for a game that was not open. Deployed to both consoles.
+A full play-then-close cycle with the fixed build has not been observed yet.
 
 
 ## Version 0.18.0 — a separate view for each PS5 profile
