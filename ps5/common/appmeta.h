@@ -8,5 +8,8 @@ int pscloud_app_meta_dir(const char *metadata_root,const char *title,char *out,s
 int pscloud_save_title_name(const char *home,const char *user,const char *title,char *name,size_t max);
 /* The PS5's own labels for one save slot (param.sfo MAINTITLE, SUBTITLE, DETAIL). */
 int pscloud_save_slot_info(const char *home,const char *user,const char *title,const char *slot,char *main,size_t main_max,char *sub,size_t sub_max,char *detail,size_t detail_max);
+/* When the game last saved each slot of a title, from the PS5's save database (read-only). */
+struct pscloud_db_slot {char slot[64];long long saved;};
+int pscloud_save_db_times(const char *path,const char *title,struct pscloud_db_slot *out,int max);
 int pscloud_app_version(const char *metadata_root,const char *title,char *version,size_t max);
 #endif

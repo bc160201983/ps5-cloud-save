@@ -811,6 +811,61 @@ class DashboardTests(unittest.TestCase):
         finally:
             b.terminate();b.communicate(timeout=5)
 
+    @staticmethod
+    def save_db(root,user,rows):
+        import sqlite3
+        folder=Path(root)/'system/system_data/savedata_prospero'/user/'db/user';folder.mkdir(parents=True,exist_ok=True)
+        db=sqlite3.connect(str(folder/'savedata.db'))
+        db.execute('create table if not exists savedata (id INTEGER PRIMARY KEY, title_id TEXT, dir_name TEXT, main_title TEXT, sub_title TEXT, detail TEXT, tmp_dir_name TEXT, is_broken INTEGER, user_param INTEGER, blocks INTEGER, free_blocks INTEGER, size_kib INTEGER, mtime TEXT, fake_broken INTEGER)')
+        db.execute('delete from savedata')
+        for slot,when in rows:db.execute('insert into savedata (title_id,dir_name,main_title,detail,mtime) values (?,?,?,?,?)',('PPSA02433',slot,'Label '+slot,'x'*3000,when))
+        db.commit();db.close()
+
+    def test_sync_compares_when_the_game_saved_each_slot(self):
+        import test_portable,socket
+        def free_udp():
+            u=socket.socket(socket.AF_INET,socket.SOCK_DGRAM);u.bind(('127.0.0.1',0));port=u.getsockname()[1];u.close();return port
+        self.process.terminate();self.process.communicate(timeout=5)
+        fixture=self.fixture.root/'generic'
+        for slot in ('save1',SLOT):test_portable.PortableTests.sfo(self,fixture/slot,slot,b'\x44'*8)
+        (self.image.parent/'sdimg_save1').write_bytes(self.original)
+        for r in (self.root,):(Path(r)/'appmeta/PPSA02433').mkdir(parents=True);(Path(r)/'appmeta/PPSA02433/param.json').write_text(json.dumps({'contentVersion':'01.000.002'}))
+        # This PS5 saved both slots on 1 October (long rows test the overflow pages too).
+        self.save_db(self.root,'1eb70483',[('save1','2026-10-01T10:00:00.00Z'),(SLOT,'2026-10-01T10:00:00.00Z')])
+        self.cloud.unlink()
+        self.start_server(PSCLOUD_TEST_GENERIC_PAYLOADS=str(fixture),PSCLOUD_TEST_UDP_PORT=str(free_udp()))
+        self.request('/api/preferences',{'auto_upload':'0','activity_refresh':'1','compact_backups':'1'})
+        # The other PS5 saved slot save1 later (5 October), the other slot at the same time.
+        other=Path(self.fixture.root)/'consoleB';live=other/'home/1eb70484/savedata_prospero/PPSA02433';live.mkdir(parents=True)
+        for slot in ('save1',SLOT):(live/('sdimg_'+slot)).write_bytes(self.original)
+        (other/'root/appmeta/PPSA02433').mkdir(parents=True);(other/'root/appmeta/PPSA02433/param.json').write_text(json.dumps({'contentVersion':'01.000.002'}))
+        self.save_db(other/'root','1eb70484',[('save1','2026-10-05T18:30:00.00Z'),(SLOT,'2026-10-01T10:00:00.00Z')])
+        (other/'root/peers.conf').write_text('127.0.0.1:%d\n'%self.port);(other/'root/links.conf').write_text('1eb70484 1eb70483\n')
+        (other/'root/preferences.conf').write_text('AUTO_UPLOAD=0\nACTIVITY_REFRESH=1\nLOCAL_KEEP_LATEST=0\nCOMPACT_BACKUPS=1\nGAME_CLOSE_BACKUP=0\n')
+        b=subprocess.Popen([str(ROOT/'dashboard-host'),str(other/'root'),str(other/'home'),'0'],env=dict(os.environ,PSCLOUD_TEST_UDP_PORT=str(free_udp()),PSCLOUD_TEST_GENERIC_PAYLOADS=str(fixture)),stdout=subprocess.PIPE,stderr=subprocess.STDOUT,text=True)
+        try:
+            port_b=int(b.stdout.readline().strip().split('=',1)[1]);b.stdout.readline()
+            self.request('/api/peers',{'peers':'127.0.0.1:%d'%port_b});self.request('/api/links',{'user':'1eb70483','linked':'1eb70484'})
+            status_url='/api/sync-status?user=1eb70483&title=PPSA02433'
+            data=self.request(status_url)[1];self.assertEqual(data['state'],'cloud_newer',data)
+            slots=self.request('/api/sync-slots?user=1eb70483&title=PPSA02433')[1]
+            there={x['slot']:x['mtime'] for x in slots['there']};here={x['slot']:x['mtime'] for x in slots['here']}
+            self.assertGreater(there['save1'],here['save1']);self.assertEqual(there[SLOT],here[SLOT])
+            self.assertEqual(next(x['label'] for x in slots['here'] if x['slot']=='save1'),'')  # no sfo copy here: label empty
+            # Get the newer save: the other PS5 backs up its current save first, then it is checked here.
+            status,got=self.request('/api/sync-get',self.selected(slot='WholeGame',closed='yes'));self.assertEqual(status,200,got)
+            self.assertTrue(list((other/'root/spool').glob('portable-PPSA02433-*.identity')))
+            status,done=self.request('/api/share-restore',self.selected(closed='yes',confirm='yes',file=got['file'],sha256=got['sha256']));self.assertEqual(status,200,done)
+            self.assertEqual(self.request(status_url)[1]['state'],'in_sync')
+            # The game saves here afterwards: this PS5 is newer.
+            self.save_db(self.root,'1eb70483',[('save1','2026-10-20T09:00:00.00Z'),(SLOT,'2026-10-01T10:00:00.00Z')])
+            self.assertEqual(self.request(status_url)[1]['state'],'local_newer')
+            # And the other PS5 saves a different slot: both changed.
+            self.save_db(other/'root','1eb70484',[('save1','2026-10-05T18:30:00.00Z'),(SLOT,'2026-10-21T09:00:00.00Z')])
+            self.assertEqual(self.request(status_url)[1]['state'],'conflict')
+        finally:
+            if b.poll() is None:b.terminate();b.communicate(timeout=5)
+
     def test_per_game_sync_settings_round_trip(self):
         self.request('/api/game-settings',{'title':'PPSA02433','close_backup':'1','backup_all':'1','auto_sync':'1','auto_apply':'1'})
         data=self.request('/api/game-settings?title=PPSA02433')[1];self.assertEqual((data['auto_sync'],data['auto_apply']),(True,True))

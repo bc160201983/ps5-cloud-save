@@ -136,6 +136,7 @@ static void sync_tick(void);
 static void registry_publish(void);
 static void console_id_load(void);
 static void sync_after_restore(const char *user,const char *title,const char *file);
+static void sync_slots_json(int sock,const char *query);
 static long long sync_base(const char *user,const char *title);
 static void sync_received(const char *user,const char *title,char sha[65]);
 static int backup_one(const char *user,const char *title,char published[144],int *unchanged);
@@ -1099,6 +1100,83 @@ static void local_current(const char *user,const char *title,const struct cloud_
     if(received&&*sha&&live<=received+60) {snprintf(current,65,"%s",sha);return;}
     if(latest&&*latest->file&&live<=latest->created+60)snprintf(current,65,"%s",latest->sha);
 }
+
+/* ---------- Comparing the actual saves, slot by slot ----------
+ * When the game last wrote each save slot (the container's modification time) plus the
+ * PS5's own label for it. After a replace, each slot is given the time it was really saved
+ * on the other PS5, so times stay comparable across consoles. */
+struct live_slot {char slot[64],label[128],sub[128];long long mtime;};
+static char system_root[1024]; /* "" on the PS5; tests point it at a folder */
+static void save_db_path(const char *user,char *out,size_t max) {snprintf(out,max,"%s/system_data/savedata_prospero/%s/db/user/savedata.db",system_root,user);}
+/* Slots that PSCloud filled from the other PS5: "slot source_time db_time_then". While the
+ * game has not saved the slot again (same database time), it counts as the source's time. */
+static long long received_slot_time(const char *user,const char *title,const char *slot,long long now_saved) {
+    char path[1400],line[256];snprintf(path,sizeof path,"%s/slot-times/%s-%s",root,user,title);FILE *f=fopen(path,"r");long long result=0;if(!f)return 0;
+    while(fgets(line,sizeof line,f)) {char name[80];long long source,then;if(sscanf(line,"%79s %lld %lld",name,&source,&then)==3&&!strcmp(name,slot)&&then==now_saved)result=source;}
+    fclose(f);return result;
+}
+static int live_slots(const char *user,const char *title,struct live_slot *out,int max) {
+    char path[1400];snprintf(path,sizeof path,"%s/%s/savedata_prospero/%s",home,user,title);DIR *d=opendir(path);int n=0;if(!d)return 0;
+    char db[1400];save_db_path(user,db,sizeof db);struct pscloud_db_slot saved[128];int ns=pscloud_save_db_times(db,title,saved,128);
+    struct dirent *e;
+    while((e=readdir(d))&&n<max) {
+        if(strncmp(e->d_name,"sdimg_",6)||!strncmp(e->d_name,"sdimg_sce_bu_",13)||!safe_word(e->d_name+6,63))continue;
+        char file[1600];struct stat st;snprintf(file,sizeof file,"%s/%s",path,e->d_name);if(lstat(file,&st)||!S_ISREG(st.st_mode))continue;
+        memset(&out[n],0,sizeof out[n]);snprintf(out[n].slot,sizeof out[n].slot,"%s",e->d_name+6);
+        long long when=(long long)st.st_mtime; /* fallback when the save database cannot be read */
+        for(int k=0;k<ns;k++)if(!strcmp(saved[k].slot,out[n].slot))when=saved[k].saved;
+        long long source=received_slot_time(user,title,out[n].slot,when);out[n].mtime=source?source:when;
+        char detail[256];pscloud_save_slot_info(home,user,title,out[n].slot,out[n].label,sizeof out[n].label,out[n].sub,sizeof out[n].sub,detail,sizeof detail);n++;
+    }
+    closedir(d);return n;
+}
+static void live_slots_json(char *json,size_t cap,const struct live_slot *v,int n) {
+    size_t pos=(size_t)snprintf(json,cap,"[");
+    for(int i=0;i<n&&pos<cap-1200;i++) {char a[800],b[800];escaped(a,sizeof a,v[i].label);escaped(b,sizeof b,v[i].sub);
+        pos+=(size_t)snprintf(json+pos,cap-pos,"%s{\"slot\":\"%s\",\"mtime\":%lld,\"label\":\"%s\",\"sub\":\"%s\"}",i?",":"",v[i].slot,v[i].mtime,a,b);}
+    snprintf(json+pos,cap-pos,"]");
+}
+static void peer_slots_json(int sock,const char *query) {
+    char user[32],title[16];if(parameter(query,"user",user,sizeof user)||!safe_word(user,16)||parameter(query,"title",title,sizeof title)||!pscloud_title_valid(title)) {reject(sock,400,"Invalid request");return;}
+    struct live_slot v[64];int n=live_slots(user,title,v,64);char *json=malloc(200000);if(!json) {reject(sock,500,"Out of memory");return;}
+    memcpy(json,"{\"slots\":",9);live_slots_json(json+9,200000-16,v,n);strcat(json,"}");respond(sock,200,"application/json",json,strlen(json));free(json);
+}
+/* Parse the other console's list; -1 not reachable, else the count. */
+static int peer_slots(const char *peer,const char *user,const char *title,struct live_slot *out,int max) {
+    char path[200];snprintf(path,sizeof path,"/api/peer/slots?user=%s&title=%s",user,title);char *body=malloc(200001);size_t got=0;if(!body)return -1;
+    long status=peer_get(peer,path,body,200000,&got,8);if(!status) {free(body);return -1;}
+    if(status!=200) {free(body);return 0;}
+    int n=0;
+    for(char *at=body;n<max&&(at=strstr(at,"{\"slot\":\""));at++) {
+        memset(&out[n],0,sizeof out[n]);json_text(at,"slot",out[n].slot,sizeof out[n].slot);if(!safe_word(out[n].slot,63))continue;
+        out[n].mtime=json_number(at,"mtime");char *next=strstr(at+1,"{\"slot\":\"");char saved=0;if(next) {saved=*next;*next=0;}
+        json_text(at,"label",out[n].label,sizeof out[n].label);json_text(at,"sub",out[n].sub,sizeof out[n].sub);
+        if(next)*next=saved;
+        n++;
+    }
+    free(body);return n;
+}
+struct slot_compare {int here_newer,there_newer,only_here,only_there,same;long long here_max,there_max;};
+static void compare_slots(const struct live_slot *here,int nh,const struct live_slot *there,int nt,struct slot_compare *c) {
+    memset(c,0,sizeof *c);
+    for(int i=0;i<nh;i++) {if(here[i].mtime>c->here_max)c->here_max=here[i].mtime;int k=-1;for(int j=0;j<nt;j++)if(!strcmp(here[i].slot,there[j].slot))k=j;
+        if(k<0) {c->only_here++;continue;}
+        long long d=here[i].mtime-there[k].mtime;if(d>2)c->here_newer++;else if(d<-2)c->there_newer++;else c->same++;}
+    for(int j=0;j<nt;j++) {if(there[j].mtime>c->there_max)c->there_max=there[j].mtime;int k=-1;for(int i=0;i<nh;i++)if(!strcmp(here[i].slot,there[j].slot))k=i;if(k<0)c->only_there++;}
+}
+/* After a replace: remember, per slot, the time the game saved it on the other PS5. */
+static void apply_slot_times(const char *user,const char *title,const char *list) {
+    char db[1400];save_db_path(user,db,sizeof db);struct pscloud_db_slot saved[128];int ns=pscloud_save_db_times(db,title,saved,128);
+    char dir[1400],path[1500];snprintf(dir,sizeof dir,"%s/slot-times",root);(void)mkdir(dir,0700);snprintf(path,sizeof path,"%s/%s-%s",dir,user,title);
+    char out[8192]="",copy[4096];size_t n=0;snprintf(copy,sizeof copy,"%s",list);
+    for(char *save=NULL,*tok=strtok_r(copy,";",&save);tok;tok=strtok_r(NULL,";",&save)) {
+        char *colon=strrchr(tok,':');if(!colon)continue;*colon=0;long long when=strtoll(colon+1,NULL,10);if(!safe_word(tok,63)||when<=0)continue;
+        long long now=0;for(int k=0;k<ns;k++)if(!strcmp(saved[k].slot,tok))now=saved[k].saved;
+        if(!now) {char file[1600];struct stat st;snprintf(file,sizeof file,"%s/%s/savedata_prospero/%s/sdimg_%s",home,user,title,tok);if(!lstat(file,&st))now=(long long)st.st_mtime;}
+        n+=(size_t)snprintf(out+n,sizeof out-n,"%s %lld %lld\n",tok,when,now);if(n>=sizeof out-100)break;
+    }
+    atomic_config(path,out);
+}
 static int peer_latest(const char *peer,const char *user,const char *title,struct cloud_version *out) {
     char path[200],body[1024];size_t got=0;snprintf(path,sizeof path,"/api/peer/latest?user=%s&title=%s",user,title);
     long status=peer_get(peer,path,body,sizeof body-1,&got,8);
@@ -1271,6 +1349,18 @@ static int sync_state(const char *user,const char *title,struct cloud_version *n
         for(int k=0;k<peer_count;k++) {int r=peer_latest(peers[k],linked[i],title,&v);if(r<0)unreachable=1;else if(r&&v.created>newest_other->created) {*newest_other=v;any_other=1;}}
     }
     memset(cloud.password,0,sizeof cloud.password);
+    /* Over the network, compare the actual saves: when the game last wrote each slot on each PS5. */
+    for(int k=0;k<peer_count;k++)for(int i=0;i<n;i++) {
+        struct live_slot here[64],there[64];int nt=peer_slots(peers[k],linked[i],title,there,64);if(nt<=0)continue;
+        int nh=live_slots(user,title,here,64);struct slot_compare c;compare_slots(here,nh,there,nt,&c);
+        if(strcmp(newest_other->peer,peers[k])||strcmp(newest_other->user,linked[i])) { /* fetch from this PS5; it backs up first */
+            struct cloud_version found;if(peer_latest(peers[k],linked[i],title,&found)>0)*newest_other=found;
+            else {memset(newest_other,0,sizeof *newest_other);snprintf(newest_other->user,sizeof newest_other->user,"%.16s",linked[i]);snprintf(newest_other->peer,sizeof newest_other->peer,"%.63s",peers[k]);}
+        }
+        newest_other->created=c.there_max;*local_time=c.here_max;
+        int here=c.here_newer+c.only_here,there_count=c.there_newer+c.only_there;
+        return here&&there_count?SYNC_CONFLICT:there_count?SYNC_CLOUD:here?SYNC_LOCAL:SYNC_IN;
+    }
     if(!any_other&&n&&unreachable)return SYNC_OFFLINE; /* cannot tell: the other PS5 did not answer */
     if(!any_other&&n)return *local_time?SYNC_ONLY_HERE:SYNC_NONE; /* linked, but the other side has no copy */
     if(!got&&!any_other)return SYNC_NONE;
@@ -1310,14 +1400,29 @@ static void sync_status_json(int sock,const char *query) {
     struct settings cloud={0};int has_cloud=!pscloud_configure(cloudpath,&cloud);memset(cloud.password,0,sizeof cloud.password);
     /* other_found: the linked profile has a copy somewhere; without it "newer" means nothing to compare */
     char json[1900];snprintf(json,sizeof json,"{\"state\":\"%s\",\"local_time\":%lld,\"base\":%lld,\"cloud\":{\"file\":\"%s\",\"user\":\"%s\",\"name\":\"%s\",\"created\":%lld,\"sha256\":\"%s\",\"source\":\"%s\",\"peer\":\"%s\",\"firmware\":\"%s\"},\"links\":%d,\"other_found\":%s,\"peers\":%d,\"has_cloud\":%s}",
-        sync_names[state],local_time,sync_base(user,title),other.file,other.user,shown,other.created,other.sha,*other.peer?"network":"cloud",other.peer,firmware,links,*other.file?"true":"false",peer_count,has_cloud?"true":"false");
+        sync_names[state],local_time,sync_base(user,title),other.file,other.user,shown,other.created,other.sha,*other.peer?"network":"cloud",other.peer,firmware,links,*other.file||*other.peer?"true":"false",peer_count,has_cloud?"true":"false");
     respond(sock,200,"application/json",json,strlen(json));
 }
 /* Fetch the newest linked cloud version into share/ and run the staged check for this
  * profile. On success the normal Replace my save step can use it. */
 static int sync_fetch(const char *user,const char *title,char file[128],char sha[65],char *why,size_t why_max) {
     struct cloud_version other;long long local_time=0;webdav_quiet=1;int state=sync_state(user,title,&other,&local_time);webdav_quiet=0;
-    if(!*other.file) {snprintf(why,why_max,"No save from your other PS5 was found in the cloud or on your network");return -1;}
+    char slot_times[4096]="";
+    if(*other.peer) {
+        char ask[300],reply[512];size_t got=0;snprintf(ask,sizeof ask,"/api/peer/backup?from=%s&to=%s&title=%s",user,other.user,title);
+        CURL *c=curl_easy_init();
+        if(c) {char url_backup[700];struct peer_body pr={reply,0,sizeof reply-1};snprintf(url_backup,sizeof url_backup,"http://%s%s",other.peer,ask);
+            curl_easy_setopt(c,CURLOPT_URL,url_backup);curl_easy_setopt(c,CURLOPT_PROTOCOLS_STR,"http");curl_easy_setopt(c,CURLOPT_POST,1L);curl_easy_setopt(c,CURLOPT_POSTFIELDS,"");
+            curl_easy_setopt(c,CURLOPT_CONNECTTIMEOUT,4L);curl_easy_setopt(c,CURLOPT_TIMEOUT,600L);curl_easy_setopt(c,CURLOPT_NOSIGNAL,1L);
+            curl_easy_setopt(c,CURLOPT_WRITEFUNCTION,peer_collect);curl_easy_setopt(c,CURLOPT_WRITEDATA,&pr);
+            CURLcode rc=curl_easy_perform(c);long status=0;curl_easy_getinfo(c,CURLINFO_RESPONSE_CODE,&status);curl_easy_cleanup(c);got=pr.size;reply[got]=0;
+            if(rc!=CURLE_OK||status!=200)pscloud_log("INFO","The other PS5 did not make a fresh backup first (HTTP %ld); using its newest backup",status);
+        }
+        struct cloud_version fresh;if(peer_latest(other.peer,other.user,title,&fresh)>0)other=fresh;
+        struct live_slot there[64];int nt=peer_slots(other.peer,other.user,title,there,64);size_t at=0;
+        for(int i=0;i<nt&&at<sizeof slot_times-80;i++)at+=(size_t)snprintf(slot_times+at,sizeof slot_times-at,"%s%s:%lld",at?";":"",there[i].slot,there[i].mtime);
+    }
+    if(!*other.file) {snprintf(why,why_max,*other.peer?"Your other PS5 has no backup of this game it can send yet. Close the game there and try again":"No save from your other PS5 was found in the cloud or on your network");return -1;}
     (void)state;unsigned char *data=malloc(PSCLOUD_RESTORE_MAX+1U);if(!data) {snprintf(why,why_max,"Out of memory");return -1;}
     struct response r={(char *)data,0,PSCLOUD_RESTORE_MAX};long status=0;
     if(*other.peer) {
@@ -1345,17 +1450,21 @@ static int sync_fetch(const char *user,const char *title,char file[128],char sha
     if(bad) {unlink(path);const char *e=pscloud_share_error();snprintf(why,why_max,"Check failed: %s",*e?e:"see Activity");return -1;}
     char proof[1700];snprintf(proof,sizeof proof,"%s/%s.check-%s",share,file,user);atomic_config(proof,sha);
     snprintf(path,sizeof path,"%s/sync",root);(void)mkdir(path,0700);
-    char pending[1400],text[256];snprintf(pending,sizeof pending,"%s/sync/%s-%s.pending",root,user,title);snprintf(text,sizeof text,"FILE=%s\nSHA=%s\n",file,other.sha);atomic_config(pending,text);
+    char pending[1400],text[256];snprintf(pending,sizeof pending,"%s/sync/%s-%s.pending",root,user,title);char pending_text[4600];snprintf(pending_text,sizeof pending_text,"FILE=%s\nSHA=%s\nTIMES=%s\n",file,other.sha,slot_times);atomic_config(pending,pending_text);(void)text;
     pscloud_log("EVENT","Newer save for %s fetched from %s and checked; ready to replace",title,*other.peer?other.peer:"the cloud");
     return 0;
 }
 /* After a replace: if it used the fetched sync file, this game is now in sync. */
 static void sync_after_restore(const char *user,const char *title,const char *file) {
-    char pending[1400],line[256]={0},sha_line[128]={0};snprintf(pending,sizeof pending,"%s/sync/%s-%s.pending",root,user,title);FILE *f=fopen(pending,"r");if(!f)return;
+    char pending[1400],line[256]={0},sha_line[128]={0},times_line[4700]={0};snprintf(pending,sizeof pending,"%s/sync/%s-%s.pending",root,user,title);FILE *f=fopen(pending,"r");if(!f)return;
     if(!fgets(line,sizeof line,f))line[0]=0;
     if(!fgets(sha_line,sizeof sha_line,f))sha_line[0]=0;
+    if(!fgets(times_line,sizeof times_line,f))times_line[0]=0;
     fclose(f);char expect[200];snprintf(expect,sizeof expect,"FILE=%s\n",file);
-    if(!strcmp(line,expect)) {char sha[65]={0};if(!strncmp(sha_line,"SHA=",4))sscanf(sha_line+4,"%64s",sha);sync_mark(user,title,sha);unlink(pending);}
+    if(strcmp(line,expect))return;
+    char sha[65]={0};if(!strncmp(sha_line,"SHA=",4))sscanf(sha_line+4,"%64s",sha);
+    if(!strncmp(times_line,"TIMES=",6)) {times_line[strcspn(times_line,"\n")]=0;apply_slot_times(user,title,times_line+6);}
+    sync_mark(user,title,sha);unlink(pending);
 }
 static void cloud_profiles_json(int sock) {
     struct settings cloud={0};if(pscloud_configure(cloudpath,&cloud)) {respond(sock,200,"application/json","{\"profiles\":[],\"links\":[]}",28);return;}
@@ -1439,6 +1548,20 @@ static int peer_known(const char *ip) {
     for(int i=0;i<n;i++)if(!strncmp(peers[i],ip,len)&&peers[i][len]==':')return 1;
     return 0;
 }
+/* POST /api/peer/backup?from=<their profile>&to=<our profile>&title=: back up our current save
+ * so the other PS5 gets the actual latest one. Only for a known console and a linked profile. */
+static void peer_backup(int sock,const char *query,const char *from_ip) {
+    char from[32],to[32],title[16],linked[4][17];
+    if(parameter(query,"from",from,sizeof from)||!safe_word(from,16)||parameter(query,"to",to,sizeof to)||!safe_word(to,16)||parameter(query,"title",title,sizeof title)||!pscloud_title_valid(title)) {reject(sock,400,"Invalid request");return;}
+    if(!peer_known(from_ip)) {reject(sock,403,"Unknown console");return;}
+    int n=links_for(to,linked),ok=0;for(int i=0;i<n;i++)if(!strcmp(linked[i],from))ok=1;
+    if(!ok) {reject(sock,403,"Profiles not linked");return;}
+    if(title_running(title)>0) {reject(sock,409,"The game is open on this PS5");return;}
+    if(pthread_mutex_trylock(&operation_mutex)) {reject(sock,409,"Busy");return;}
+    char published[144];int unchanged=0;pscloud_log_open(logpath);int bad=backup_one(to,title,published,&unchanged);pthread_mutex_unlock(&operation_mutex);
+    if(bad) {reject(sock,500,"Backup failed");return;}
+    const char *json=unchanged?"{\"ok\":true,\"unchanged\":true}":"{\"ok\":true,\"unchanged\":false}";respond(sock,200,"application/json",json,strlen(json));
+}
 /* On the receiving console: POST /api/peer/push?from=<their profile>&to=<our profile>&title=&replace=0|1 */
 static void peer_push(int sock,const char *query,const char *from_ip) {
     char from[32],to[32],title[16],replace[8]="0",linked[4][17];
@@ -1468,6 +1591,17 @@ static void peer_push(int sock,const char *query,const char *from_ip) {
     const char *json=!strcmp(replace,"1")?"{\"ok\":true,\"state\":\"ready\",\"message\":\"Sent and checked. The other PS5 does not allow remote replacing, so it is waiting there: open the game in PSCloud on that PS5 and choose Replace my save\"}":
         "{\"ok\":true,\"state\":\"ready\",\"message\":\"Sent and checked. On the other PS5, open the game in PSCloud and choose Replace my save\"}";
     respond(sock,200,"application/json",json,strlen(json));
+}
+/* Both consoles' slots for one game, for the comparison table. */
+static void sync_slots_json(int sock,const char *query) {
+    char user[32],title[16];if(parameter(query,"user",user,sizeof user)||!safe_word(user,16)||parameter(query,"title",title,sizeof title)||!pscloud_title_valid(title)) {reject(sock,400,"Choose a profile and game");return;}
+    struct live_slot here[64],there[64];int nh=live_slots(user,title,here,64),nt=0;char peers[8][64],linked[4][17],from[64]="";
+    int np=peers_list(peers),nl=links_for(user,linked);
+    for(int k=0;k<np&&!nt;k++)for(int i=0;i<nl&&!nt;i++) {int got=peer_slots(peers[k],linked[i],title,there,64);if(got>0) {nt=got;snprintf(from,sizeof from,"%.63s",peers[k]);}}
+    char *json=malloc(420000);if(!json) {reject(sock,500,"Out of memory");return;}
+    size_t pos=(size_t)snprintf(json,420000,"{\"peer\":\"%s\",\"here\":",from);live_slots_json(json+pos,200000,here,nh);pos=strlen(json);
+    pos+=(size_t)snprintf(json+pos,420000-pos,",\"there\":");live_slots_json(json+pos,200000,there,nt);strcat(json,"}");
+    respond(sock,200,"application/json",json,strlen(json));free(json);
 }
 struct background_job {struct settings settings;char spool[1400],files[256][144];unsigned count;};
 static void cloud_prune_uploaded(const struct background_job *job);
@@ -2179,6 +2313,12 @@ static void serve(int sock,int *locked) {
     if(!strcmp(method,"GET") && !strcmp(url,"/api/peer/info")) {peer_info_json(sock);return;}
     if(!strcmp(method,"GET") && !strncmp(url,"/api/peer/latest?",17)) {peer_latest_json(sock,url+17);return;}
     if(!strcmp(method,"GET") && !strncmp(url,"/api/peer/file?",15)) {peer_file(sock,url+15);return;}
+    if(!strcmp(method,"GET") && !strncmp(url,"/api/peer/slots?",16)) {peer_slots_json(sock,url+16);return;}
+    if(!strcmp(method,"POST") && !strncmp(url,"/api/peer/backup?",17)) {
+        struct sockaddr_in remote={0};socklen_t remote_size=sizeof remote;char from_ip[INET_ADDRSTRLEN]="";
+        if(getpeername(sock,(struct sockaddr *)&remote,&remote_size)||!inet_ntop(AF_INET,&remote.sin_addr,from_ip,sizeof from_ip)) {reject(sock,400,"Unknown sender");return;}
+        peer_backup(sock,url+17,from_ip);return;
+    }
     if(!strcmp(method,"POST") && !strncmp(url,"/api/peer/push?",15)) {
         struct sockaddr_in remote={0};socklen_t remote_size=sizeof remote;char from_ip[INET_ADDRSTRLEN]="";
         if(getpeername(sock,(struct sockaddr *)&remote,&remote_size)||!inet_ntop(AF_INET,&remote.sin_addr,from_ip,sizeof from_ip)) {reject(sock,400,"Unknown sender");return;}
@@ -2302,6 +2442,7 @@ static void serve(int sock,int *locked) {
     if(!strcmp(method,"GET") && !strcmp(url,"/api/save-status")) {save_status(sock,query);return;}
     if(!strcmp(method,"GET") && !strcmp(url,"/api/slot-icon")) {slot_icon(sock,query);return;}
     if(!strcmp(method,"GET") && !strcmp(url,"/api/sync-status")) {sync_status_json(sock,query);return;}
+    if(!strcmp(method,"GET") && !strcmp(url,"/api/sync-slots")) {sync_slots_json(sock,query);return;}
     if(!strcmp(method,"GET") && !strcmp(url,"/api/cloud-profiles")) {cloud_profiles_json(sock);return;}
     if(!strcmp(method,"GET") && !strcmp(url,"/api/peers")) {peers_json(sock);return;}
     if(!strcmp(method,"GET") && !strcmp(url,"/api/peers/discover")) {peers_discover_json(sock);return;}
@@ -2583,7 +2724,8 @@ int main(int argc,char **argv) {
 #ifdef PSCLOUD_HOST_TEST
     if(argc!=4)return 2;
     if(getenv("PSCLOUD_TEST_FIRMWARE"))firmware_id=(unsigned)strtoul(getenv("PSCLOUD_TEST_FIRMWARE"),NULL,16);
-    snprintf(root,sizeof root,"%s",argv[1]);snprintf(home,sizeof home,"%s",argv[2]);port=(unsigned)strtoul(argv[3],NULL,10);
+    snprintf(root,sizeof root,"%s",argv[1]);
+    snprintf(system_root,sizeof system_root,"%s/system",argv[1]);snprintf(home,sizeof home,"%s",argv[2]);port=(unsigned)strtoul(argv[3],NULL,10);
 #else
     (void)argc;(void)argv;
     firmware_id=kernel_get_fw_version()&0xffff0000U;
