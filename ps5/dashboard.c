@@ -1100,6 +1100,8 @@ static int sync_fetch(const char *user,const char *title,char file[128],char sha
     char folder[256],url[4400];pscloud_snapshot_folder(&who,folder,sizeof folder);snprintf(url,sizeof url,"%s/%s/%s",cloud.url,folder,other.file);
     unsigned char *data=malloc(PSCLOUD_RESTORE_MAX+1U);if(!data) {snprintf(why,why_max,"Out of memory");return -1;}
     struct response r={(char *)data,0,PSCLOUD_RESTORE_MAX};long status=webdav(&cloud,url,"GET",&r);memset(cloud.password,0,sizeof cloud.password);
+    int sealed=status==200?pscloud_decrypt_if_needed(data,&r.size):0;
+    if(sealed) {free(data);snprintf(why,why_max,sealed==-2?"This cloud save is encrypted. Enter your encryption password in Cloud settings":"Wrong encryption password, or the cloud copy is damaged");return -1;}
     if(status!=200||pscloud_verify_hash(data,r.size,other.sha)||pscloud_share_validate(data,r.size,title)) {free(data);snprintf(why,why_max,"Cloud save could not be downloaded or did not verify");return -1;}
     char share[1400],id[33],path[1600];snprintf(share,sizeof share,"%s/share",root);(void)mkdir(share,0700);
     if(pscloud_random_id(id)) {free(data);return -1;}
@@ -1207,6 +1209,13 @@ static void *background_upload(void *arg) {
  * cloud-keep.conf "KEEP=N": after each upload, keep the N newest versions of that save in
  * the cloud (0 = keep everything). Older versions lose their archive, then their identity. */
 static int cloud_keep;
+/* encrypt.conf "PASSWORD=..." (owner-only). Never sent back to the browser. */
+static void encryption_load(void) {
+    char path[1400],line[300]={0};snprintf(path,sizeof path,"%s/encrypt.conf",root);FILE *f=fopen(path,"r");
+    if(!f) {pscloud_encryption_set(NULL);return;}
+    if(!fgets(line,sizeof line,f))line[0]=0;fclose(f);line[strcspn(line,"\n")]=0;
+    pscloud_encryption_set(!strncmp(line,"PASSWORD=",9)?line+9:NULL);memset(line,0,sizeof line);
+}
 static void cloud_keep_load(void) {
     char path[1400];snprintf(path,sizeof path,"%s/cloud-keep.conf",root);FILE *f=fopen(path,"r");int keep=0;
     if(f) {if(fscanf(f,"KEEP=%d",&keep)!=1||keep<0||keep>999)keep=0;fclose(f);}cloud_keep=keep;
@@ -1416,7 +1425,8 @@ static void download_pc(int sock,const char *query,int local) {
         bad=selection(query,&chosen) || pscloud_configure(cloudpath,&cloud) || remote_snapshot(&cloud,&chosen,file,&s) || pscloud_snapshot_folder(&s,folder,sizeof folder);
         if(!bad) {
             data=malloc(PSCLOUD_RESTORE_MAX+1U);if(!data)bad=1;
-            else {snprintf(url,sizeof url,"%s/%s/%s",cloud.url,folder,file);struct response r={(char *)data,0,PSCLOUD_RESTORE_MAX};bad=webdav(&cloud,url,"GET",&r)!=200;size=r.size;}
+            else {snprintf(url,sizeof url,"%s/%s/%s",cloud.url,folder,file);struct response r={(char *)data,0,PSCLOUD_RESTORE_MAX};bad=webdav(&cloud,url,"GET",&r)!=200;size=r.size;
+                if(!bad) {int sealed=pscloud_decrypt_if_needed(data,&size);if(sealed) {free(data);message(sock,400,sealed==-2?"This backup is encrypted. Enter your encryption password in Cloud settings":"Wrong encryption password, or the cloud copy is damaged");return;}}}
         }
     }
     if(!bad)bad=pscloud_verify_hash(data,size,s.sha256) || archive_valid(data,size,&s);
@@ -1533,6 +1543,17 @@ static void action(int sock,const char *path,const char *form) {
     if(!strcmp(path,"/api/usb-copy-all")) {usb_copy_all(sock,form);return;}
     if(!strcmp(path,"/api/usb-delete")) {usb_delete(sock,form);return;}
     if(!strcmp(path,"/api/cleanup")) {cleanup_apply(sock,form);return;}
+    if(!strcmp(path,"/api/encryption")) {
+        char password[300]={0},again[300]={0},path_conf[1400];snprintf(path_conf,sizeof path_conf,"%s/encrypt.conf",root);
+        (void)parameter(form,"password",password,sizeof password);(void)parameter(form,"again",again,sizeof again);
+        if(!*password) {unlink(path_conf);pscloud_encryption_set(NULL);pscloud_log("EVENT","Cloud encryption turned off for new uploads");message(sock,200,"Encryption is off for new uploads. Encrypted cloud copies still need the password to restore");return;}
+        if(strlen(password)<8||strlen(password)>200||strchr(password,'\n')||strcmp(password,again)) {memset(password,0,sizeof password);memset(again,0,sizeof again);message(sock,400,"Use at least 8 characters and type the same password twice");return;}
+        char text[320];snprintf(text,sizeof text,"PASSWORD=%s\n",password);int bad=atomic_config(path_conf,text);
+        if(!bad)pscloud_encryption_set(password);
+        memset(text,0,sizeof text);memset(password,0,sizeof password);memset(again,0,sizeof again);
+        if(bad) {message(sock,500,"Password could not be saved");return;}
+        pscloud_log("EVENT","Cloud encryption turned on for new uploads");message(sock,200,"New uploads will be encrypted with your password");return;
+    }
     if(!strcmp(path,"/api/cloud-keep")) {
         char keep[8];if(parameter(form,"keep",keep,sizeof keep)) {message(sock,400,"Choose how many versions to keep");return;}
         int k=atoi(keep);if(k<0||k>999||(k==0&&strcmp(keep,"0"))) {message(sock,400,"Choose how many versions to keep");return;}
@@ -1695,7 +1716,9 @@ static void action(int sock,const char *path,const char *form) {
         int bad=0;
         if(!data) {
             data=malloc(PSCLOUD_RESTORE_MAX+1U);if(!data) {message(sock,500,"Not enough memory");return;}
-            struct response r={(char *)data,0,PSCLOUD_RESTORE_MAX};bad=webdav(&cloud,url,"GET",&r)!=200 || pscloud_verify_hash(data,r.size,snapshot.sha256) || archive_valid(data,r.size,&snapshot);size=r.size;
+            struct response r={(char *)data,0,PSCLOUD_RESTORE_MAX};bad=webdav(&cloud,url,"GET",&r)!=200;size=r.size;
+            if(!bad) {int sealed=pscloud_decrypt_if_needed(data,&size);if(sealed) {free(data);message(sock,400,sealed==-2?"This backup is encrypted. Enter your encryption password in Cloud settings":"Wrong encryption password, or the cloud copy is damaged");return;}}
+            if(!bad)bad=pscloud_verify_hash(data,size,snapshot.sha256) || archive_valid(data,size,&snapshot);
         }
         if(!bad && restoring) {
             char confirm[8];
@@ -1950,6 +1973,7 @@ static void serve(int sock,int *locked) {
     if(!strcmp(method,"GET") && !strcmp(url,"/api/sync-status")) {sync_status_json(sock,query);return;}
     if(!strcmp(method,"GET") && !strcmp(url,"/api/cloud-profiles")) {cloud_profiles_json(sock);return;}
     if(!strcmp(method,"GET") && !strcmp(url,"/api/cloud-housekeeping")) {cloud_housekeeping_json(sock);return;}
+    if(!strcmp(method,"GET") && !strcmp(url,"/api/encryption")) {const char *json=pscloud_encryption_on()?"{\"on\":true}":"{\"on\":false}";respond(sock,200,"application/json",json,strlen(json));return;}
     if(!strcmp(method,"GET") && !strcmp(url,"/api/game-settings")) {game_settings_json(sock,query);return;}
     if(!strcmp(method,"GET") && !strcmp(url,"/api/storage")) {storage_json(sock);return;}
     if(!strcmp(method,"GET") && !strcmp(url,"/api/cleanup")) {cleanup_preview(sock);return;}
@@ -2248,7 +2272,7 @@ int main(int argc,char **argv) {
     move_into_folder();
 #endif
     snprintf(googlepath,sizeof googlepath,"%s/google.conf",root);pscloud_google_load(googlepath,&google);
-    game_settings_load();schedule_load();console_id_load();cloud_keep_load();
+    game_settings_load();schedule_load();console_id_load();cloud_keep_load();encryption_load();
     pscloud_log_open(logpath);load_preferences();signal(SIGPIPE,SIG_IGN);signal(SIGTERM,stop_server);signal(SIGINT,stop_server);
     if(curl_global_init(CURL_GLOBAL_DEFAULT))return 2;
     int server=socket(AF_INET,SOCK_STREAM,0);if(server<0)return 2;

@@ -1,6 +1,7 @@
 #define _POSIX_C_SOURCE 200809L
 #include "snapshot.h"
 #include <openssl/evp.h>
+#include <openssl/rand.h>
 #include <sys/stat.h>
 #include <fcntl.h>
 #include <unistd.h>
@@ -137,4 +138,68 @@ int pscloud_snapshot_folder(const struct pscloud_snapshot *s,char *folder,unsign
     const char *game=!strcmp(s->title,"PPSA02433")?"Crash%20Bandicoot%204%20-%20PPSA02433":s->title;
     int n=snprintf(folder,size,"%s/User-%s/%s",game,s->user,s->slot);
     return n<0 || (unsigned)n>=size?-1:0;
+}
+
+/* ---------- Cloud encryption ----------
+ * File: "PSCENC1\0" | salt[16] | PBKDF2 iterations (u32 LE) | nonce[12] | ciphertext | tag[16].
+ * AES-256-GCM, key = PBKDF2-HMAC-SHA256(password, salt). The 40-byte header is
+ * authenticated as additional data, so any change to it fails decryption. */
+static char enc_password[256];
+void pscloud_encryption_set(const char *password) {
+    memset(enc_password,0,sizeof enc_password);
+    if(password&&strlen(password)<sizeof enc_password)strcpy(enc_password,password);
+}
+int pscloud_encryption_on(void) {return enc_password[0]!=0;}
+int pscloud_encrypted(const unsigned char *data,size_t size) {return size>=PSCLOUD_ENC_OVERHEAD&&!memcmp(data,"PSCENC1",8);}
+static int enc_key(const unsigned char *salt,unsigned iterations,unsigned char key[32]) {
+    return PKCS5_PBKDF2_HMAC(enc_password,(int)strlen(enc_password),salt,16,(int)iterations,EVP_sha256(),32,key)==1?0:-1;
+}
+int pscloud_encrypt_fd(int in,int out,char hash[65],unsigned long long *out_size) {
+    if(!pscloud_encryption_on())return -1;
+    unsigned char header[40],key[32],tag[16];unsigned iterations=100000;
+    memcpy(header,"PSCENC1",8);if(RAND_bytes(header+8,16)!=1||RAND_bytes(header+28,12)!=1)return -1;
+    header[24]=(unsigned char)iterations;header[25]=(unsigned char)(iterations>>8);header[26]=(unsigned char)(iterations>>16);header[27]=(unsigned char)(iterations>>24);
+    if(enc_key(header+8,iterations,key))return -1;
+    EVP_CIPHER_CTX *ctx=EVP_CIPHER_CTX_new();EVP_MD_CTX *md=EVP_MD_CTX_new();int len=0,bad=!ctx||!md;
+    unsigned char *plain=malloc(1U<<20),*cipher=malloc((1U<<20)+32);if(!plain||!cipher)bad=1;
+    if(!bad)bad=EVP_EncryptInit_ex(ctx,EVP_aes_256_gcm(),NULL,NULL,NULL)!=1||EVP_CIPHER_CTX_ctrl(ctx,EVP_CTRL_GCM_SET_IVLEN,12,NULL)!=1||
+        EVP_EncryptInit_ex(ctx,NULL,NULL,key,header+28)!=1||EVP_EncryptUpdate(ctx,NULL,&len,header,40)!=1||EVP_DigestInit_ex(md,EVP_sha256(),NULL)!=1;
+    unsigned long long total=0;off_t at=0;
+    #define EMIT(ptr,n) do{size_t _n=(size_t)(n),_d=0;while(!bad&&_d<_n){ssize_t w=write(out,(ptr)+_d,_n-_d);if(w<0&&errno==EINTR)continue;if(w<=0)bad=1;else _d+=(size_t)w;}if(!bad)bad=EVP_DigestUpdate(md,(ptr),_n)!=1;total+=_n;}while(0)
+    if(!bad)EMIT(header,40);
+    while(!bad) {
+        ssize_t got=pread(in,plain,1U<<20,at);if(got<0&&errno==EINTR)continue;if(got<0) {bad=1;break;}if(!got)break;at+=got;
+        if(EVP_EncryptUpdate(ctx,cipher,&len,plain,(int)got)!=1) {bad=1;break;}EMIT(cipher,len);
+    }
+    if(!bad)bad=EVP_EncryptFinal_ex(ctx,cipher,&len)!=1;
+    if(!bad&&len)EMIT(cipher,len);
+    if(!bad)bad=EVP_CIPHER_CTX_ctrl(ctx,EVP_CTRL_GCM_GET_TAG,16,tag)!=1;
+    if(!bad)EMIT(tag,16);
+    #undef EMIT
+    unsigned char digest[32];unsigned dl=0;if(!bad)bad=EVP_DigestFinal_ex(md,digest,&dl)!=1||dl!=32;
+    if(!bad)bad=fsync(out)!=0;
+    if(!bad) {for(unsigned i=0;i<32;i++)snprintf(hash+2*i,3,"%02x",digest[i]);*out_size=total;}
+    memset(key,0,sizeof key);free(plain);free(cipher);EVP_CIPHER_CTX_free(ctx);EVP_MD_CTX_free(md);return bad?-1:0;
+}
+int pscloud_decrypt_if_needed(unsigned char *data,size_t *size) {
+    if(!pscloud_encrypted(data,*size))return 0;
+    if(!pscloud_encryption_on())return -2;
+    const unsigned char *header=data;unsigned iterations=header[24]|((unsigned)header[25]<<8)|((unsigned)header[26]<<16)|((unsigned)header[27]<<24);
+    if(iterations<1000||iterations>10000000)return -1;
+    unsigned char key[32],nonce[12],tag[16],aad[40];memcpy(aad,header,40);memcpy(nonce,header+28,12);
+    if(enc_key(aad+8,iterations,key))return -1;
+    size_t body=*size-PSCLOUD_ENC_OVERHEAD;memcpy(tag,data+40+body,16);
+    EVP_CIPHER_CTX *ctx=EVP_CIPHER_CTX_new();int len=0,bad=!ctx;unsigned char *chunk=malloc(65536+32);if(!chunk)bad=1;
+    if(!bad)bad=EVP_DecryptInit_ex(ctx,EVP_aes_256_gcm(),NULL,NULL,NULL)!=1||EVP_CIPHER_CTX_ctrl(ctx,EVP_CTRL_GCM_SET_IVLEN,12,NULL)!=1||
+        EVP_DecryptInit_ex(ctx,NULL,NULL,key,nonce)!=1||EVP_DecryptUpdate(ctx,NULL,&len,aad,40)!=1;
+    size_t done=0,written=0;
+    while(!bad&&done<body) { /* output trails the input by 40 bytes, so a bounce buffer keeps them apart */
+        size_t n=body-done>65536?65536:body-done;
+        if(EVP_DecryptUpdate(ctx,chunk,&len,data+40+done,(int)n)!=1) {bad=1;break;}
+        memmove(data+written,chunk,(size_t)len);written+=(size_t)len;done+=n;
+    }
+    if(!bad)bad=EVP_CIPHER_CTX_ctrl(ctx,EVP_CTRL_GCM_SET_TAG,16,tag)!=1||EVP_DecryptFinal_ex(ctx,chunk,&len)!=1;
+    memset(key,0,sizeof key);free(chunk);EVP_CIPHER_CTX_free(ctx);
+    if(bad)return -1;
+    *size=written;return 0;
 }

@@ -126,7 +126,7 @@ static size_t collect_identity(char *p,size_t a,size_t b,void *ctx) {
 /* 1: committed archive present, 0: missing/incomplete, -1: cannot establish.
  * Errors never count as deletion. No redirects or credential forwarding. */
 static int cloud_copy(const char *archive,const char *identity,const char *user,const char *pass,const char *ca,
-                      const struct pscloud_snapshot *s,curl_off_t size) {
+                      const struct pscloud_snapshot *s,curl_off_t size,int encrypted) {
     CURL *c=curl_easy_init();if(!c)return -1;
     struct remote_body body={{0},0};char expected[512];
     snprintf(expected,sizeof expected,"USER_ID=%s\nTITLE=%s\nSAVE_NAME=%s\nSHA256=%s\nCREATED_UNIX=%lld\n",s->user,s->title,s->slot,s->sha256,s->created);
@@ -145,6 +145,7 @@ static int cloud_copy(const char *archive,const char *identity,const char *user,
     if(rc!=CURLE_OK || (status!=200 && status!=404))return -1;
     if(status==404)return 0;
     if(length<0)return -1;
+    if(encrypted)return length==size; /* identity (plain checksum) matches and the size is an encrypted copy's */
     return length==size?verify_remote(archive,user,pass,ca,s->sha256,size):0;
 }
 static int collection(const char *url,const char *user,const char *pass,const char *ca) {
@@ -232,7 +233,7 @@ static int upload(const char *base,const char *user,const char *pass,const char 
         char manifest[4096];
         if(snprintf(manifest,sizeof manifest,"%s/.pscloud/%s.identity",destination,object)>=(int)sizeof manifest) {curl_easy_cleanup(c);fclose(f);return 1;}
         phase(PSCLOUD_PRESENCE);
-        int present=cloud_copy(url,manifest,user,pass,ca,&snapshot,(curl_off_t)st.st_size);
+        int present=cloud_copy(url,manifest,user,pass,ca,&snapshot,(curl_off_t)st.st_size+(pscloud_encryption_on()?PSCLOUD_ENC_OVERHEAD:0),pscloud_encryption_on());
         if(present<0) {fprintf(stderr,"Cloud presence check failed; backup retained: %s\n",object);curl_easy_cleanup(c);fclose(f);return 1;}
         if(present && !replace) {
             curl_easy_cleanup(c);fclose(f);char done[272];snprintf(done,sizeof done,"%s.sent",object);
@@ -241,18 +242,29 @@ static int upload(const char *base,const char *user,const char *pass,const char 
             printf("Already in cloud; upload skipped: %s\n",object);fflush(stdout);return 0;
         }
     }
+    int send_fd=fd;curl_off_t send_size=(curl_off_t)st.st_size;char send_hash[65];snprintf(send_hash,sizeof send_hash,"%s",local_hash);int sealed=-1;
+    if(pscloud_encryption_on()) {
+        char temp[300];snprintf(temp,sizeof temp,".%s.enc",object);(void)unlinkat(dir,temp,0);
+        sealed=openat(dir,temp,O_RDWR|O_CREAT|O_EXCL|O_NOFOLLOW,0600);unsigned long long sealed_size=0;
+        if(sealed>=0)(void)unlinkat(dir,temp,0);
+        if(sealed<0||pscloud_encrypt_fd(fd,sealed,send_hash,&sealed_size)) {
+            if(sealed>=0)close(sealed);
+            fprintf(stderr,"Encryption failed; backup retained: %s\n",object);curl_easy_cleanup(c);fclose(f);return 1;
+        }
+        send_fd=sealed;send_size=(curl_off_t)sealed_size;transfer_total=sealed_size;
+    }
     curl_easy_setopt(c,CURLOPT_URL,url);
     curl_easy_setopt(c,CURLOPT_PROTOCOLS_STR,"https");
     curl_easy_setopt(c,CURLOPT_USERNAME,user);
     curl_easy_setopt(c,CURLOPT_PASSWORD,pass);
     curl_easy_setopt(c,CURLOPT_UPLOAD,1L);
-    struct upload_cursor cursor={fd,0,(curl_off_t)st.st_size};
+    struct upload_cursor cursor={send_fd,0,send_size};
     curl_easy_setopt(c,CURLOPT_READFUNCTION,read_archive);curl_easy_setopt(c,CURLOPT_READDATA,&cursor);
     curl_easy_setopt(c,CURLOPT_UPLOAD_BUFFERSIZE,256L*1024);
     curl_easy_setopt(c,CURLOPT_XFERINFOFUNCTION,upload_progress);curl_easy_setopt(c,CURLOPT_NOPROGRESS,0L);
-    curl_easy_setopt(c,CURLOPT_INFILESIZE_LARGE,(curl_off_t)st.st_size);
+    curl_easy_setopt(c,CURLOPT_INFILESIZE_LARGE,send_size);
     curl_easy_setopt(c,CURLOPT_CONNECTTIMEOUT,15L);
-    curl_easy_setopt(c,CURLOPT_TIMEOUT,pscloud_transfer_timeout((unsigned long long)st.st_size));
+    curl_easy_setopt(c,CURLOPT_TIMEOUT,pscloud_transfer_timeout((unsigned long long)send_size));
     curl_easy_setopt(c,CURLOPT_LOW_SPEED_LIMIT,1024L);curl_easy_setopt(c,CURLOPT_LOW_SPEED_TIME,60L);
     curl_easy_setopt(c,CURLOPT_NOSIGNAL,1L);
     curl_easy_setopt(c,CURLOPT_WRITEFUNCTION,discard);
@@ -263,10 +275,13 @@ static int upload(const char *base,const char *user,const char *pass,const char 
     transport("archive upload",rc,status);
     curl_easy_cleanup(c); fclose(f);
     if(rc!=CURLE_OK || status<200 || status>=300) {
+        if(sealed>=0)close(sealed);
         fprintf(stderr,"Upload retained for retry: %s (transport=%d, HTTP=%ld)\n",object,rc,status);
         return 1;
     }
-    if(verify_remote(url,user,pass,ca,local_hash,(curl_off_t)st.st_size)!=1) {
+    int verified=verify_remote(url,user,pass,ca,send_hash,send_size);
+    if(sealed>=0)close(sealed);
+    if(verified!=1) {
         fprintf(stderr,"Remote archive verification failed; local backup retained for retry: %s\n",object);return 1;
     }
     if(structured) {
@@ -287,6 +302,9 @@ static int upload(const char *base,const char *user,const char *pass,const char 
     return 0;
 }
 static int worker_run(int argc,char **argv,const char *base,const char *user,const char *pass,const char *ca) {
+#ifndef PSCLOUD_EMBEDDED
+    if(getenv("PSCLOUD_ENCRYPT_PASSWORD"))pscloud_encryption_set(getenv("PSCLOUD_ENCRYPT_PASSWORD"));
+#endif
     if((argc!=3 && argc!=4) || (strcmp(argv[2],"--once") && strcmp(argv[2],"--watch")) ||
        (argc==4 && (strcmp(argv[2],"--once") || !valid(argv[3])))) {
         fprintf(stderr,"Usage: %s SPOOL --once|--watch\n",argv[0]); return 2;

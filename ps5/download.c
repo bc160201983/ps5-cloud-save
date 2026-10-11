@@ -36,6 +36,16 @@ int main(int argc,char **argv) {
         *folder="/data/pscloud/downloads",*log="/data/pscloud/pscloud.log";
 #endif
     pscloud_log_open(log);pscloud_notify("Cloud download started");
+#if !defined(PSCLOUD_DOWNLOAD_EMBEDDED) && !defined(PSCLOUD_HOST_TEST)
+    {   /* the dashboard sets the password itself; the standalone tool reads it */
+        FILE *pw=fopen("/data/pscloud/encrypt.conf","r");char line[300]={0};
+        if(pw) {
+            if(fgets(line,sizeof line,pw)&&!strncmp(line,"PASSWORD=",9)) {line[strcspn(line,"
+")]=0;pscloud_encryption_set(line+9);}
+            fclose(pw);memset(line,0,sizeof line);
+        }
+    }
+#endif
 #ifndef PSCLOUD_HOST_TEST
     if((kernel_get_fw_version()&0xffff0000U)!=0x11400000U) {
         pscloud_notify("Download stopped: firmware 11.40 required");pscloud_log_close();return 2;
@@ -102,6 +112,7 @@ int main(int argc,char **argv) {
     if(initialized)curl_global_cleanup();
 #endif
     const unsigned char *payload=NULL;size_t payload_size=0;
+    if(!failed&&pscloud_decrypt_if_needed(b.data,&b.size)) {failed=1;pscloud_log("ERROR","Cloud backup is encrypted and the password is missing or wrong");}
     if(!failed && (pscloud_verify_hash(b.data,b.size,s.sha256) ||
        pscloud_save_payload(b.data,b.size,&payload,&payload_size)))failed=1;
     size_t written=0;

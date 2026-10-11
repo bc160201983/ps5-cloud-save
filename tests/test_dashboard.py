@@ -748,6 +748,29 @@ class DashboardTests(unittest.TestCase):
         self.assertIn(folder+'.pscloud/'+broken+'.identity',self.fixture.objects)  # unreadable: never deleted
         self.assertIn('KEEP=2',(self.root/'cloud-keep.conf').read_text())
 
+    def test_encrypted_upload_round_trip_and_wrong_password(self):
+        self.assertFalse(self.request('/api/encryption')[1]['on'])
+        self.assertEqual(self.request('/api/encryption',{'password':'short','again':'short'})[0],400)
+        self.assertEqual(self.request('/api/encryption',{'password':'correct horse','again':'different'})[0],400)
+        self.assertEqual(self.request('/api/encryption',{'password':'correct horse','again':'correct horse'})[0],200)
+        self.assertTrue(self.request('/api/encryption')[1]['on'])
+        self.assertNotIn('correct horse',json.dumps(self.request('/api/encryption')[1]))
+        self.assertEqual(self.request('/api/preferences',{'auto_upload':'0','activity_refresh':'1'})[0],200)
+        self.assertEqual(self.request('/api/backup',self.selected(closed='yes'))[0],200)
+        item=self.request('/api/queue')[1]['items'][0];plain=next((self.root/'spool').glob(item['file']+'.ready')).read_bytes()
+        self.assertEqual(self.request('/api/sync-one',{'file':item['file']})[0],200)
+        stored=next(v for k,v in self.fixture.objects.items() if k.endswith('/'+item['file']))
+        self.assertTrue(stored.startswith(b'PSCENC1\0'));self.assertEqual(len(stored),len(plain)+56);self.assertNotIn(plain[:64],stored)
+        self.assertEqual(list((self.root/'spool').glob('.*.enc')),[])  # no temporary copy left
+        query='/api/download-pc?'+urllib.parse.urlencode(self.selected(file=item['file']))
+        status,_,body=self.binary(query);self.assertEqual((status,body),(200,plain))
+        self.assertEqual(self.request('/api/encryption',{'password':'wrong password','again':'wrong password'})[0],200)
+        self.assertEqual(self.binary(query)[0],400)
+        self.assertEqual(self.request('/api/encryption',{'password':''})[0],200)
+        status,_,body=self.binary(query);self.assertEqual(status,400);self.assertIn(b'encrypted',body)
+        # a plain upload made afterwards is plain again
+        self.assertFalse((self.root/'encrypt.conf').exists())
+
     def test_local_only_backup_then_explicit_upload(self):
         self.assertEqual(self.request('/api/preferences',{'auto_upload':'0','activity_refresh':'1'})[0],200)
         chosen=self.selected(closed='yes')
