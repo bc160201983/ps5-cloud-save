@@ -40,8 +40,7 @@ int main(int argc,char **argv) {
     {   /* the dashboard sets the password itself; the standalone tool reads it */
         FILE *pw=fopen("/data/pscloud/encrypt.conf","r");char line[300]={0};
         if(pw) {
-            if(fgets(line,sizeof line,pw)&&!strncmp(line,"PASSWORD=",9)) {line[strcspn(line,"
-")]=0;pscloud_encryption_set(line+9);}
+            if(fgets(line,sizeof line,pw)&&!strncmp(line,"PASSWORD=",9)) {line[strcspn(line,"\n")]=0;pscloud_encryption_set(line+9);}
             fclose(pw);memset(line,0,sizeof line);
         }
     }

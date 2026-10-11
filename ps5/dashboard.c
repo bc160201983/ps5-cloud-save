@@ -1213,7 +1213,8 @@ static int cloud_keep;
 static void encryption_load(void) {
     char path[1400],line[300]={0};snprintf(path,sizeof path,"%s/encrypt.conf",root);FILE *f=fopen(path,"r");
     if(!f) {pscloud_encryption_set(NULL);return;}
-    if(!fgets(line,sizeof line,f))line[0]=0;fclose(f);line[strcspn(line,"\n")]=0;
+    if(!fgets(line,sizeof line,f))line[0]=0;
+    fclose(f);line[strcspn(line,"\n")]=0;
     pscloud_encryption_set(!strncmp(line,"PASSWORD=",9)?line+9:NULL);memset(line,0,sizeof line);
 }
 static void cloud_keep_load(void) {
