@@ -37,3 +37,5 @@ portable-host.so
 pscloud-share.conf
 pscloud-share-game.conf
 sharing-host.so
+ps5/third_party/
+ps5/*.o
