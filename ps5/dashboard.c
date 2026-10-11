@@ -1121,7 +1121,7 @@ static int live_slots(const char *user,const char *title,struct live_slot *out,i
     struct dirent *e;
     while((e=readdir(d))&&n<max) {
         if(strncmp(e->d_name,"sdimg_",6)||!strncmp(e->d_name,"sdimg_sce_bu_",13)||!safe_word(e->d_name+6,63))continue;
-        char file[1600];struct stat st;snprintf(file,sizeof file,"%s/%s",path,e->d_name);if(lstat(file,&st)||!S_ISREG(st.st_mode))continue;
+        char file[1700];struct stat st;snprintf(file,sizeof file,"%s/%s",path,e->d_name);if(lstat(file,&st)||!S_ISREG(st.st_mode))continue;
         memset(&out[n],0,sizeof out[n]);snprintf(out[n].slot,sizeof out[n].slot,"%s",e->d_name+6);
         long long when=(long long)st.st_mtime; /* fallback when the save database cannot be read */
         for(int k=0;k<ns;k++)if(!strcmp(saved[k].slot,out[n].slot))when=saved[k].saved;
@@ -1168,7 +1168,7 @@ static void compare_slots(const struct live_slot *here,int nh,const struct live_
 static void apply_slot_times(const char *user,const char *title,const char *list) {
     char db[1400];save_db_path(user,db,sizeof db);struct pscloud_db_slot saved[128];int ns=pscloud_save_db_times(db,title,saved,128);
     char dir[1400],path[1500];snprintf(dir,sizeof dir,"%s/slot-times",root);(void)mkdir(dir,0700);snprintf(path,sizeof path,"%s/%s-%s",dir,user,title);
-    char out[8192]="",copy[4096];size_t n=0;snprintf(copy,sizeof copy,"%s",list);
+    char out[8192]="",copy[4096];size_t n=0;snprintf(copy,sizeof copy,"%.4095s",list);
     for(char *save=NULL,*tok=strtok_r(copy,";",&save);tok;tok=strtok_r(NULL,";",&save)) {
         char *colon=strrchr(tok,':');if(!colon)continue;*colon=0;long long when=strtoll(colon+1,NULL,10);if(!safe_word(tok,63)||when<=0)continue;
         long long now=0;for(int k=0;k<ns;k++)if(!strcmp(saved[k].slot,tok))now=saved[k].saved;
