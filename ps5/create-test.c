@@ -92,8 +92,8 @@ static void describe_system(void) {
         char db[512],journal[560];snprintf(db,sizeof db,"/system_data/savedata_prospero/%s/db/user/savedata.db",e->d_name);
         struct stat st;if(stat(db,&st))continue;
         say("profile %s",e->d_name);
-        if(result)pscloud_save_db_describe(db,3,result);
-        pscloud_save_db_describe(db,3,stdout);
+        if(result)pscloud_save_db_describe(db,NULL,3,result);
+        pscloud_save_db_describe(db,NULL,3,stdout);
         const char *ext[]={"-journal","-wal","-shm"};
         for(int i=0;i<3;i++) {snprintf(journal,sizeof journal,"%s%s",db,ext[i]);say("  %s %s",ext[i],stat(journal,&st)?"absent":"present");}
         char home[512];snprintf(home,sizeof home,"/user/home/%s/savedata_prospero",e->d_name);
@@ -115,6 +115,72 @@ static void describe_system(void) {
     closedir(d);
 }
 
+/* Read-only: copy two slots of one game here, open the copies, and print their
+ * sce_sys/param.sfo entries so the per-slot differences are visible. */
+static int copy_file(const char *from,const char *to) {
+    int in=open(from,O_RDONLY|O_NOFOLLOW),out=in<0?-1:open(to,O_CREAT|O_TRUNC|O_WRONLY|O_NOFOLLOW,0600);
+    char *buffer=malloc(1<<20);int bad=in<0||out<0||!buffer;
+    while(!bad) {ssize_t n=read(in,buffer,1<<20);if(n<0)bad=1;if(n<=0)break;if(write(out,buffer,(size_t)n)!=n)bad=1;}
+    if(!bad&&fsync(out))bad=1;
+    free(buffer);if(in>=0)close(in);if(out>=0)close(out);if(bad)unlink(to);return bad?-1:0;
+}
+static unsigned le16(const unsigned char *p) {return p[0]|((unsigned)p[1]<<8);}
+static unsigned le32(const unsigned char *p) {return le16(p)|(le16(p+2)<<16);}
+static void dump_sfo(const char *label,const char *path) {
+    int fd=open(path,O_RDONLY|O_NOFOLLOW);struct stat st;
+    if(fd<0||fstat(fd,&st)||st.st_size<20||st.st_size>65536) {say("%s param.sfo unreadable",label);if(fd>=0)close(fd);return;}
+    size_t size=(size_t)st.st_size;unsigned char *data=malloc(size);ssize_t n=data?read(fd,data,size):-1;close(fd);
+    if(n!=(ssize_t)size||le32(data)!=0x46535000) {say("%s param.sfo not an SFO (size %zu)",label,size);free(data);return;}
+    size_t keys=le32(data+8),values=le32(data+12),count=le32(data+16);
+    say("%s param.sfo size %zu entries %zu",label,size,count);
+    for(size_t i=0;i<count&&i<64&&20+16*i+16<=size;i++) {
+        const unsigned char *e=data+20+16*i;size_t ko=keys+le16(e),format=le16(e+2),length=le32(e+4),max=le32(e+8),offset=values+le32(e+12);
+        if(ko>=size||offset>size||length>size-offset)break;
+        char key[64];snprintf(key,sizeof key,"%.63s",(const char *)data+ko);
+        if(format==0x0204) {char text[1100];size_t c=length<sizeof text-1?length:sizeof text-1;memcpy(text,data+offset,c);text[c]=0;for(size_t k=0;k<c;k++)if(text[k]=='\n')text[k]='|';say("%s   %s fmt=%04zx len=%zu max=%zu text=%s",label,key,format,length,max,text);}
+        else {
+            say("%s   %s fmt=%04zx len=%zu max=%zu",label,key,format,length,max);
+            for(size_t at=0;at<length&&at<1024;at+=64) {char line[140];size_t m=length-at<64?length-at:64;for(size_t k=0;k<m;k++)snprintf(line+2*k,3,"%02x",data[offset+at+k]);line[2*m]=0;say("%s     +%03zx %s",label,at,line);}
+        }
+    }
+    free(data);
+}
+static void sibling_check(struct pscloud_mount_state *state) {
+    DIR *users=opendir("/user/home");struct dirent *u;int done=0;
+    while(users&&(u=readdir(users))&&!done) {
+        if(u->d_name[0]=='.')continue;
+        char base[300];snprintf(base,sizeof base,"/user/home/%.32s/savedata_prospero",u->d_name);DIR *games=opendir(base);struct dirent *g;
+        while(games&&(g=readdir(games))&&!done) {
+            if(!pscloud_title_valid(g->d_name))continue;
+            char folder[400],slots[2][300];int found=0;snprintf(folder,sizeof folder,"%s/%s",base,g->d_name);
+            DIR *f=opendir(folder);struct dirent *e;
+            while(f&&(e=readdir(f))&&found<2) {
+                struct stat st;char path[700];snprintf(path,sizeof path,"%s/%.200s",folder,e->d_name);
+                if(strncmp(e->d_name,"sdimg_",6)||!strncmp(e->d_name,"sdimg_sce_",10)||stat(path,&st)||!S_ISREG(st.st_mode)||st.st_size>256LL*1024*1024)continue;
+                snprintf(slots[found++],sizeof slots[0],"%.299s",path);
+            }
+            if(f)closedir(f);
+            if(found<2)continue;
+            done=1;say("compare two slots of %s for profile %s",g->d_name,u->d_name);
+            char db[300];snprintf(db,sizeof db,"/system_data/savedata_prospero/%.32s/db/user/savedata.db",u->d_name);
+            if(result)pscloud_save_db_describe(db,g->d_name,8,result);
+            for(int i=0;i<2;i++) {
+                char copy[200],label[16],sfo[300];snprintf(copy,sizeof copy,FOLDER "/slot-%d.img",i);snprintf(label,sizeof label,"slot%d",i);
+                say("%s is %s",label,slots[i]);hex(label,slots[i],0x800,0x60);
+                if(copy_file(slots[i],copy)) {say("%s copy failed (errno %d)",label,errno);continue;}
+                if(pscloud_mount_copy(state,copy,MOUNT)) {say("%s copy would not open",label);unlink(copy);continue;}
+                char sys[300];snprintf(sys,sizeof sys,"%s/sce_sys",MOUNT);list(sys);
+                snprintf(sfo,sizeof sfo,"%s/sce_sys/param.sfo",MOUNT);dump_sfo(label,sfo);
+                if(pscloud_mount_end(state,MOUNT))say("%s copy did not close; restart the console before running again",label);
+                else unlink(copy);
+            }
+        }
+        if(games)closedir(games);
+    }
+    if(users)closedir(users);
+    if(!done)say("no game with two save slots under 256 MB found");
+}
+
 int main(void) {
     mkdir("/data/pscloud",0700);mkdir(FOLDER,0700);
     result=fopen(FOLDER "/result.txt","w");
@@ -131,6 +197,8 @@ int main(void) {
     struct pscloud_mount_state state;memset(&state,0,sizeof state);
     if(pscloud_mount_begin(&state)) {say("RESULT: could not get save-mount rights; stop.");goto out;}
     unlink(IMAGE);mkdir(MOUNT,0700);
+    sibling_check(&state);
+    if(state.mounted) {say("RESULT: a copy is still open; stop.");goto leave;}
     int fd=open(IMAGE,O_CREAT|O_TRUNC|O_RDWR,0600);
     if(fd<0) {say("RESULT: cannot create %s (errno %d)",IMAGE,errno);goto leave;}
     int r=allocate?allocate(fd,IMAGE_SIZE,0,0):-1;say("allocate result 0x%x",(unsigned)r);

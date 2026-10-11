@@ -313,7 +313,7 @@ static int db_value(const unsigned char *rec,size_t size,int n,char *out,size_t 
     }
     return -1;
 }
-struct describe_ctx {FILE *out;unsigned root;int rows,max;};
+struct describe_ctx {FILE *out;const char *title;unsigned root;int rows,max;};
 static void describe_schema(const unsigned char *rec,size_t size,void *ctx) {
     struct describe_ctx *d=ctx;char kind[16],name[128],table[128],root[32],*sql=malloc(8192);if(!sql)return;
     if(!db_value(rec,size,0,kind,sizeof kind)&&!db_value(rec,size,1,name,sizeof name)&&!db_value(rec,size,2,table,sizeof table)&&!db_value(rec,size,3,root,sizeof root)) {
@@ -324,17 +324,19 @@ static void describe_schema(const unsigned char *rec,size_t size,void *ctx) {
     free(sql);
 }
 static void describe_row(const unsigned char *rec,size_t size,void *ctx) {
-    struct describe_ctx *d=ctx;if(d->rows>=d->max)return;d->rows++;
-    char *value=malloc(4096);if(!value)return;fprintf(d->out,"ROW");
+    struct describe_ctx *d=ctx;if(d->rows>=d->max)return;
+    char *value=malloc(4096);if(!value)return;
+    if(d->title&&(db_value(rec,size,1,value,4096)||strcmp(value,d->title))) {free(value);return;}
+    d->rows++;fprintf(d->out,"ROW");
     for(int col=0;col<64&&!db_value(rec,size,col,value,4096);col++)fprintf(d->out," [%d]=%s",col,value);
     fputc('\n',d->out);free(value);
 }
-int pscloud_save_db_describe(const char *path,int rows,FILE *out) {
+int pscloud_save_db_describe(const char *path,const char *title,int rows,FILE *out) {
     struct sqlite_file f;if(db_load(path,&f)) {fprintf(out,"DB %s unreadable\n",path);return -1;}
     const unsigned char *h=f.data;
     fprintf(out,"DB %s size=%zu page=%u reserved=%u write=%u read=%u changes=%u pages=%u freelist=%u cookie=%u format=%u encoding=%u user_version=%u vacuum=%u app=%u valid_for=%u sqlite=%u\n",
         path,f.size,f.page,h[20],h[18],h[19],db_u32(h+24),db_u32(h+28),db_u32(h+36),db_u32(h+40),db_u32(h+44),db_u32(h+56),db_u32(h+60),db_u32(h+52),db_u32(h+68),db_u32(h+92),db_u32(h+96));
-    struct describe_ctx d={out,0,0,rows};db_walk(&f,1,0,describe_schema,&d);
+    struct describe_ctx d={out,title,0,0,rows};db_walk(&f,1,0,describe_schema,&d);
     if(d.root)db_walk(&f,d.root,0,describe_row,&d);
     fprintf(out,"DB rows shown=%d\n",d.rows);free(f.data);return 0;
 }
