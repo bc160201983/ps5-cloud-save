@@ -883,12 +883,12 @@ static void space_json(int sock,const struct space *sp,const char *note) {
 static void cleanup_preview(int sock) {static const int none[4]={0};struct space sp;space_scan(0,none,&sp);space_json(sock,&sp,NULL);}
 static void cleanup_apply(int sock,const char *form) {
     if(space_blocked()) {message(sock,409,"An interrupted restore needs attention first; nothing was removed. See Activity");return;}
-    char lockpath[1400];snprintf(lockpath,sizeof lockpath,"%s/.mount.lock",root);
-    int lock=open(lockpath,O_CREAT|O_RDWR|O_NOFOLLOW,0600);
-    if(lock<0||flock(lock,LOCK_EX|LOCK_NB)) {if(lock>=0)close(lock);message(sock,409,"Another save operation is running; try again when it finishes");return;}
     static const char *const keys[4]={"leftovers","safety","shared","history"};int take[4]={0};unsigned chosen=0;
     for(int i=0;i<4;i++) {char v[8];if(!parameter(form,keys[i],v,sizeof v)&&!strcmp(v,"1")) {take[i]=1;chosen++;}}
     if(!chosen) {message(sock,400,"Choose what to remove");return;}
+    char lockpath[1400];snprintf(lockpath,sizeof lockpath,"%s/.mount.lock",root);
+    int lock=open(lockpath,O_CREAT|O_RDWR|O_NOFOLLOW,0600);
+    if(lock<0||flock(lock,LOCK_EX|LOCK_NB)) {if(lock>=0)close(lock);message(sock,409,"Another save operation is running; try again when it finishes");return;}
     struct space before,after;static const int none[4]={0};space_scan(0,none,&before);space_scan(1,take,&after);space_scan(0,none,&after);
     unsigned long long freed=0;for(int i=0;i<4;i++)if(before.bytes[i]>after.bytes[i])freed+=before.bytes[i]-after.bytes[i];
     pscloud_log("EVENT","Freed %.1f MB (%s%s%s%s)",freed/1048576.0,take[0]?"leftovers ":"",take[1]?"safety copies ":"",take[2]?"older shared saves ":"",take[3]?"uploaded history":"");
