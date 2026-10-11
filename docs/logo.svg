@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="240" height="240" viewBox="0 0 240 240" role="img" aria-label="PSCloud">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#8b7bff"/>
+      <stop offset="1" stop-color="#4fc3ff"/>
+    </linearGradient>
+    <linearGradient id="shine" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff" stop-opacity=".28"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
+    </linearGradient>
+  </defs>
+  <rect x="12" y="12" width="216" height="216" rx="56" fill="url(#bg)"/>
+  <rect x="12" y="12" width="216" height="108" rx="56" fill="url(#shine)"/>
+  <!-- cloud -->
+  <path d="M78 160h88a32 32 0 0 0 4-63.7A44 44 0 0 0 86.6 92 34 34 0 0 0 78 160z" fill="#fff"/>
+  <!-- two arrows: sync between consoles -->
+  <path d="M104 132a22 22 0 0 1 36-14" fill="none" stroke="#6f62ff" stroke-width="9" stroke-linecap="round"/>
+  <path d="M136 106l6 13-14 3" fill="none" stroke="#6f62ff" stroke-width="9" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M146 132a22 22 0 0 1-36 14" fill="none" stroke="#39a9e8" stroke-width="9" stroke-linecap="round"/>
+  <path d="M114 158l-6-13 14-3" fill="none" stroke="#39a9e8" stroke-width="9" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>
