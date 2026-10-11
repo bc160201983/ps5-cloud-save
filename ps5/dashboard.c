@@ -1004,7 +1004,7 @@ static void registry_publish(void) {
         if(!safe_word(u->d_name,16))continue;
         char name[64];if(profile_name(u->d_name,name,sizeof name))continue;
         for(char *q=name;*q;q++)if(*q=='"'||*q=='\\'||(unsigned char)*q<32)*q=' ';
-        int n=snprintf(text,sizeof text,"NAME=%s\nCONSOLE=%s\nFIRMWARE=%x.%02x\nUPDATED=%lld\n",shown,console_id,firmware_id>>24,(firmware_id>>16)&255,(long long)time(NULL));
+        int n=snprintf(text,sizeof text,"NAME=%s\nCONSOLE=%s\nFIRMWARE=%x.%02x\nUPDATED=%lld\n",name,console_id,firmware_id>>24,(firmware_id>>16)&255,(long long)time(NULL));
         snprintf(url,sizeof url,"%s/.pscloud-profiles/%s.txt",cloud.url,u->d_name);webdav_put(&cloud,url,text,(size_t)n);
     }
     if(d)closedir(d);
