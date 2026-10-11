@@ -1,4 +1,18 @@
-# PS5 Cloud Save — development milestone 0.25.0
+# PS5 Cloud Save — development milestone 0.26.0
+
+## Version 0.26.0 — cloud housekeeping
+
+- **Keep in the cloud** (Cloud settings; `cloud-keep.conf`, `/api/cloud-keep`): all
+  versions, or the newest 3/5/10/20 per save. After each successful upload, older versions
+  of that save are removed from the cloud (archive first, then its identity). Versions whose
+  identity cannot be read are never removed. Backups on the PS5 are not affected.
+- **Clean up older versions** on a game's Cloud versions tab (`/api/cloud-prune`).
+- **Cloud space** (`/api/cloud-housekeeping`): how much the PSCloud folder uses and how much
+  is free in the cloud account, from a WebDAV quota request; shown in Cloud settings and on
+  the Storage page.
+
+Verified by host tests (keeps the newest N, never deletes unreadable versions, setting
+persists). Not yet run against your Nextcloud.
 
 ## Version 0.25.0 — sync between consoles
 
