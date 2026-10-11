@@ -1035,16 +1035,17 @@ static long long http_time(const char *text) {
 struct cloud_version {char file[128],user[17],sha[65],peer[64];long long created;};
 /* ---------- Other PS5s on the local network ----------
  * peers.conf lists "ip:port" of other consoles running PSCloud. Each console serves its
- * newest backup per profile and game read-only at /api/peer/*, so sync works without a
+ * newest backup per profile and game read-only under /api/peer/, so sync works without a
  * cloud. Discovery: a UDP "who is there" on port 8083 that every PSCloud answers. */
 static unsigned peer_udp_port=8083,http_port_number=8082;
 static int peer_address_valid(const char *a) {
     unsigned b[4],port;char tail;if(sscanf(a,"%u.%u.%u.%u:%u%c",&b[0],&b[1],&b[2],&b[3],&port,&tail)!=5)return 0;
-    for(int i=0;i<4;i++)if(b[i]>255)return 0;return port>0&&port<65536&&strlen(a)<64;
+    for(int i=0;i<4;i++)if(b[i]>255)return 0;
+    return port>0&&port<65536&&strlen(a)<64;
 }
 static int peers_list(char peers[8][64]) {
     char path[1400],line[128];snprintf(path,sizeof path,"%s/peers.conf",root);FILE *f=fopen(path,"r");int n=0;if(!f)return 0;
-    while(fgets(line,sizeof line,f)&&n<8) {line[strcspn(line,"\r\n")]=0;if(peer_address_valid(line))snprintf(peers[n++],64,"%s",line);}
+    while(fgets(line,sizeof line,f)&&n<8) {line[strcspn(line,"\r\n")]=0;if(peer_address_valid(line))snprintf(peers[n++],64,"%.63s",line);}
     fclose(f);return n;
 }
 struct peer_body {char *data;size_t size,max;};
@@ -1089,7 +1090,7 @@ static int peer_latest(const char *peer,const char *user,const char *title,struc
     if(peer_get(peer,path,body,sizeof body-1,&got,8)!=200)return 0;
     memset(out,0,sizeof *out);json_text(body,"file",out->file,sizeof out->file);json_text(body,"sha256",out->sha,sizeof out->sha);out->created=json_number(body,"created");
     if(!valid_archive(out->file)||strlen(out->sha)!=64)return 0;
-    snprintf(out->user,sizeof out->user,"%s",user);snprintf(out->peer,sizeof out->peer,"%s",peer);return 1;
+    snprintf(out->user,sizeof out->user,"%.16s",user);snprintf(out->peer,sizeof out->peer,"%.63s",peer);return 1;
 }
 static void peer_info_json(int sock) {
     char json[8192];int pos=snprintf(json,sizeof json,"{\"console\":\"%s\",\"firmware\":\"%x.%02x\",\"version\":\"%s\",\"profiles\":[",console_id,firmware_id>>24,(firmware_id>>16)&255,PSCLOUD_VERSION);
@@ -2470,7 +2471,8 @@ int main(int argc,char **argv) {
     if(getenv("PSCLOUD_TEST_UDP_PORT"))peer_udp_port=(unsigned)atoi(getenv("PSCLOUD_TEST_UDP_PORT"));
 #endif
     {pthread_t beacon;pthread_attr_t attr;pthread_attr_init(&attr);pthread_attr_setstacksize(&attr,256U*1024);
-     if(!pthread_create(&beacon,&attr,peer_beacon,NULL))pthread_detach(beacon);pthread_attr_destroy(&attr);}
+     if(!pthread_create(&beacon,&attr,peer_beacon,NULL))pthread_detach(beacon);
+     pthread_attr_destroy(&attr);}
     printf("PSCLOUD_DASHBOARD_PORT=%u\nPSCLOUD_DASHBOARD_READY=1\n",ntohs(address.sin_port));fflush(stdout);
     pscloud_notify("PSCloud dashboard ready on port %u - open in your browser",ntohs(address.sin_port));
     if(!firmware_tested()) {pscloud_log_open(logpath);pscloud_log("WARN","Firmware %x.%02x has not been tested with PSCloud yet; every replace still runs the staged check first and keeps a rollback copy",firmware_id>>24,(firmware_id>>16)&255);}
