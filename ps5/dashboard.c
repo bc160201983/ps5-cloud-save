@@ -1781,7 +1781,7 @@ static int batch_start(const char *user) {
         char path[1400];snprintf(path,sizeof path,"%s/%s/savedata_prospero",home,u->d_name);DIR *titles=opendir(path);struct dirent *t;
         while(titles&&(t=readdir(titles))&&n<512) {
             if(!pscloud_title_valid(t->d_name))continue;
-            char dir[1500];snprintf(dir,sizeof dir,"%s/%s",path,t->d_name);int fd=pscloud_open_directory(dir);if(fd<0)continue;
+            char dir[1500];snprintf(dir,sizeof dir,"%.1400s/%.9s",path,t->d_name);int fd=pscloud_open_directory(dir);if(fd<0)continue;
             int has=newest_container(fd)!=0;close(fd);if(!has)continue;
             snprintf(items[n].user,sizeof items[n].user,"%.16s",u->d_name);snprintf(items[n].title,sizeof items[n].title,"%.9s",t->d_name);n++;
         }
