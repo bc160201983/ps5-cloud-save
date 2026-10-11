@@ -1,4 +1,24 @@
-# PS5 Cloud Save — development milestone 0.27.0
+# PS5 Cloud Save — development milestone 0.28.0
+
+## Version 0.28.0 — start with the console, rest mode
+
+- **Start PSCloud with your console** (Cloud settings guide): add `pscloud-dashboard.elf`
+  to an autoloader. With ProsperoMgr: Payloads → upload the ELF, then Settings → Autoloader
+  → add it to the sequence and enable the autoloader. PSCloud does not edit other apps'
+  configuration files. Everything PSCloud needs is in `/data/pscloud`, so a fresh start
+  picks up all settings.
+- **Rest mode:** the background loop notices when the process was suspended for more than
+  two minutes and logs "PSCloud was paused for N minutes" to Activity, so the effect of
+  rest mode on a given console can be seen. A nightly backup missed while the console was
+  in rest mode now runs once the console is back on that day (at or after the chosen hour,
+  once per day). What happens to uploads in progress during rest mode has not been tested.
+- **Cloud space:** a provider that answers with zero for both used and free space is shown
+  as "does not report how much space is used" instead of 0 MB.
+
+**Storage providers:** PSCloud speaks WebDAV over HTTPS, which covers Nextcloud, ownCloud,
+Koofr, pCloud, Box, Synology/QNAP/TrueNAS NAS WebDAV servers and similar. Dropbox needs an
+app key registered with Dropbox, and SMB needs a client library not in the PS5 SDK; neither
+is included. The Google Drive sign-in code is present but transfers are not enabled.
 
 ## Version 0.27.0 — encrypted cloud backups
 

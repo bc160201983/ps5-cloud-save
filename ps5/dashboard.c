@@ -2172,7 +2172,8 @@ static void schedule_tick(void) {
 #ifdef PSCLOUD_HOST_TEST
     if(getenv("PSCLOUD_TEST_SCHEDULE_NOW"))local.tm_hour=schedule_hour;
 #endif
-    if(local.tm_hour!=schedule_hour||!strcmp(today,schedule_last))return;
+    /* at or after the chosen hour, once a day: a backup missed in rest mode runs on wake */
+    if(local.tm_hour<schedule_hour||!strcmp(today,schedule_last))return;
     char game[16];if(running_game(game)>0)return; /* try again next minute */
     snprintf(schedule_last,sizeof schedule_last,"%s",today);schedule_save();
     pscloud_log_open(logpath);pscloud_log("EVENT","Scheduled backup of all games");
@@ -2208,8 +2209,14 @@ static void *game_close_watch(void *unused) {
     if(getenv("PSCLOUD_TEST_WATCH_SECONDS"))interval=(unsigned)strtoul(getenv("PSCLOUD_TEST_WATCH_SECONDS"),NULL,10);
     if(!interval)interval=1;
 #endif
+    time_t last_beat=time(NULL);
     while(!stopped) {
         sleep(1);++seconds;
+        time_t now_beat=time(NULL);
+        if(now_beat-last_beat>120) { /* the process was suspended, e.g. the PS5 was in rest mode */
+            pscloud_log_open(logpath);pscloud_log("EVENT","PSCloud was paused for %lld minutes (the PS5 was probably in rest mode); running again",(long long)(now_beat-last_beat)/60);
+        }
+        last_beat=now_beat;
         if(!(seconds%60)
 #ifdef PSCLOUD_HOST_TEST
            ||getenv("PSCLOUD_TEST_SCHEDULE_NOW")
