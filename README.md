@@ -1,4 +1,20 @@
-# PS5 Cloud Save — development milestone 0.17.0
+# PS5 Cloud Save — development milestone 0.18.0
+
+## Version 0.18.0 — a separate view for each PS5 profile
+
+When the console has more than one profile, My games starts with "Who is using
+PSCloud?" and one button per profile, using the names shown on the PS5. The game
+list, the upload queue and the default profile for Receive a shared save show only
+the chosen profile. The queue notes how many items belong to other profiles, and
+"Upload all queued backups" still uploads every profile's queue. Each browser
+remembers its own choice. With one profile the switcher is hidden.
+
+This is a view, not access control: anyone on the network can open the dashboard
+and switch profiles, and Cloud settings and Activity stay shared for the console.
+
+Verified: page script syntax check and a local preview with two sample profiles
+(switching filters games and queue; the choice survives a reload).
+
 
 ## Version 0.17.0 — every jailbroken PS5 firmware
 

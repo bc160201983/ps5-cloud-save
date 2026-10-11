@@ -27,15 +27,18 @@ class Handler(BaseHTTPRequestHandler):
             self.send({'version':(ROOT/'VERSION').read_text().strip(),'configured':True,'connected':True,
                        'url':'https://your-nextcloud.example/remote.php/dav/files/you/PS5Backups','username':'Your Nextcloud account'})
         elif path=='/api/preferences':
-            self.send({'auto_upload':True,'activity_refresh':True,'game_close_available':True,'game_close_backup':False,'sharing_available':True})
+            self.send({'auto_upload':True,'activity_refresh':True,'game_close_available':True,'game_close_backup':False,'sharing_available':True,'compact_backups':True,'compact_required':False})
         elif path=='/api/health':self.send({'busy':False})
         elif path=='/api/google/status':self.send({'configured':False,'authorized':False,'pending':False,'transfers_available':False})
         elif path=='/api/queue':
             self.send({'items':[],'count':0,'truncated':False})
+        elif path=='/api/users':
+            self.send({'users':[{'user':'00000001','name':'Player One'},{'user':'00000002','name':'Player Two'}]})
         elif path=='/api/games':
             self.send({'games':[{'user':'00000001','title':'PPSA02433','slot':slot,
                                  'name':'Crash Bandicoot 4','supported':True}
-                                for slot in ['PlayerSaveSlot0Save','PlayerSaveProfileSaveData']]})
+                                for slot in ['PlayerSaveSlot0Save','PlayerSaveProfileSaveData']]+
+                               [{'user':'00000002','title':'PPSA01341','slot':'SAVEDATA00','name':'Astro Bot','supported':True}]})
         elif path=='/api/backups':
             self.send({'backups':[{'file':'ps5-11.40-PPSA02433-'+char*32+'.zip',
                                    'sha256':char*64,'slot':'PlayerSaveSlot0Save','created':stamp}
