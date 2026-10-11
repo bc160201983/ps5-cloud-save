@@ -19,7 +19,7 @@ still pending. The existing uploader processes ready ZIPs, not identity files.
 1. Close the game, unmount saves in Save Mounter and leave no other save mounted.
 2. Keep independent backups. Download the `pscloud-backup` Actions artifact.
 3. Fill in the configuration example, confirm the exact encrypted save name,
-   set CONFIRM_GAME_CLOSED=yes, and upload as `/data/pscloud-backup.conf`.
+   set CONFIRM_GAME_CLOSED=yes, and upload as `/data/pscloud/backup.conf`.
    `/data/pscloud` must already exist from earlier export tests.
 4. Send `pscloud-backup.elf` to the PS5 ELF loader. No Windows Save Mounter is
    involved in the mount lifecycle. Inspect the loader output and pscloud.log.

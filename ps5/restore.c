@@ -33,8 +33,8 @@ int main(int argc,char **argv) {
     const char *config=argv[1],*downloads=argv[2],*rollback=argv[3],*log=argv[4];
 #else
     (void)argc;(void)argv;
-    const char *config="/data/pscloud-restore.conf",*downloads="/data/pscloud/downloads",
-        *rollback="/data/pscloud/rollback",*log="/data/pscloud.log";
+    const char *config="/data/pscloud/restore.conf",*downloads="/data/pscloud/downloads",
+        *rollback="/data/pscloud/rollback",*log="/data/pscloud/pscloud.log";
 #endif
     pscloud_log_open(log);pscloud_notify("Controlled restore started");
 #ifndef PSCLOUD_HOST_TEST

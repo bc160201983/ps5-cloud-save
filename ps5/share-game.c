@@ -15,7 +15,7 @@ int main(int argc,char **argv) {
     snprintf(home,sizeof home,"%s",argv[1]);snprintf(root,sizeof root,"%s",argv[2]);snprintf(meta,sizeof meta,"%s",argv[3]);
     snprintf(mode,sizeof mode,"%s",argv[4]);snprintf(user,sizeof user,"%s",argv[5]);snprintf(title,sizeof title,"%s",argv[6]);snprintf(package,sizeof package,"%s",argv[7]);strcpy(closed,"yes");
 #else
-    (void)argc;(void)argv;FILE *f=fopen("/data/pscloud-share-game.conf","r");if(!f)return 2;
+    (void)argc;(void)argv;FILE *f=fopen("/data/pscloud/share-game.conf","r");if(!f)return 2;
     char line[512];unsigned seen=0;int invalid=0;
     const char *keys[]={"MODE","USER_ID","TITLE","PACKAGE","CONFIRM_GAME_CLOSED"};
     char *values[]={mode,user,title,package,closed};size_t caps[]={sizeof mode,sizeof user,sizeof title,sizeof package,sizeof closed};

@@ -3,7 +3,7 @@
 ## What this payload does
 
 pscloud-export.elf runs on the console, shows PS5 notifications, writes timestamped
-logs to /data/pscloud.log, and copies game payload files from an explicitly mounted
+logs to /data/pscloud/pscloud.log, and copies game payload files from an explicitly mounted
 save into a uniquely named ZIP under /data/pscloud/spool/. Successful archives end
 in .zip.ready; failed archives are removed, or left .part after an interruption.
 The .ready suffix is for our future queue consumer, not a claim of cloud upload.
@@ -26,7 +26,7 @@ runs only on firmware 11.40 for this development test. Do not use an encrypted
 6. Copy ps5/pscloud-export.conf.example to a local file named pscloud-export.conf.
    Set SOURCE to the actual mount directory and TITLE to that game's PPSA ID.
    CONFIRM_GAME_CLOSED=yes is your confirmation, not an automatic safety check.
-7. Upload that configuration via your usual FTP tool to /data/pscloud-export.conf.
+7. Upload that configuration via your usual FTP tool to /data/pscloud/export.conf.
 
 Save Mounter reference and instructions:
 https://github.com/n0llptr/Playstation-5-Save-Mounter
@@ -56,7 +56,7 @@ not prove execution. Inspect the sender's loader reply.
 
 ## Verify and report
 
-Download /data/pscloud.log and the new .zip.ready file through FTP. On a computer,
+Download /data/pscloud/pscloud.log and the new .zip.ready file through FTP. On a computer,
 Python can verify the ZIP CRCs without extracting it:
 
 ```cmd

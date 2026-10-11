@@ -78,7 +78,7 @@ def send(host, port, path, connect_timeout=15, transfer_timeout=60, reply_timeou
             else:
                 print('No loader output received.', flush=True)
     print('Transmission finished. Confirm execution using the PS5 notification, '
-          '/data/pscloud.log, or the diagnostic report for a probe payload.')
+          '/data/pscloud/pscloud.log, or the diagnostic report for a probe payload.')
 
 
 def positive(value):

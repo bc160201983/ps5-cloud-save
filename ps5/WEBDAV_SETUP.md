@@ -20,7 +20,7 @@ is required, and this setup does not route PS5 uploads through your PC.
    `https://cloud.example.com/remote.php/dav/files/YOUR-USER/PS5Backups`
 
 7. Set USER to your Nextcloud username, PASSWORD to the app password,
-   CA_BUNDLE to `/data/pscloud-ca.pem`, and MODE to `once`.
+   CA_BUNDLE to `/data/pscloud/ca.pem`, and MODE to `once`.
 8. Upload the included `pscloud-ca.pem` and your config to `/data/` on the PS5.
    Follow UPLOAD_TEST.md to run the ELF and verify a round-trip download.
 

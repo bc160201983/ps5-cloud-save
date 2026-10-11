@@ -23,6 +23,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <errno.h>
+#include <time.h>
 #include <openssl/evp.h>
 #ifndef PSCLOUD_HOST_TEST
 #include <ps5/kernel.h>
@@ -220,6 +221,51 @@ static void discard_completed_stage(int parent,int stage,const char *name,unsign
     if(clean&&unlinkat(parent,name,AT_REMOVEDIR))clean=0;
     if(fsync(parent))clean=0;
     pscloud_log(clean?"INFO":"WARN",clean?"Completed sharing temporary copies removed; portable package retained":"Temporary cleanup incomplete; retained directory requires inspection");
+}
+/* After a committed replace only before-N.img (the original save) is needed. Drop the
+ * imported copies and empty mount points, label the folder, and file it under rollback/ as
+ * restore-<title>-<user>-<id>. Then keep the 3 newest such copies for this game and profile. */
+#define KEEP_ROLLBACKS 3
+static void prune_rollbacks(int rollback,const char *title,const char *user) {
+    char prefix[64];snprintf(prefix,sizeof prefix,"restore-%s-%s-",title,user);
+    struct item {char name[96];time_t when;} items[64];unsigned n=0;
+    int scan=dup(rollback);DIR *d=scan<0?NULL:fdopendir(scan);if(!d) {if(scan>=0)close(scan);return;}
+    struct dirent *e;
+    while((e=readdir(d))&&n<64) {
+        if(strncmp(e->d_name,prefix,strlen(prefix))||strlen(e->d_name)>=sizeof items[0].name)continue;
+        struct stat st;if(fstatat(rollback,e->d_name,&st,AT_SYMLINK_NOFOLLOW)||!S_ISDIR(st.st_mode))continue;
+        strcpy(items[n].name,e->d_name);items[n].when=st.st_mtime;n++;
+    }
+    closedir(d);
+    while(n>KEEP_ROLLBACKS) {
+        unsigned oldest=0;for(unsigned i=1;i<n;i++)if(items[i].when<items[oldest].when)oldest=i;
+        int dir=openat(rollback,items[oldest].name,O_RDONLY|O_DIRECTORY|O_NOFOLLOW);
+        if(dir>=0) { /* only the files this code writes; anything else keeps the folder */
+            for(unsigned i=0;i<SLOTS;i++) {char file[32];snprintf(file,sizeof file,"before-%u.img",i);if(unlinkat(dir,file,0)&&errno==ENOENT)break;}
+            (void)unlinkat(dir,"info.txt",0);fsync(dir);close(dir);
+            if(!unlinkat(rollback,items[oldest].name,AT_REMOVEDIR))pscloud_log("INFO","Removed older restore safety copy %s (keeping the newest %d)",items[oldest].name,KEEP_ROLLBACKS);
+        }
+        items[oldest]=items[--n];
+    }
+    fsync(rollback);
+}
+static void retain_rollback(int parent,int stage,const char *stage_name,const struct package *p,const char *user,const char *title,const char *id,char *stage_path,size_t path_max) {
+    for(unsigned i=0;i<p->count;i++) {
+        char file[32];snprintf(file,sizeof file,"image-%u.img",i);(void)unlinkat(stage,file,0);
+        snprintf(file,sizeof file,"mount-%u",i);(void)unlinkat(stage,file,AT_REMOVEDIR);
+    }
+    char info[30000];int n=snprintf(info,sizeof info,"KIND=restore safety copy\nTITLE=%s\nUSER_ID=%s\nCREATED_UNIX=%lld\nSLOTS=%u\n",title,user,(long long)time(NULL),p->count);
+    for(unsigned i=0;i<p->count&&n>0&&(size_t)n<sizeof info;i++)n+=snprintf(info+n,sizeof info-(size_t)n,"SLOT=%u:%s\n",i,p->slots[i]);
+    if(n>0&&(size_t)n<sizeof info)(void)write_bytes(stage,"info.txt",(const unsigned char *)info,(size_t)n);
+    fsync(stage);
+    (void)mkdirat(parent,"rollback",0700);int rollback=openat(parent,"rollback",O_RDONLY|O_DIRECTORY|O_NOFOLLOW);if(rollback<0)return;
+    char name[96];snprintf(name,sizeof name,"restore-%s-%s-%s",title,user,id);
+    if(!renameat(parent,stage_name,rollback,name)) {
+        fsync(parent);fsync(rollback);
+        char *slash=strrchr(stage_path,'/');if(slash)snprintf(slash,path_max-(size_t)(slash-stage_path),"/rollback/%s",name);
+        prune_rollbacks(rollback,title,user);
+    }
+    close(rollback);
 }
 static int metadata_read(int dir,const char *title,const char *slot,struct pscloud_save_meta *meta,char hash[65]) {
     if(pscloud_save_meta_local(dir,meta,hash))return -1;
@@ -433,6 +479,7 @@ int pscloud_share_game(const char *home,const char *root,const char *appmeta,con
         free(verified);if(bad) {published[0]=0;goto done;}
     }
     if(mode==2&&commit(parent,source,stage,p,before,baseline,id,stage_path,user,title,checksum)) {refuse("Live replacement stopped; rollback copies are in %s. Check Activity before retrying",stage_path);goto done;}
+    if(mode==2&&!marker&&!state.mounted)retain_rollback(parent,stage,stage_name,p,user,title,id,stage_path,sizeof stage_path);
     pscloud_log("EVENT",mode==2?"GENERIC_RESTORE_COMMITTED=yes; rollback=%s":"LIVE_SAVES_UNCHANGED=yes; generic sharing passed; stage=%s",stage_path);result=0;
     if(mode!=2&&!marker&&!state.mounted&&!state.credentials_saved)discard_completed_stage(parent,stage,stage_name,p->count,!mode);
 done:

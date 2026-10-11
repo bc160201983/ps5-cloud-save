@@ -23,13 +23,13 @@ Run `make test` for host verification. Console runtime still needs validation.
    Fill in URL, USER and PASSWORD. Keep MODE=once for the first test.
 3. Obtain the trusted CA bundle distributed with the curl/OpenSSL libraries
    (or your provider's trusted private CA), and upload it to
-   `/data/pscloud-ca.pem`. Certificate verification stays enabled.
-4. Upload the config to `/data/pscloud-upload.conf`, restricting access to your
+   `/data/pscloud/ca.pem`. Certificate verification stays enabled.
+4. Upload the config to `/data/pscloud/upload.conf`, restricting access to your
    console and FTP session. Never send passwords in logs or chat.
 5. Confirm the exporter-created `.zip.ready` archives are present in
    `/data/pscloud/spool`. Keep independent copies of your tested saves.
 6. Send `pscloud-upload.elf` using `tools/send_payload.py`. Inspect the loader
-   output and `/data/pscloud.log` for execution; transmission is not execution.
+   output and `/data/pscloud/pscloud.log` for execution; transmission is not execution.
 7. Check that accepted jobs become `.zip.sent` locally and appear as `.zip`
    objects in your cloud folder. Download an object and compare SHA-256 with
    its original archive. A server acceptance notification alone does not

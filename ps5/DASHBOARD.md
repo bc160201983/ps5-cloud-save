@@ -97,7 +97,7 @@ marker survives interruption, keep the game closed and preserve rollback files
 for inspection. Automatic interrupted-transaction recovery is not implemented.
 
 Download the `pscloud-dashboard` artifact from a successful build on `main`.
-Deploy its CA bundle to `/data/pscloud-ca.pem` if not already present. Send
+Deploy its CA bundle to `/data/pscloud/ca.pem` if not already present. Send
 `pscloud-dashboard.elf` to the PS5 ELF loader, then open `http://PS5-IP:8082` from
 a phone or browser. Opening the page establishes a browser session automatically;
 no pairing code is required. Session cookies are HttpOnly and SameSite=Strict,

@@ -32,8 +32,8 @@ int main(int argc,char **argv) {
     const char *cloud=argv[1],*selection=argv[2],*folder=argv[3],*log=argv[4];
 #else
     (void)argc;(void)argv;
-    const char *cloud="/data/pscloud-upload.conf",*selection="/data/pscloud-download.conf",
-        *folder="/data/pscloud/downloads",*log="/data/pscloud.log";
+    const char *cloud="/data/pscloud/upload.conf",*selection="/data/pscloud/download.conf",
+        *folder="/data/pscloud/downloads",*log="/data/pscloud/pscloud.log";
 #endif
     pscloud_log_open(log);pscloud_notify("Cloud download started");
 #ifndef PSCLOUD_HOST_TEST

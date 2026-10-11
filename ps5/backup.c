@@ -120,8 +120,8 @@ int main(int argc,char **argv) {
 #else
     (void)argc;(void)argv;
     published_archive[0]=0;
-    const char *config="/data/pscloud-backup.conf",*home="/user/home",
-        *root="/data/pscloud",*log="/data/pscloud.log";
+    const char *config="/data/pscloud/backup.conf",*home="/user/home",
+        *root="/data/pscloud",*log="/data/pscloud/pscloud.log";
 #endif
     pscloud_log_open(log);pscloud_notify("Console-managed backup started");
     struct selection s={0};int result=1;const char *phase="selection validation";

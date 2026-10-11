@@ -70,7 +70,7 @@ Successful export/check cleans up its known disposable copies after verified
 unmounts. Portable packages remain available; live restore rollback, failures
 and uncertain mount stages are never automatically discarded.
 
-Advanced staged-only tool pscloud-share-game.elf reads /data/pscloud-share-game.conf:
+Advanced staged-only tool pscloud-share-game.elf reads /data/pscloud/share-game.conf:
 MODE=export or check, USER_ID=<local hex>, TITLE=<PPSA ID>,
 CONFIRM_GAME_CLOSED=yes, and PACKAGE=<generic ZIP filename> for check.
 It has no live-restore mode. It logs to /data/pscloud/share-game.log.
@@ -139,7 +139,7 @@ afterwards. There is no live-container commit or database update in this pilot.
 Game closure is mandatory. A failed/stalled unmount must retain its safety marker
 and stage for inspection; never blindly clear a marker or power off.
 
-Configuration goes in /data/pscloud-share.conf using the example. For export,
+Configuration goes in /data/pscloud/share.conf using the example. For export,
 MODE=export, USER_ID=<source hex user>, CONFIRM_GAME_CLOSED=yes. For check,
 MODE=check, USER_ID=<recipient hex user>, PACKAGE=<portable ZIP filename>, and
 CONFIRM_GAME_CLOSED=yes. Put the complete verified package under

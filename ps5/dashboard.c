@@ -535,14 +535,15 @@ static int usb_drive(const char *form,char *out,size_t max) {
     char id[8];if(parameter(form,"drive",id,sizeof id)||strlen(id)!=4||strncmp(id,"usb",3)||id[3]<'0'||id[3]>'7')return -1;
     return usb_mount((unsigned)(id[3]-'0'),out,max);
 }
+static void space_totals(unsigned long long *leftover_bytes,unsigned *leftover_files,unsigned long long *safety_bytes,unsigned *safety_files);
 static void storage_json(int sock) {
     struct place {const char *key,*label,*purpose;char path[1400];} places[9];unsigned n=0;
     #define PLACE(k,l,p,...) do{places[n].key=k;places[n].label=l;places[n].purpose=p;snprintf(places[n].path,sizeof places[n].path,__VA_ARGS__);n++;}while(0)
     PLACE("backups","Local backups","Every backup made on this PS5. Ones waiting are uploaded next; uploaded ones stay as history unless you keep only the newest.","%s/spool",root);
-    PLACE("shared","Shared saves","ZIPs exported for sharing and ones you received.","%s/share",root);
-    PLACE("rollback","Restore safety copies","A copy of your save taken just before each restore, so it can be put back. Never deleted automatically.","%s/rollback",root);
+    PLACE("shared","Shared saves","ZIPs exported for sharing and ones you received. The 2 newest per game are kept.","%s/share",root);
+    PLACE("rollback","Restore safety copies","Your save as it was before each restore or replace, so it can be put back. The 3 newest per game are kept.","%s/rollback",root);
     PLACE("downloads","Cloud downloads","Backups downloaded from your cloud to this PS5.","%s/downloads",root);
-    PLACE("staging","Temporary copies","Working copies used while a backup or check runs. Normally empty; leftovers mean an operation was interrupted.","%s/staging",root);
+    PLACE("staging","Leftover working files","Copies made while a backup, check or replace runs. Normally removed automatically; leftovers come from interrupted operations or older versions.","%s/staging",root);
     PLACE("log","Activity log","Everything PSCloud did, shown on the Activity page.","%s",logpath);
     PLACE("settings","Settings","Your preferences and cloud sign-in, readable only by PSCloud on this PS5.","%s/preferences.conf",root);
     PLACE("saves","Your PS5 saves","The console's own save files. PSCloud only reads them, except when you choose Restore or Replace.","%s",home);
@@ -551,11 +552,9 @@ static void storage_json(int sock) {
     for(unsigned i=0;i<n;i++) {
         unsigned long long bytes=0;unsigned files=0;int exists=0;
         if(strcmp(places[i].key,"saves"))path_size(places[i].path,&bytes,&files,&exists);else exists=1;
-        if(!strcmp(places[i].key,"staging")) { /* sharing checks use portable-stage-* folders beside staging */
-            int dir=pscloud_open_directory(root);DIR *d=NULL;int scan=dir>=0?dup(dir):-1;d=scan>=0?fdopendir(scan):NULL;
-            if(d) {struct dirent *e;while((e=readdir(d)))if(!strncmp(e->d_name,"portable-stage-",15)) {int sub=openat(dir,e->d_name,O_RDONLY|O_DIRECTORY|O_NOFOLLOW);if(sub>=0) {tree_size(sub,0,&bytes,&files);close(sub);}}closedir(d);} else if(scan>=0)close(scan);
-            if(dir>=0)close(dir);
-        }
+        /* Leftovers and safety copies are classified file by file (old stage folders hold both). */
+        if(!strcmp(places[i].key,"staging")) {unsigned long long b2;unsigned f2;space_totals(&bytes,&files,&b2,&f2);exists=files>0;}
+        if(!strcmp(places[i].key,"rollback")) {unsigned long long b1;unsigned f1;space_totals(&b1,&f1,&bytes,&files);exists=files>0;}
         char path[2900];escaped(path,sizeof path,places[i].path);
         int w=snprintf(json+pos,sizeof json-(size_t)pos,"%s{\"key\":\"%s\",\"label\":\"%s\",\"purpose\":\"%s\",\"path\":\"%s\",\"exists\":%s,\"files\":%u,\"bytes\":%llu}",
             i?",":"",places[i].key,places[i].label,places[i].purpose,path,exists?"true":"false",files,bytes);
@@ -752,6 +751,163 @@ static void usb_copy_all(int sock,const char *form) {
     }
     char text[256];snprintf(text,sizeof text,"USB: %u copied, %u already there%s%s",copied,same,failed?", failed: ":"",failed?"check space and format":"");
     message(sock,failed?500:200,text);
+}
+
+/* ---------- Free up space ----------
+ * Categories, all inside <root>:
+ *   leftovers - everything in staging/ and in old *-stage-* folders except before-N.img
+ *               (imported copies, empty mount points, unfinished exports)
+ *   safety    - before-N.img (originals kept by replaces) in old stage folders, and all of
+ *               rollback/ (restore-*, whole-restore-*, pre-restore-*.img)
+ *   shared    - share/ ZIPs other than the newest one per game
+ *   history   - uploaded backups other than the newest per game (as "keep only the newest")
+ * Nothing runs while another operation holds the lock or an interrupted restore/mount marker
+ * exists, and a folder with a mounted subfolder is never touched. */
+struct space {unsigned long long bytes[4];unsigned files[4];};
+enum {SPACE_LEFTOVERS,SPACE_SAFETY,SPACE_SHARED,SPACE_HISTORY};
+static int is_mounted_inside(int dir) {
+    struct stat self;if(fstat(dir,&self))return 1;
+    int scan=dup(dir);DIR *d=scan<0?NULL:fdopendir(scan);if(!d) {if(scan>=0)close(scan);return 1;}
+    struct dirent *e;int mounted=0;
+    while((e=readdir(d))&&!mounted) {if(e->d_name[0]=='.')continue;struct stat st;if(!fstatat(dir,e->d_name,&st,AT_SYMLINK_NOFOLLOW)&&S_ISDIR(st.st_mode)&&st.st_dev!=self.st_dev)mounted=1;}
+    closedir(d);return mounted;
+}
+static int before_image(const char *name) {return !strncmp(name,"before-",7)&&strlen(name)>11&&!strcmp(name+strlen(name)-4,".img");}
+/* One folder: count or remove its files, keeping or taking before-N.img. Removes the folder
+ * itself when it ends up empty. Subfolders are only empty mount points (removed with rmdir). */
+static void space_folder(int parent,const char *name,int apply,int take_safety,int take_leftovers,struct space *out) {
+    int dir=openat(parent,name,O_RDONLY|O_DIRECTORY|O_NOFOLLOW);if(dir<0)return;
+    if(is_mounted_inside(dir)) {close(dir);return;}
+    int scan=dup(dir);DIR *d=scan<0?NULL:fdopendir(scan);if(!d) {if(scan>=0)close(scan);close(dir);return;}
+    struct dirent *e;
+    while((e=readdir(d))) {
+        if(!strcmp(e->d_name,".")||!strcmp(e->d_name,".."))continue;
+        struct stat st;if(fstatat(dir,e->d_name,&st,AT_SYMLINK_NOFOLLOW))continue;
+        int safety=before_image(e->d_name)||(!strncmp(e->d_name,"pre-restore-",12)&&strstr(e->d_name,".img"));
+        int kind=safety?SPACE_SAFETY:SPACE_LEFTOVERS;
+        if(S_ISDIR(st.st_mode)) {if(apply&&take_leftovers)(void)unlinkat(dir,e->d_name,AT_REMOVEDIR);continue;}
+        if(!S_ISREG(st.st_mode))continue;
+        if(!strcmp(e->d_name,"info.txt"))kind=SPACE_SAFETY; /* label of a kept safety copy */
+        out->bytes[kind]+=(unsigned long long)st.st_size;out->files[kind]++;
+        if(apply&&((kind==SPACE_SAFETY&&take_safety)||(kind==SPACE_LEFTOVERS&&take_leftovers)))(void)unlinkat(dir,e->d_name,0);
+    }
+    closedir(d);fsync(dir);close(dir);
+    if(apply)(void)unlinkat(parent,name,AT_REMOVEDIR); /* only succeeds when empty */
+}
+/* Newest file per game in share/ (by name's title, newest modification time). */
+static void space_shared(int apply,struct space *out) {
+    char path[1400];snprintf(path,sizeof path,"%s/share",root);int dir=pscloud_open_directory(path);if(dir<0)return;
+    struct item {char name[128],title[10];time_t when;off_t size;} *items=calloc(512,sizeof *items);unsigned n=0;
+    int scan=dup(dir);DIR *d=items&&scan>=0?fdopendir(scan):NULL;if(!d) {if(scan>=0)close(scan);free(items);close(dir);return;}
+    struct dirent *e;
+    while((e=readdir(d))&&n<512) {
+        if(!valid_archive(e->d_name))continue;struct stat st;if(fstatat(dir,e->d_name,&st,AT_SYMLINK_NOFOLLOW)||!S_ISREG(st.st_mode))continue;
+        snprintf(items[n].name,sizeof items[n].name,"%s",e->d_name);memcpy(items[n].title,e->d_name+(strncmp(e->d_name,"portable-",9)?10:9),9);items[n].title[9]=0;
+        items[n].when=st.st_mtime;items[n].size=st.st_size;n++;
+    }
+    closedir(d);
+    for(unsigned i=0;i<n;i++) {
+        int newer=0;for(unsigned j=0;j<n&&!newer;j++)if(j!=i&&!strcmp(items[j].title,items[i].title)&&(items[j].when>items[i].when||(items[j].when==items[i].when&&strcmp(items[j].name,items[i].name)>0)))newer=1;
+        if(!newer)continue;
+        out->bytes[SPACE_SHARED]+=(unsigned long long)items[i].size;out->files[SPACE_SHARED]++;
+        if(apply)(void)unlinkat(dir,items[i].name,0);
+    }
+    if(apply)fsync(dir);
+    free(items);close(dir);
+}
+/* Uploaded history beyond the newest per game: same rule as "keep only the newest". */
+static void space_history(struct space *out) {
+    char path[1400];snprintf(path,sizeof path,"%s/spool",root);int dir=pscloud_open_directory(path);if(dir<0)return;
+    struct item {char title[10],user[17];long long created;off_t size;} *items=calloc(512,sizeof *items);unsigned n=0;
+    int scan=dup(dir);DIR *d=items&&scan>=0?fdopendir(scan):NULL;if(!d) {if(scan>=0)close(scan);free(items);close(dir);return;}
+    struct dirent *e;
+    while((e=readdir(d))&&n<512) {
+        size_t len=strlen(e->d_name);if(len<6||len-5>=128||strcmp(e->d_name+len-5,".sent"))continue;
+        char file[128],identity[144];memcpy(file,e->d_name,len-5);file[len-5]=0;if(!valid_archive(file))continue;
+        struct pscloud_snapshot snap;snprintf(identity,sizeof identity,"%s.identity",file);if(pscloud_snapshot_read(dir,identity,&snap))continue;
+        struct stat st;if(fstatat(dir,e->d_name,&st,AT_SYMLINK_NOFOLLOW))continue;
+        snprintf(items[n].title,sizeof items[n].title,"%s",snap.title);snprintf(items[n].user,sizeof items[n].user,"%s",snap.user);items[n].created=snap.created;items[n].size=st.st_size;n++;
+    }
+    closedir(d);
+    for(unsigned i=0;i<n;i++) {int newer=0;for(unsigned j=0;j<n&&!newer;j++)if(j!=i&&!strcmp(items[j].title,items[i].title)&&!strcmp(items[j].user,items[i].user)&&items[j].created>items[i].created)newer=1;
+        if(newer) {out->bytes[SPACE_HISTORY]+=(unsigned long long)items[i].size;out->files[SPACE_HISTORY]++;}}
+    free(items);close(dir);
+}
+static void space_scan(int apply,const int take[4],struct space *out) {
+    memset(out,0,sizeof *out);
+    int parent=pscloud_open_directory(root);if(parent<0)return;
+    int scan=dup(parent);DIR *d=scan>=0?fdopendir(scan):NULL;
+    if(d) {
+        char names[128][96];unsigned n=0;struct dirent *e;
+        while((e=readdir(d))&&n<128)if((strstr(e->d_name,"-stage-")||!strcmp(e->d_name,"staging"))&&strlen(e->d_name)<96)strcpy(names[n++],e->d_name);
+        closedir(d);
+        for(unsigned i=0;i<n;i++) {
+            if(!strcmp(names[i],"staging")) { /* backup work folders: staging/<id>/... */
+                int st=openat(parent,"staging",O_RDONLY|O_DIRECTORY|O_NOFOLLOW);if(st<0)continue;
+                int sc=dup(st);DIR *sd=sc>=0?fdopendir(sc):NULL;
+                if(sd) {char subs[128][96];unsigned m=0;struct dirent *x;while((x=readdir(sd))&&m<128)if(x->d_name[0]!='.'&&strlen(x->d_name)<96)strcpy(subs[m++],x->d_name);closedir(sd);
+                    for(unsigned j=0;j<m;j++) {struct stat info;if(fstatat(st,subs[j],&info,AT_SYMLINK_NOFOLLOW))continue;
+                        if(S_ISDIR(info.st_mode))space_folder(st,subs[j],apply,take[SPACE_SAFETY],take[SPACE_LEFTOVERS],out);
+                        else if(S_ISREG(info.st_mode)) {out->bytes[SPACE_LEFTOVERS]+=(unsigned long long)info.st_size;out->files[SPACE_LEFTOVERS]++;if(apply&&take[SPACE_LEFTOVERS])(void)unlinkat(st,subs[j],0);}}}
+                else if(sc>=0)close(sc);
+                close(st);
+            } else space_folder(parent,names[i],apply,take[SPACE_SAFETY],take[SPACE_LEFTOVERS],out);
+        }
+    } else if(scan>=0)close(scan);
+    /* rollback/: every entry is a safety copy (files, or folders of before-N.img). */
+    int rb=openat(parent,"rollback",O_RDONLY|O_DIRECTORY|O_NOFOLLOW);
+    if(rb>=0) {
+        int sc=dup(rb);DIR *rd=sc>=0?fdopendir(sc):NULL;
+        if(rd) {char names[256][128];unsigned n=0;struct dirent *e;while((e=readdir(rd))&&n<256)if(e->d_name[0]!='.'&&strlen(e->d_name)<128)strcpy(names[n++],e->d_name);closedir(rd);
+            for(unsigned i=0;i<n;i++) {struct stat st;if(fstatat(rb,names[i],&st,AT_SYMLINK_NOFOLLOW))continue;
+                if(S_ISDIR(st.st_mode)) {struct space part={0};space_folder(rb,names[i],apply&&take[SPACE_SAFETY],1,1,&part);
+                    out->bytes[SPACE_SAFETY]+=part.bytes[SPACE_SAFETY]+part.bytes[SPACE_LEFTOVERS];out->files[SPACE_SAFETY]+=part.files[SPACE_SAFETY]+part.files[SPACE_LEFTOVERS];}
+                else if(S_ISREG(st.st_mode)) {out->bytes[SPACE_SAFETY]+=(unsigned long long)st.st_size;out->files[SPACE_SAFETY]++;if(apply&&take[SPACE_SAFETY])(void)unlinkat(rb,names[i],0);}}}
+        else if(sc>=0)close(sc);
+        fsync(rb);close(rb);
+    }
+    close(parent);
+    space_shared(apply&&take[SPACE_SHARED],out);
+    if(apply&&take[SPACE_HISTORY]) {int keep=local_keep_latest;local_keep_latest=1;prune_local_history();local_keep_latest=keep;}
+    else space_history(out);
+}
+static int space_blocked(void) {int parent=pscloud_open_directory(root);if(parent<0)return 1;int active=pscloud_active_marker(parent);close(parent);return active!=0;}
+static void space_json(int sock,const struct space *sp,const char *note) {
+    char json[1024];snprintf(json,sizeof json,"{\"blocked\":%s,\"leftovers\":{\"bytes\":%llu,\"files\":%u},\"safety\":{\"bytes\":%llu,\"files\":%u},\"shared\":{\"bytes\":%llu,\"files\":%u},\"history\":{\"bytes\":%llu,\"files\":%u}%s%s%s}",
+        space_blocked()?"true":"false",sp->bytes[0],sp->files[0],sp->bytes[1],sp->files[1],sp->bytes[2],sp->files[2],sp->bytes[3],sp->files[3],note?",\"message\":\"":"",note?note:"",note?"\"":"");
+    respond(sock,200,"application/json",json,strlen(json));
+}
+static void cleanup_preview(int sock) {static const int none[4]={0};struct space sp;space_scan(0,none,&sp);space_json(sock,&sp,NULL);}
+static void cleanup_apply(int sock,const char *form) {
+    if(space_blocked()) {message(sock,409,"An interrupted restore needs attention first; nothing was removed. See Activity");return;}
+    char lockpath[1400];snprintf(lockpath,sizeof lockpath,"%s/.mount.lock",root);
+    int lock=open(lockpath,O_CREAT|O_RDWR|O_NOFOLLOW,0600);
+    if(lock<0||flock(lock,LOCK_EX|LOCK_NB)) {if(lock>=0)close(lock);message(sock,409,"Another save operation is running; try again when it finishes");return;}
+    static const char *const keys[4]={"leftovers","safety","shared","history"};int take[4]={0};unsigned chosen=0;
+    for(int i=0;i<4;i++) {char v[8];if(!parameter(form,keys[i],v,sizeof v)&&!strcmp(v,"1")) {take[i]=1;chosen++;}}
+    if(!chosen) {message(sock,400,"Choose what to remove");return;}
+    struct space before,after;static const int none[4]={0};space_scan(0,none,&before);space_scan(1,take,&after);space_scan(0,none,&after);
+    unsigned long long freed=0;for(int i=0;i<4;i++)if(before.bytes[i]>after.bytes[i])freed+=before.bytes[i]-after.bytes[i];
+    pscloud_log("EVENT","Freed %.1f MB (%s%s%s%s)",freed/1048576.0,take[0]?"leftovers ":"",take[1]?"safety copies ":"",take[2]?"older shared saves ":"",take[3]?"uploaded history":"");
+    close(lock);
+    char note[160];snprintf(note,sizeof note,"Freed %.1f MB",freed/1048576.0);space_json(sock,&after,note);
+}
+static void space_totals(unsigned long long *leftover_bytes,unsigned *leftover_files,unsigned long long *safety_bytes,unsigned *safety_files) {
+    static const int none[4]={0};struct space sp;space_scan(0,none,&sp);
+    *leftover_bytes=sp.bytes[SPACE_LEFTOVERS];*leftover_files=sp.files[SPACE_LEFTOVERS];*safety_bytes=sp.bytes[SPACE_SAFETY];*safety_files=sp.files[SPACE_SAFETY];
+}
+/* Keep share/ small automatically: the 2 newest files per game. */
+static void prune_shared_keep(unsigned keep) {
+    char path[1400];snprintf(path,sizeof path,"%s/share",root);int dir=pscloud_open_directory(path);if(dir<0)return;
+    struct item {char name[128],title[10];time_t when;} *items=calloc(512,sizeof *items);unsigned n=0;
+    int scan=dup(dir);DIR *d=items&&scan>=0?fdopendir(scan):NULL;if(!d) {if(scan>=0)close(scan);free(items);close(dir);return;}
+    struct dirent *e;
+    while((e=readdir(d))&&n<512) {if(!valid_archive(e->d_name))continue;struct stat st;if(fstatat(dir,e->d_name,&st,AT_SYMLINK_NOFOLLOW)||!S_ISREG(st.st_mode))continue;
+        snprintf(items[n].name,sizeof items[n].name,"%s",e->d_name);memcpy(items[n].title,e->d_name+(strncmp(e->d_name,"portable-",9)?10:9),9);items[n].title[9]=0;items[n].when=st.st_mtime;n++;}
+    closedir(d);
+    for(unsigned i=0;i<n;i++) {unsigned newer=0;for(unsigned j=0;j<n;j++)if(j!=i&&!strcmp(items[j].title,items[i].title)&&(items[j].when>items[i].when||(items[j].when==items[i].when&&strcmp(items[j].name,items[i].name)>0)))newer++;
+        if(newer>=keep&&!unlinkat(dir,items[i].name,0))pscloud_log("INFO","Removed older shared save %s (keeping the newest %u for this game)",items[i].name,keep);}
+    fsync(dir);free(items);close(dir);
 }
 struct background_job {struct settings settings;char spool[1400],files[256][144];unsigned count;};
 static void *background_upload(void *arg) {
@@ -1000,7 +1156,7 @@ static void configure_cloud(int sock,const char *form) {
     if(strncmp(s.url,"https://",8) || strchr(s.url,'?') || strchr(s.url,'#') || !*s.user || !*s.password) {message(sock,400,"Use an HTTPS WebDAV URL, username and app password");return;}
     size_t n=strlen(s.url);while(n>8 && s.url[n-1]=='/')s.url[--n]=0;
     strcpy(s.mode,"once");
-    if(*previous.ca)strcpy(s.ca,previous.ca);else strcpy(s.ca,"/data/pscloud-ca.pem");
+    if(*previous.ca)strcpy(s.ca,previous.ca);else snprintf(s.ca,sizeof s.ca,"%s/ca.pem",root);
     char body[65537];struct response response={body,0,sizeof body-1};long status=webdav(&s,s.url,"PROPFIND",&response);
     cloud_status=(int)status;
     if(status!=207 && status!=200) {message(sock,502,"Nextcloud rejected the connection; settings were not saved");return;}
@@ -1015,6 +1171,7 @@ static void action(int sock,const char *path,const char *form) {
     if(!strcmp(path,"/api/usb-copy")) {usb_copy_action(sock,form);return;}
     if(!strcmp(path,"/api/usb-copy-all")) {usb_copy_all(sock,form);return;}
     if(!strcmp(path,"/api/usb-delete")) {usb_delete(sock,form);return;}
+    if(!strcmp(path,"/api/cleanup")) {cleanup_apply(sock,form);return;}
     if(!strcmp(path,"/api/sync")) {int result=upload_queue();message(sock,result?502:200,result?"Upload pending; local backups retained":"Queued backups uploaded");return;}
     if(!strcmp(path,"/api/sync-one")) {
         char file[128],ready[144];struct pscloud_snapshot s;
@@ -1055,6 +1212,7 @@ static void action(int sock,const char *path,const char *form) {
             snprintf(reason,sizeof reason,"Sharing refused: %s",*why?why:"see Activity for details. Live restores retain rollback");
             message(sock,400,reason);return;
         }
+        if(exporting)prune_shared_keep(2);
         char json[640];snprintf(json,sizeof json,"{\"ok\":true,\"file\":\"%s\",\"sha256\":\"%s\",\"message\":\"%s\"}",exporting?published:file,sha,exporting?"Shared package ready to download; live saves unchanged":checking?"Staged check passed; live saves unchanged. In-game compatibility is not guaranteed":"Shared save restored; rollback copies retained. Check progress in-game");respond(sock,200,"application/json",json,strlen(json));return;
     }
     if(!strcmp(path,"/api/delete-cloud")) {
@@ -1091,7 +1249,7 @@ static void action(int sock,const char *path,const char *form) {
         int result=pscloud_backup_main(5,args);
 #else
         /* Console entrypoint reads its standard config; copy only validated fields. */
-        int result=atomic_config("/data/pscloud-backup.conf",config)?2:pscloud_backup_main(1,args);
+        int result=atomic_config("/data/pscloud/backup.conf",config)?2:pscloud_backup_main(1,args);
 #endif
         pscloud_log_open(logpath);
         if(result) {message(sock,500,"Backup failed; inspect log. Original save was not replaced");return;}
@@ -1155,7 +1313,7 @@ static void action(int sock,const char *path,const char *form) {
 #ifdef PSCLOUD_HOST_TEST
     int result=pscloud_download_main(5,args);
 #else
-    int result=atomic_config("/data/pscloud-download.conf",config)?2:pscloud_download_main(1,args);
+    int result=atomic_config("/data/pscloud/download.conf",config)?2:pscloud_download_main(1,args);
 #endif
     pscloud_log_open(logpath);
     if(result) {message(sock,502,"Cloud download or checksum validation failed");return;}
@@ -1206,7 +1364,7 @@ static void google_action(int sock,const char *url,const char *body) {
 #ifdef PSCLOUD_HOST_TEST
         "%s/ca.pem",root
 #else
-        "/data/pscloud-ca.pem"
+        "/data/pscloud/ca.pem"
 #endif
     );
     if(!pscloud_configure(cloudpath,&cloud))snprintf(ca,sizeof ca,"%s",cloud.ca);
@@ -1347,7 +1505,7 @@ static void serve(int sock,int *locked) {
                         int verify=bad?-1:open(path,O_RDONLY|O_NOFOLLOW);char actual[65];bad=bad||verify<0||pscloud_file_hash(verify,actual)||strcmp(actual,sha);if(verify>=0)close(verify);
                     }
                     if(bad)message(sock,500,"Shared package could not be saved; no live saves changed");
-                    else {char json[512];snprintf(json,sizeof json,"{\"ok\":true,\"file\":\"%s\",\"sha256\":\"%s\",\"message\":\"Shared package imported locally. Run staged check before restoring\"}",file,sha);respond(sock,200,"application/json",json,strlen(json));}
+                    else {prune_shared_keep(2);char json[512];snprintf(json,sizeof json,"{\"ok\":true,\"file\":\"%s\",\"sha256\":\"%s\",\"message\":\"Shared package imported locally. Run staged check before restoring\"}",file,sha);respond(sock,200,"application/json",json,strlen(json));}
                 }
             } else import_pc(sock,url+12,data,n);
             free(data);return;
@@ -1364,6 +1522,7 @@ static void serve(int sock,int *locked) {
     if(!strcmp(method,"GET") && !strcmp(url,"/api/users")) {users(sock);return;}
     if(!strcmp(method,"GET") && !strcmp(url,"/api/save-status")) {save_status(sock,query);return;}
     if(!strcmp(method,"GET") && !strcmp(url,"/api/storage")) {storage_json(sock);return;}
+    if(!strcmp(method,"GET") && !strcmp(url,"/api/cleanup")) {cleanup_preview(sock);return;}
     if(!strcmp(method,"GET") && !strcmp(url,"/api/usb")) {usb_list(sock);return;}
     if(!strcmp(method,"GET") && !strcmp(url,"/api/usb-files")) {usb_files(sock,query);return;}
     if(!strcmp(method,"GET") && !strcmp(url,"/api/usb-file")) {usb_file(sock,query);return;}
@@ -1467,6 +1626,30 @@ static void watch_backup(struct watched_save *w) {
     pthread_mutex_lock(&cache_mutex);pscloud_app_name(appmeta,w->title,background_name,sizeof background_name);pthread_mutex_unlock(&cache_mutex);
     if(launch_background(job))pscloud_log("WARN","Automatic upload of %s could not start; backup stays queued",name);
 }
+#ifndef PSCLOUD_HOST_TEST
+/* Versions up to 0.22 kept the log, cloud sign-in, CA bundle and tool settings beside the
+ * folder as /data/pscloud*. Move them in once ("pscloud-x" becomes "x"); never overwrite. */
+static void move_into_folder(void) {
+    (void)mkdir("/data/pscloud",0700);
+    DIR *d=opendir("/data");if(!d)return;struct dirent *e;unsigned moved=0;
+    while((e=readdir(d))) {
+        if(strncmp(e->d_name,"pscloud",7)||!strcmp(e->d_name,"pscloud")||strchr(e->d_name,'/'))continue;
+        char from[600],to[700];struct stat st;snprintf(from,sizeof from,"/data/%s",e->d_name);
+        if(lstat(from,&st)||!S_ISREG(st.st_mode))continue;
+        const char *name=!strncmp(e->d_name,"pscloud-",8)?e->d_name+8:e->d_name;
+        snprintf(to,sizeof to,"/data/pscloud/%s",name);
+        if(!lstat(to,&st))continue;
+        if(!rename(from,to))moved++;
+    }
+    closedir(d);
+    /* The saved cloud settings point at the CA bundle's old place. */
+    char text[8192];int fd=open("/data/pscloud/upload.conf",O_RDONLY|O_NOFOLLOW);ssize_t n=fd>=0?read(fd,text,sizeof text-1):-1;if(fd>=0)close(fd);
+    if(n>0) {text[n]=0;char *at=strstr(text,"CA_BUNDLE=/data/pscloud-ca.pem\n");
+        if(at) {char fixed[8300];snprintf(fixed,sizeof fixed,"%.*sCA_BUNDLE=/data/pscloud/ca.pem\n%s",(int)(at-text),text,at+strlen("CA_BUNDLE=/data/pscloud-ca.pem\n"));atomic_config("/data/pscloud/upload.conf",fixed);memset(fixed,0,sizeof fixed);}
+        memset(text,0,sizeof text);}
+    if(moved) {pscloud_log_open("/data/pscloud/pscloud.log");pscloud_log("EVENT","Moved %u PSCloud files from /data into /data/pscloud",moved);}
+}
+#endif
 static void *game_close_watch(void *unused) {
     (void)unused;unsigned seconds=0,interval=10;
 #ifdef PSCLOUD_HOST_TEST
@@ -1515,16 +1698,19 @@ int main(int argc,char **argv) {
 #ifdef PSCLOUD_HOST_TEST
         "%s/upload.conf",root
 #else
-        "/data/pscloud-upload.conf"
+        "/data/pscloud/upload.conf"
 #endif
     );
     snprintf(logpath,sizeof logpath,
 #ifdef PSCLOUD_HOST_TEST
         "%s/pscloud.log",root
 #else
-        "/data/pscloud.log"
+        "/data/pscloud/pscloud.log"
 #endif
     );
+#ifndef PSCLOUD_HOST_TEST
+    move_into_folder();
+#endif
     snprintf(googlepath,sizeof googlepath,"%s/google.conf",root);pscloud_google_load(googlepath,&google);
     pscloud_log_open(logpath);load_preferences();signal(SIGPIPE,SIG_IGN);signal(SIGTERM,stop_server);signal(SIGINT,stop_server);
     if(curl_global_init(CURL_GLOBAL_DEFAULT))return 2;

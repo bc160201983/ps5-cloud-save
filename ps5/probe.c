@@ -67,14 +67,14 @@ int main(int argc,char **argv) {
     uint32_t fw=0;
 #else
     (void)argc; (void)argv;
-    const char *root="/user/home",*report="/data/pscloud-probe.txt";
+    const char *root="/user/home",*report="/data/pscloud/probe.txt";
     uint32_t fw=kernel_get_fw_version();
 #endif
     char logpath[1400];
 #ifdef PSCLOUD_HOST_TEST
     snprintf(logpath, sizeof logpath, "%s.log", report);
 #else
-    snprintf(logpath, sizeof logpath, "/data/pscloud.log");
+    snprintf(logpath, sizeof logpath, "/data/pscloud/pscloud.log");
 #endif
     if(pscloud_log_open(logpath)) pscloud_notify("Log unavailable; diagnostic will continue");
     pscloud_notify("Diagnostic started - FW %x.%02x", (fw>>24)&255, (fw>>16)&255);

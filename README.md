@@ -1,4 +1,33 @@
-# PS5 Cloud Save — development milestone 0.22.1
+# PS5 Cloud Save — development milestone 0.23.0
+
+## Version 0.23.0 — less storage, everything in one folder
+
+On the 11.40 console PSCloud used 2.5 GB. A read-only inventory showed why:
+- Every replace kept its whole working folder: the original save (`before-N.img`, the
+  safety copy) **and** the imported copy (`image-N.img`) plus empty mount points. Two
+  replaces alone held 684 MB and 619 MB.
+- Eight working folders from earlier versions' checks were never removed (the live
+  saves were never changed by them).
+- `share/` kept every export and received ZIP (53 files, 767 MB).
+
+Changes:
+- After a replace, only the original save is kept, labelled with `info.txt` and moved to
+  `rollback/restore-<ID>-<profile>-<id>/`; the 3 newest per game and profile are kept.
+- `share/` keeps the 2 newest files per game after each export or import.
+- **Free up space** on the Storage page (`GET/POST /api/cleanup`) shows, before anything
+  is removed: leftover working files (safe; originals are kept), older shared saves,
+  older uploaded backups (newest per game kept; the rest are in the cloud), and restore
+  safety copies (off by default, with a warning). It refuses while an interrupted restore
+  or mount marker exists or another save operation holds the lock, never touches a folder
+  with something mounted inside, and only removes known file types.
+- The Storage page now counts leftovers and safety copies file by file, so originals kept
+  inside old working folders show as safety copies, not temporary files.
+- Everything lives in `/data/pscloud/` (log, cloud sign-in, CA bundle, tool settings),
+  moved there automatically on first start; standalone tools use the new paths.
+
+Verified by host tests (only chosen categories removed, originals kept, newest shared save
+per game kept, refusal while a restore marker exists, only the 3 newest safety copies kept,
+replace keeps just the originals). Not yet run on a console.
 
 ## Version 0.22.1 — USB without duplicates, plain wording
 
@@ -25,19 +54,23 @@ be confirmed closed, delete limited to PSCloud) and a local preview.
 
 ## Where PSCloud keeps your files
 
-Everything PSCloud stores on the PS5 is in one folder, `/data/pscloud/`, plus its log.
-The dashboard's **Storage** page shows each location with its size and file count.
+Everything PSCloud stores on the PS5 is in one folder, `/data/pscloud/`. (Up to 0.22 the
+log, cloud sign-in, CA bundle and tool settings sat beside it as `/data/pscloud*`; the
+dashboard moves them in automatically the first time it starts.) The dashboard's
+**Storage** page shows each location with its size and file count, and **Free up space**.
 
-| Location on the PS5 | What is in it | Deleted automatically? |
+| Location in `/data/pscloud/` | What is in it | Kept automatically |
 |---|---|---|
-| `/data/pscloud/spool/` | **Local backups.** Every backup made on this PS5. `*.zip.ready` = waiting to upload, `*.zip.sent` = uploaded (kept as history), each with a `.identity` file naming the profile, game and checksum. | Only uploaded older copies, and only if "Keep only the newest backup of each game" is on. Backups that have not been uploaded are never deleted. |
-| `/data/pscloud/share/` | **Shared saves.** ZIPs exported with Share saves and ZIPs you received. | No |
-| `/data/pscloud/rollback/` | **Restore safety copies.** Your save as it was just before each restore or replace, so it can be put back. | Never |
-| `/data/pscloud/downloads/` | **Cloud downloads.** Backups downloaded from your cloud to the PS5. | No |
-| `/data/pscloud/staging/`, `/data/pscloud/portable-stage-*` | **Temporary copies** used while a backup or check runs. | Yes, when the operation finishes. Leftovers mean it was interrupted. |
-| `/data/pscloud/preferences.conf`, `/data/pscloud-upload.conf`, `/data/pscloud/google.conf` | **Settings** and cloud sign-in, readable only by PSCloud. | No |
-| `/data/pscloud.log` | **Activity log**, shown on the Activity page. | No |
-| `/user/home/<profile>/savedata_prospero/` | **Your PS5's own saves.** PSCloud only reads these, except when you choose Restore or Replace. | Not by PSCloud |
+| `spool/` | **Local backups.** `*.zip.ready` = waiting to upload, `*.zip.sent` = uploaded, each with a `.identity` file naming the profile, game and checksum. | All, unless "Keep only the newest backup of each game" is on. Backups not yet uploaded are never deleted. |
+| `share/` | **Shared saves** exported or received. | The 2 newest per game. |
+| `rollback/` | **Restore safety copies**: your save as it was before each restore or replace. Replaces store `restore-<ID>-<profile>-<id>/before-N.img` plus `info.txt` (game, profile, date, slots). | The 3 newest per game and profile. |
+| `downloads/` | **Cloud downloads.** | All |
+| `staging/`, `*-stage-*` | **Working files** used while a backup, check or replace runs. | Removed when the operation finishes. |
+| `upload.conf`, `ca.pem`, `preferences.conf`, `google.conf`, other `*.conf` | **Settings** and cloud sign-in, readable only by PSCloud. | All |
+| `pscloud.log` | **Activity log**, shown on the Activity page. | All |
+
+Your PS5's own saves stay in `/user/home/<profile>/savedata_prospero/`; PSCloud only reads
+them, except when you choose Restore or Replace.
 
 **USB drives.** Plug in an exFAT USB drive (it appears as `/mnt/usb0` to `/mnt/usb7`).
 PSCloud only writes inside the drive's `PSCloud` folder:

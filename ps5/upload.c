@@ -20,8 +20,8 @@ int main(int argc,char **argv) {
     const char *config=argv[1], *spool=argv[2], *log=argv[3];
 #else
     (void)argc; (void)argv;
-    const char *config="/data/pscloud-upload.conf", *spool="/data/pscloud/spool",
-        *log="/data/pscloud.log";
+    const char *config="/data/pscloud/upload.conf", *spool="/data/pscloud/spool",
+        *log="/data/pscloud/pscloud.log";
 #endif
     pscloud_log_open(log);
     pscloud_notify("Cloud uploader started");

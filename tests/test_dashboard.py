@@ -218,6 +218,37 @@ class DashboardTests(unittest.TestCase):
         self.assertEqual(self.request('/api/usb-delete',{'drive':'usb0','path':target})[0],200)
         self.assertFalse((usb/'usb0'/target).exists())
 
+    def test_free_up_space_removes_only_what_was_chosen(self):
+        r=self.root
+        stage=r/'portable-stage-aaaa';(stage/'mount-0').mkdir(parents=True)
+        (stage/'before-0.img').write_bytes(b'o'*10);(stage/'image-0.img').write_bytes(b'i'*20)
+        (r/'staging/run1').mkdir(parents=True);(r/'staging/run1/copy.img').write_bytes(b's'*5)
+        (r/'rollback/restore-PPSA02433-1eb70483-x').mkdir(parents=True)
+        (r/'rollback/restore-PPSA02433-1eb70483-x/before-0.img').write_bytes(b'r'*9);(r/'rollback/pre-restore-a.img').write_bytes(b'p'*7)
+        share=r/'share';share.mkdir(exist_ok=True)
+        for i,c in enumerate('abc'):
+            f=share/('portable-PPSA02433-'+c*32+'.zip');f.write_bytes(b'z'*(100+i));os.utime(f,(1000+i,1000+i))
+        other=share/('portable-PPSA01341-'+'d'*32+'.zip');other.write_bytes(b'q'*50)
+        status,data=self.request('/api/cleanup');self.assertEqual(status,200)
+        self.assertEqual((data['leftovers']['bytes'],data['leftovers']['files']),(25,2))
+        self.assertEqual((data['safety']['bytes'],data['safety']['files']),(26,3))
+        self.assertEqual((data['shared']['bytes'],data['shared']['files']),(201,2))
+        places={p['key']:p for p in self.request('/api/storage')[1]['places']}
+        self.assertEqual((places['staging']['bytes'],places['rollback']['bytes']),(25,26))
+        self.assertEqual(self.request('/api/cleanup',{})[0],400)
+        status,data=self.request('/api/cleanup',{'leftovers':'1','shared':'1'});self.assertEqual(status,200,data);self.assertIn('Freed',data['message'])
+        self.assertEqual(sorted(p.name for p in stage.iterdir()),['before-0.img'])  # the original stays
+        self.assertFalse((r/'staging/run1').exists())
+        self.assertEqual(sorted(p.name for p in share.glob('*.zip')),['portable-PPSA01341-'+'d'*32+'.zip','portable-PPSA02433-'+'c'*32+'.zip'])
+        self.assertEqual((r/'rollback/pre-restore-a.img').read_bytes(),b'p'*7)
+        (r/'.restore-active').write_text('interrupted')
+        self.assertEqual(self.request('/api/cleanup',{'safety':'1'})[0],409)
+        self.assertTrue(self.request('/api/cleanup')[1]['blocked'])
+        (r/'.restore-active').unlink()
+        status,data=self.request('/api/cleanup',{'safety':'1'});self.assertEqual(status,200,data)
+        self.assertFalse(stage.exists());self.assertEqual(list((r/'rollback').iterdir()),[])
+        self.assertEqual(self.image.read_bytes(),self.original)
+
     def test_idle_browser_connection_does_not_block_dashboard(self):
         idle=http.client.HTTPConnection('127.0.0.1',self.port,timeout=5);idle.connect()
         try:

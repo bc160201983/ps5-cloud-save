@@ -82,7 +82,7 @@ int main(int argc,char **argv) {
     config=argv[1]; spool=argv[2]; logpath=argv[3];
 #else
     (void)argc; (void)argv;
-    config="/data/pscloud-export.conf"; spool="/data/pscloud/spool"; logpath="/data/pscloud.log";
+    config="/data/pscloud/export.conf"; spool="/data/pscloud/spool"; logpath="/data/pscloud/pscloud.log";
 #endif
     if(pscloud_log_open(logpath)) pscloud_notify("Export log unavailable; stdout logging continues");
     pscloud_notify("Save export payload started");

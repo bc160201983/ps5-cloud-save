@@ -10,13 +10,13 @@ This is a same-console test, not cross-console compatibility or automatic sync.
 
 1. Download `pscloud-recovery` from a successful GitHub Actions run.
 2. Copy `pscloud-download.conf.example` to `pscloud-download.conf` and upload to
-   `/data/pscloud-download.conf`. The example selects the cloud archive already
-   verified against the original. Keep the existing `/data/pscloud-upload.conf`
-   and `/data/pscloud-ca.pem`; download reuses their WebDAV credentials and TLS CA.
+   `/data/pscloud/download.conf`. The example selects the cloud archive already
+   verified against the original. Keep the existing `/data/pscloud/upload.conf`
+   and `/data/pscloud/ca.pem`; download reuses their WebDAV credentials and TLS CA.
 3. Send `pscloud-download.elf` to port 9021. Confirm the SHA-256 verified event.
    The archive is saved to `/data/pscloud/downloads/`. Failed downloads are not
    published. Stale `.part` files after a crash require manual inspection/removal.
-4. Read the loader output and `/data/pscloud.log`. A transmission result alone
+4. Read the loader output and `/data/pscloud/pscloud.log`. A transmission result alone
    does not establish successful execution.
 
 ## Controlled restore (writes exactly one destination payload file)
@@ -28,7 +28,7 @@ This is a same-console test, not cross-console compatibility or automatic sync.
 2. Confirm the mount contains the expected `ue4savegame.dpx.sav` and `sce_sys`.
    Copy `pscloud-restore.conf.example` to `pscloud-restore.conf`. Set TARGET to
    that actual `/mnt/pfs/...` mount, and both confirmations to `yes`. Upload to
-   `/data/pscloud-restore.conf`. Do not use the encrypted `/user/home` save image.
+   `/data/pscloud/restore.conf`. Do not use the encrypted `/user/home` save image.
 3. Send `pscloud-restore.elf` only after this destination is identified. It
    revalidates the downloaded archive, exports the destination into a unique
    `/data/pscloud/rollback/pre-restore-*.zip`, and flushes it before replacement.

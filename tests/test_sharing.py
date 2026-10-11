@@ -264,6 +264,14 @@ class GenericSharingTests(unittest.TestCase):
                 finally:os.close(fd)
             before=guard();extra.write_bytes(b'changed metadata');self.assertNotEqual(guard(),before)
 
+    def test_only_the_three_newest_restore_safety_copies_are_kept_per_game(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            f=self.fixture(Path(tmp))
+            for i in range(5):
+                self.assertEqual(self.run_share(f,2,portable())[0],0)
+                for d in f[1].glob('rollback/restore-*'):os.utime(d,(1000+i*10,1000+i*10)) if d.stat().st_mtime>2000 else None
+            self.assertEqual(len(list(f[1].glob('rollback/restore-PPSA10528-179a0cd8-*'))),3)
+
     def test_restore_and_partial_rollback_retain_recovery_copies(self):
         for failure in (False,True):
             with self.subTest(failure=failure),tempfile.TemporaryDirectory() as tmp:
@@ -272,7 +280,12 @@ class GenericSharingTests(unittest.TestCase):
                 try:result=self.run_share(f,2,portable())[0]
                 finally:os.environ.pop('PSCLOUD_TEST_GENERIC_COMMIT_FAIL',None)
                 self.assertEqual(result!=0,failure)
-                self.assertEqual(len(list(f[1].glob('portable-stage-*/before-*.img'))),2)
+                if failure:self.assertEqual(len(list(f[1].glob('portable-stage-*/before-*.img'))),2)
+                else:
+                    # A completed replace keeps only the originals, labelled, under rollback/.
+                    kept=list(f[1].glob('rollback/restore-PPSA10528-179a0cd8-*'));self.assertEqual(len(kept),1)
+                    self.assertEqual(sorted(p.name for p in kept[0].iterdir()),['before-0.img','before-1.img','info.txt'])
+                    self.assertIn('TITLE=PPSA10528',(kept[0]/'info.txt').read_text());self.assertFalse(list(f[1].glob('portable-stage-*')))
                 self.assertFalse((f[1]/'.restore-active').exists())
                 self.assertEqual(list(f[3].glob('.pscloud-*')),[])
                 if failure:

@@ -148,7 +148,7 @@ int main(int argc,char **argv) {
     if(argc!=4)return 2;
     const char *config=argv[1],*home=argv[2],*root=argv[3];unsigned fw=0x11400000U;
 #else
-    (void)argc;(void)argv;const char *config="/data/pscloud-share.conf",*home="/user/home",*root="/data/pscloud";unsigned fw=kernel_get_fw_version()&0xffff0000U;
+    (void)argc;(void)argv;const char *config="/data/pscloud/share.conf",*home="/user/home",*root="/data/pscloud";unsigned fw=kernel_get_fw_version()&0xffff0000U;
 #endif
     struct share_config s={0};if(config_read(config,&s))return 2;
     int restoring=!strcmp(s.mode,"restore"),check=strcmp(s.mode,"export")!=0;

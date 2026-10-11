@@ -85,7 +85,7 @@ class SenderTests(unittest.TestCase):
             return output.getvalue(), caught
 
     def test_sends_exact_bytes_and_reads_payload_reply(self):
-        output, error = self.exchange(b'PSCloud diagnostic written: /data/pscloud-probe.txt\n')
+        output, error = self.exchange(b'PSCloud diagnostic written: /data/pscloud/probe.txt\n')
         self.assertIsNone(error)
         self.assertIn('PSCloud diagnostic written', output)
 
