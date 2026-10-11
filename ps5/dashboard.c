@@ -595,7 +595,13 @@ static int compact_backup(const struct pscloud_snapshot *chosen,char published[1
         size_t length=strlen(duplicate.archive),suffix=!strcmp(duplicate.archive+length-6,".ready")?6:5;
         snprintf(published,144,"%.*s.ready",(int)(length-suffix),duplicate.archive);result=0;goto done;
     }
-    lock=openat(dir,".worker.lock",O_CREAT|O_RDWR|O_NOFOLLOW,0600);if(lock<0||flock(lock,LOCK_EX|LOCK_NB))goto done;
+    lock=openat(dir,".worker.lock",O_CREAT|O_RDWR|O_NOFOLLOW,0600);if(lock<0)goto done;
+    /* A running upload holds the queue lock; wait for it instead of failing the backup. */
+    for(unsigned waited=0;flock(lock,LOCK_EX|LOCK_NB);waited++) {
+        if(!waited)pscloud_log("INFO","Waiting for the current upload to finish before adding this backup");
+        if(waited>=600||stopped) {pscloud_log("WARN","Backup not added: an upload was still running after 10 minutes");goto done;}
+        sleep(1);
+    }
     char part[144],ready[144],identity[144],metadata[512],path[1600];
     snprintf(part,sizeof part,"%s.part",file);snprintf(ready,sizeof ready,"%s.ready",file);snprintf(identity,sizeof identity,"%s.identity",file);
     if(store_blob(dir,part,data,size))goto done;

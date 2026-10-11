@@ -144,6 +144,14 @@ static int sfo_texts(const char *path,char *title,size_t title_max,char *slot,si
     #undef R32
     free(d);return bad||!title[0]?-1:0;
 }
+static int generic_label(const char *label) {
+    static const char *const generic[]={"save data","saved data","savedata","game data","gamedata","data","save","saves","settings",
+        "options","profile","profile data","system","system data","autosave","auto save","user data","preferences","config",NULL};
+    char lower[64];size_t n=strlen(label);if(n>=sizeof lower)return 0;
+    for(size_t i=0;i<=n;i++)lower[i]=(char)((label[i]>='A'&&label[i]<='Z')?label[i]+32:label[i]);
+    for(unsigned i=0;generic[i];i++)if(!strcmp(lower,generic[i]))return 1;
+    return 0;
+}
 int pscloud_save_title_name(const char *home,const char *user,const char *title,char *name,size_t max) {
     if(!max||!pscloud_title_valid(title)||strchr(user,'/')||strlen(user)>16)return -1;
     char dir[1400];if(snprintf(dir,sizeof dir,"%s/%s/savedata_prospero_meta/user/%s",home,user,title)>=(int)sizeof dir)return -1;
@@ -153,7 +161,7 @@ int pscloud_save_title_name(const char *home,const char *user,const char *title,
         size_t n=strlen(e->d_name);if(n<5||strcmp(e->d_name+n-4,".sfo")||strchr(e->d_name,'/'))continue;
         char path[1700],label[256],slot[96];if(snprintf(path,sizeof path,"%s/%s",dir,e->d_name)>=(int)sizeof path)continue;
         files++;if(sfo_texts(path,label,sizeof label,slot,sizeof slot))continue;
-        if(!strcmp(label,slot))continue; /* "ProfileData" for ProfileData says nothing about the game */
+        if(!strcmp(label,slot)||generic_label(label))continue; /* "ProfileData", "Save Data": not a game name */
         if(!agreed[0])snprintf(agreed,sizeof agreed,"%s",label);else if(strcmp(agreed,label))conflict=1;
     }
     closedir(d);

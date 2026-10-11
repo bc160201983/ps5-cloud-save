@@ -165,11 +165,13 @@ class DashboardTests(unittest.TestCase):
         add('PPSA03355',[('HadesSaveDirectory','Hades')])
         add('PPSA02100',[('Global','Settings'),('SlotsSlot1Data','Slot 1')])  # labels disagree: keep the ID
         add('PPSA02343',[('ProfileData','ProfileData')])  # label is only the slot name: keep the ID
+        add('PPSA17525',[('SLOT0','Game Data')])  # generic label: keep the ID
         status,data=self.request('/api/games');self.assertEqual(status,200)
         names={g['title']:(g['name'],g['installed']) for g in data['games']}
         self.assertEqual(names['PPSA03355'],('Hades',False))
         self.assertEqual(names['PPSA02100'],('PPSA02100',False))
         self.assertEqual(names['PPSA02343'],('PPSA02343',False))
+        self.assertEqual(names['PPSA17525'],('PPSA17525',False))
         self.assertEqual(self.request('/api/save-status?user=1eb70483&title=PPSA03355')[1]['name'],'Hades')
 
     def test_idle_browser_connection_does_not_block_dashboard(self):
@@ -469,6 +471,21 @@ class DashboardTests(unittest.TestCase):
         self.assertTrue(queue()[0]['file'].startswith('portable-PPSA02433-'))
         self.assertEqual(self.image.read_bytes(),self.original)
         self.assertIn('Game closed: backing up',(self.root/'pscloud.log').read_text())
+
+    def test_compact_backup_waits_for_a_running_upload_instead_of_failing(self):
+        import fcntl,threading,test_portable
+        self.process.terminate();self.process.communicate(timeout=5)
+        fixture=self.fixture.root/'compact';test_portable.PortableTests.sfo(self,fixture/SLOT,SLOT,b'\x44'*8)
+        metadata=self.root/'appmeta/PPSA02433';metadata.mkdir(parents=True);(metadata/'param.json').write_text(json.dumps({'contentVersion':'01.000.002'}))
+        self.start_server(PSCLOUD_TEST_GENERIC_PAYLOADS=str(fixture))
+        self.request('/api/preferences',{'auto_upload':'0','activity_refresh':'1','compact_backups':'1'})
+        spool=self.root/'spool';spool.mkdir(exist_ok=True)
+        lock=open(spool/'.worker.lock','a+');fcntl.flock(lock,fcntl.LOCK_EX)  # what a running upload holds
+        threading.Timer(3,lambda:(fcntl.flock(lock,fcntl.LOCK_UN),lock.close())).start()
+        started=time.monotonic();status,data=self.request('/api/backup',self.selected(slot='WholeGame',closed='yes'))
+        self.assertEqual(status,200,data);self.assertGreater(time.monotonic()-started,2)
+        self.assertIn('Waiting for the current upload to finish',(self.root/'pscloud.log').read_text())
+        self.assertEqual(len(list(spool.glob('portable-PPSA02433-*.zip.ready'))),1)
 
     def test_game_close_backup_waits_while_the_game_is_still_running(self):
         import test_portable

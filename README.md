@@ -1,4 +1,21 @@
-# PS5 Cloud Save — development milestone 0.19.4
+# PS5 Cloud Save — development milestone 0.19.5
+
+## Version 0.19.5 — backups no longer fail while an upload runs
+
+**Bug found on the 11.40 console:** three backups at 10:39 failed with "Compact backup
+failed" while the previous backup (Resident Evil Requiem, 15 MB) was still uploading.
+The export itself succeeded, but adding it to the queue needs the queue lock, which the
+running upload holds, and the backup gave up immediately. Live saves were never
+touched. The backup now waits for the upload to finish (up to 10 minutes, logged as
+"Waiting for the current upload to finish before adding this backup"); this also
+covers game-close backups. The three failed attempts left their temporary export ZIPs
+in /data/pscloud/share (copies of the live save; safe to remove).
+
+Saves named only with a generic label such as "Game Data", "Save Data" or "Saved Data"
+now keep their ID instead of showing that label as the game name.
+
+Verified by host tests, including a backup requested while the queue lock is held.
+
 
 ## Version 0.19.4 — names for saves of games that are not installed
 
