@@ -1032,7 +1032,142 @@ static long long http_time(const char *text) {
     long long y=year-(mon<2),era=y/400,yoe=y-era*400,mp=(mon+9)%12,doy=(153*mp+2)/5+day-1,doe=yoe*365+yoe/4-yoe/100+doy;
     return (era*146097+doe-719468)*86400LL+h*3600+m*60+sec;
 }
-struct cloud_version {char file[128],user[17],sha[65];long long created;};
+struct cloud_version {char file[128],user[17],sha[65],peer[64];long long created;};
+/* ---------- Other PS5s on the local network ----------
+ * peers.conf lists "ip:port" of other consoles running PSCloud. Each console serves its
+ * newest backup per profile and game read-only at /api/peer/*, so sync works without a
+ * cloud. Discovery: a UDP "who is there" on port 8083 that every PSCloud answers. */
+static unsigned peer_udp_port=8083,http_port_number=8082;
+static int peer_address_valid(const char *a) {
+    unsigned b[4],port;char tail;if(sscanf(a,"%u.%u.%u.%u:%u%c",&b[0],&b[1],&b[2],&b[3],&port,&tail)!=5)return 0;
+    for(int i=0;i<4;i++)if(b[i]>255)return 0;return port>0&&port<65536&&strlen(a)<64;
+}
+static int peers_list(char peers[8][64]) {
+    char path[1400],line[128];snprintf(path,sizeof path,"%s/peers.conf",root);FILE *f=fopen(path,"r");int n=0;if(!f)return 0;
+    while(fgets(line,sizeof line,f)&&n<8) {line[strcspn(line,"\r\n")]=0;if(peer_address_valid(line))snprintf(peers[n++],64,"%s",line);}
+    fclose(f);return n;
+}
+struct peer_body {char *data;size_t size,max;};
+static size_t peer_collect(char *p,size_t a,size_t b,void *ctx) {
+    struct peer_body *r=ctx;size_t n=a*b;if(n>r->max-r->size)return 0;memcpy(r->data+r->size,p,n);r->size+=n;return n;
+}
+static long peer_get(const char *peer,const char *path,char *out,size_t max,size_t *got,long timeout) {
+    CURL *c=curl_easy_init();if(!c)return 0;char url[700];snprintf(url,sizeof url,"http://%s%s",peer,path);
+    struct peer_body r={out,0,max};
+    curl_easy_setopt(c,CURLOPT_URL,url);curl_easy_setopt(c,CURLOPT_PROTOCOLS_STR,"http");curl_easy_setopt(c,CURLOPT_FOLLOWLOCATION,0L);
+    curl_easy_setopt(c,CURLOPT_USERAGENT,"PSCloud/" PSCLOUD_VERSION);curl_easy_setopt(c,CURLOPT_CONNECTTIMEOUT,4L);curl_easy_setopt(c,CURLOPT_TIMEOUT,timeout);curl_easy_setopt(c,CURLOPT_NOSIGNAL,1L);
+    curl_easy_setopt(c,CURLOPT_WRITEFUNCTION,peer_collect);curl_easy_setopt(c,CURLOPT_WRITEDATA,&r);
+    CURLcode result=curl_easy_perform(c);long status=0;curl_easy_getinfo(c,CURLINFO_RESPONSE_CODE,&status);curl_easy_cleanup(c);
+    *got=r.size;if(r.size<max)out[r.size]=0;return result==CURLE_OK?status:0;
+}
+static int json_text(const char *json,const char *key,char *out,size_t max) {
+    char pattern[64];snprintf(pattern,sizeof pattern,"\"%s\":\"",key);const char *at=strstr(json,pattern);out[0]=0;if(!at)return -1;
+    at+=strlen(pattern);size_t n=0;while(*at&&*at!='"'&&n+1<max) {if(*at=='\\'&&at[1])at++;out[n++]=*at++;}out[n]=0;return 0;
+}
+static long long json_number(const char *json,const char *key) {
+    char pattern[64];snprintf(pattern,sizeof pattern,"\"%s\":",key);const char *at=strstr(json,pattern);return at?strtoll(at+strlen(pattern),NULL,10):0;
+}
+/* Newest portable whole-game backup on this PS5 for a profile and game. */
+static int local_latest(const char *user,const char *title,struct cloud_version *out) {
+    char path[1400];snprintf(path,sizeof path,"%s/spool",root);int dir=pscloud_open_directory(path);if(dir<0)return 0;
+    int scan=dup(dir);DIR *d=scan>=0?fdopendir(scan):NULL;int found=0;memset(out,0,sizeof *out);
+    if(d) {rewinddir(d);struct dirent *e;
+        while((e=readdir(d))) {
+            size_t n=strlen(e->d_name);if(n<10||n>=200||strcmp(e->d_name+n-9,".identity")||strncmp(e->d_name,"portable-",9))continue;
+            char file[128];if(n-9>=sizeof file)continue;memcpy(file,e->d_name,n-9);file[n-9]=0;if(!valid_archive(file))continue;
+            struct pscloud_snapshot snap;if(pscloud_snapshot_read(dir,e->d_name,&snap)||strcmp(snap.user,user)||strcmp(snap.title,title)||strcmp(snap.slot,"WholeGame"))continue;
+            char ready[150],sent[150];struct stat st;snprintf(ready,sizeof ready,"%s.ready",file);snprintf(sent,sizeof sent,"%s.sent",file);
+            if(fstatat(dir,ready,&st,AT_SYMLINK_NOFOLLOW)&&fstatat(dir,sent,&st,AT_SYMLINK_NOFOLLOW)&&fstatat(dir,file,&st,AT_SYMLINK_NOFOLLOW))continue;
+            if(snap.created>out->created) {snprintf(out->file,sizeof out->file,"%s",file);snprintf(out->sha,sizeof out->sha,"%s",snap.sha256);snprintf(out->user,sizeof out->user,"%s",user);out->created=snap.created;found=1;}
+        }
+        closedir(d);
+    } else if(scan>=0)close(scan);
+    close(dir);return found;
+}
+static int peer_latest(const char *peer,const char *user,const char *title,struct cloud_version *out) {
+    char path[200],body[1024];size_t got=0;snprintf(path,sizeof path,"/api/peer/latest?user=%s&title=%s",user,title);
+    if(peer_get(peer,path,body,sizeof body-1,&got,8)!=200)return 0;
+    memset(out,0,sizeof *out);json_text(body,"file",out->file,sizeof out->file);json_text(body,"sha256",out->sha,sizeof out->sha);out->created=json_number(body,"created");
+    if(!valid_archive(out->file)||strlen(out->sha)!=64)return 0;
+    snprintf(out->user,sizeof out->user,"%s",user);snprintf(out->peer,sizeof out->peer,"%s",peer);return 1;
+}
+static void peer_info_json(int sock) {
+    char json[8192];int pos=snprintf(json,sizeof json,"{\"console\":\"%s\",\"firmware\":\"%x.%02x\",\"version\":\"%s\",\"profiles\":[",console_id,firmware_id>>24,(firmware_id>>16)&255,PSCLOUD_VERSION);
+    DIR *d=opendir(home);struct dirent *u;unsigned n=0;
+    while(d&&(u=readdir(d))&&n<16) {if(!safe_word(u->d_name,16))continue;char name[64],shown[400];if(profile_name(u->d_name,name,sizeof name))snprintf(name,sizeof name,"Profile %.16s",u->d_name);escaped(shown,sizeof shown,name);
+        pos+=snprintf(json+pos,sizeof json-(size_t)pos,"%s{\"user\":\"%s\",\"name\":\"%s\"}",n++?",":"",u->d_name,shown);}
+    if(d)closedir(d);
+    snprintf(json+pos,sizeof json-(size_t)pos,"]}");respond(sock,200,"application/json",json,strlen(json));
+}
+static void peer_latest_json(int sock,const char *query) {
+    char user[32],title[16];struct cloud_version v;
+    if(parameter(query,"user",user,sizeof user)||!safe_word(user,16)||parameter(query,"title",title,sizeof title)||!pscloud_title_valid(title)) {reject(sock,400,"Invalid request");return;}
+    if(!local_latest(user,title,&v)) {reject(sock,404,"No backup");return;}
+    char json[400];snprintf(json,sizeof json,"{\"file\":\"%s\",\"sha256\":\"%s\",\"created\":%lld}",v.file,v.sha,v.created);respond(sock,200,"application/json",json,strlen(json));
+}
+static void peer_file(int sock,const char *query) {
+    char file[128],path[1600];if(parameter(query,"file",file,sizeof file)||!valid_archive(file)||strncmp(file,"portable-",9)) {reject(sock,400,"Invalid file");return;}
+    static const char *const suffix[]={"",".ready",".sent"};int fd=-1;
+    for(int i=0;i<3&&fd<0;i++) {snprintf(path,sizeof path,"%s/spool/%s%s",root,file,suffix[i]);fd=open(path,O_RDONLY|O_NOFOLLOW);}
+    struct stat st;if(fd<0||fstat(fd,&st)||!S_ISREG(st.st_mode)||st.st_size<=0||st.st_size>PSCLOUD_RESTORE_MAX) {if(fd>=0)close(fd);reject(sock,404,"No such backup");return;}
+    char header[256];int n=snprintf(header,sizeof header,"HTTP/1.1 200 OK\r\nContent-Type: application/zip\r\nContent-Length: %lld\r\nConnection: close\r\nCache-Control: no-store\r\n\r\n",(long long)st.st_size);
+    send_all(sock,header,(size_t)n);char *buffer=malloc(1U<<20);long long left=st.st_size;
+    while(buffer&&left>0) {ssize_t got=read(fd,buffer,left>(1<<20)?(1<<20):(size_t)left);if(got<=0)break;send_all(sock,buffer,(size_t)got);left-=got;}
+    free(buffer);close(fd);
+}
+/* UDP: answer "PSCLOUD-DISCOVER" with "PSCLOUD-HERE <console> <http port> <firmware>". */
+static void *peer_beacon(void *unused) {
+    (void)unused;int fd=socket(AF_INET,SOCK_DGRAM,0);if(fd<0)return NULL;
+    int yes=1;setsockopt(fd,SOL_SOCKET,SO_REUSEADDR,&yes,sizeof yes);
+    struct sockaddr_in a={0};a.sin_family=AF_INET;a.sin_port=htons((uint16_t)peer_udp_port);a.sin_addr.s_addr=htonl(INADDR_ANY);
+    if(bind(fd,(struct sockaddr *)&a,sizeof a)) {close(fd);return NULL;}
+    struct timeval tv={1,0};setsockopt(fd,SOL_SOCKET,SO_RCVTIMEO,&tv,sizeof tv);
+    while(!stopped) {
+        char buffer[64];struct sockaddr_in from;socklen_t len=sizeof from;ssize_t n=recvfrom(fd,buffer,sizeof buffer-1,0,(struct sockaddr *)&from,&len);
+        if(n<=0)continue;
+        buffer[n]=0;if(strcmp(buffer,"PSCLOUD-DISCOVER"))continue;
+        char reply[128];int m=snprintf(reply,sizeof reply,"PSCLOUD-HERE %s %u %x.%02x",console_id,http_port_number,firmware_id>>24,(firmware_id>>16)&255);
+        sendto(fd,reply,(size_t)m,0,(struct sockaddr *)&from,len);
+    }
+    close(fd);return NULL;
+}
+static void peers_discover_json(int sock) {
+    int fd=socket(AF_INET,SOCK_DGRAM,0);if(fd<0) {reject(sock,500,"Network unavailable");return;}
+    int yes=1;setsockopt(fd,SOL_SOCKET,SO_BROADCAST,&yes,sizeof yes);struct timeval tv={0,300000};setsockopt(fd,SOL_SOCKET,SO_RCVTIMEO,&tv,sizeof tv);
+    struct sockaddr_in to={0};to.sin_family=AF_INET;to.sin_port=htons((uint16_t)peer_udp_port);to.sin_addr.s_addr=htonl(INADDR_BROADCAST);
+#ifdef PSCLOUD_HOST_TEST
+    if(getenv("PSCLOUD_TEST_DISCOVER_PORT")) {to.sin_port=htons((uint16_t)atoi(getenv("PSCLOUD_TEST_DISCOVER_PORT")));to.sin_addr.s_addr=htonl(INADDR_LOOPBACK);}
+#endif
+    static const char ask[]="PSCLOUD-DISCOVER";
+    char json[4096];int pos=snprintf(json,sizeof json,"{\"found\":[");unsigned n=0;
+    for(int round=0;round<3;round++) {
+        sendto(fd,ask,sizeof ask-1,0,(struct sockaddr *)&to,sizeof to);
+        for(int wait=0;wait<3;wait++) {
+            char reply[128];struct sockaddr_in from;socklen_t len=sizeof from;ssize_t got=recvfrom(fd,reply,sizeof reply-1,0,(struct sockaddr *)&from,&len);
+            if(got<=0)continue;
+            reply[got]=0;char id[32],fw[16];unsigned port;
+            if(sscanf(reply,"PSCLOUD-HERE %31s %u %15s",id,&port,fw)!=3||!safe_word(id,16)||!strcmp(id,console_id)||port==0||port>65535)continue;
+            for(char *q=fw;*q;q++)if(!strchr("0123456789.",*q))*q=0;
+            char ip[INET_ADDRSTRLEN];if(!inet_ntop(AF_INET,&from.sin_addr,ip,sizeof ip))continue;
+            char address[64];snprintf(address,sizeof address,"%s:%u",ip,port);if(strstr(json,address))continue;
+            pos+=snprintf(json+pos,sizeof json-(size_t)pos,"%s{\"address\":\"%s\",\"console\":\"%s\",\"firmware\":\"%s\"}",n++?",":"",address,id,fw);
+            if(pos>(int)sizeof json-200)break;
+        }
+    }
+    close(fd);snprintf(json+pos,sizeof json-(size_t)pos,"]}");respond(sock,200,"application/json",json,strlen(json));
+}
+/* Configured peers with what they report. */
+static void peers_json(int sock) {
+    char peers[8][64];int n=peers_list(peers);char *json=malloc(65536);if(!json) {reject(sock,500,"Out of memory");return;}
+    int pos=snprintf(json,65536,"{\"peers\":[");
+    for(int i=0;i<n;i++) {
+        char body[8192];size_t got=0;long status=peer_get(peers[i],"/api/peer/info",body,sizeof body-1,&got,5);
+        const char *start=status==200?strchr(body,'{'):NULL;
+        pos+=snprintf(json+pos,65536-(size_t)pos,"%s{\"address\":\"%s\",\"reachable\":%s,\"info\":%s}",i?",":"",peers[i],start?"true":"false",start?start:"null");
+    }
+    snprintf(json+pos,65536-(size_t)pos,"]}");respond(sock,200,"application/json",json,strlen(json));free(json);
+}
+
 /* Newest WholeGame version in one profile's cloud folder: PROPFIND for the newest identity
  * by modification date, then read that identity. 1 found, 0 none, -1 error. */
 static int cloud_newest(const struct settings *cloud,const char *user,const char *title,struct cloud_version *out) {
@@ -1067,12 +1202,22 @@ static void sync_mark(const char *user,const char *title) {
 enum {SYNC_UNKNOWN,SYNC_NONE,SYNC_IN,SYNC_CLOUD,SYNC_LOCAL,SYNC_CONFLICT};
 static const char *const sync_names[]={"unknown","not_in_cloud","in_sync","cloud_newer","local_newer","conflict"};
 static int sync_state(const char *user,const char *title,struct cloud_version *newest_other,long long *local_time) {
-    struct settings cloud={0};if(pscloud_configure(cloudpath,&cloud))return SYNC_UNKNOWN;
+    struct settings cloud={0};int has_cloud=!pscloud_configure(cloudpath,&cloud);
+    char peers[8][64];int peer_count=peers_list(peers);
+    memset(newest_other,0,sizeof *newest_other);
+    if(!has_cloud&&!peer_count)return SYNC_UNKNOWN;
     char path[1400];snprintf(path,sizeof path,"%s/%s/savedata_prospero/%s",home,user,title);int fd=pscloud_open_directory(path);
     *local_time=fd>=0?(long long)newest_container(fd):0;if(fd>=0)close(fd);
-    struct cloud_version own={0},v;int got=cloud_newest(&cloud,user,title,&own);if(got<0) {memset(cloud.password,0,sizeof cloud.password);return SYNC_UNKNOWN;}
-    char linked[4][17];int n=links_for(user,linked),any_other=0;memset(newest_other,0,sizeof *newest_other);
-    for(int i=0;i<n;i++)if(cloud_newest(&cloud,linked[i],title,&v)>0&&v.created>newest_other->created) {*newest_other=v;any_other=1;}
+    struct cloud_version own={0},v;int got=has_cloud?cloud_newest(&cloud,user,title,&own):0;
+    if(got<0&&!peer_count) {memset(cloud.password,0,sizeof cloud.password);return SYNC_UNKNOWN;}
+    if(got<0)got=0;
+    /* a backup this PS5 made is visible to the other console over the network */
+    struct cloud_version mine;if(peer_count&&local_latest(user,title,&mine)&&mine.created>own.created) {own=mine;got=1;}
+    char linked[4][17];int n=links_for(user,linked),any_other=0;
+    for(int i=0;i<n;i++) {
+        if(has_cloud&&cloud_newest(&cloud,linked[i],title,&v)>0&&v.created>newest_other->created) {*newest_other=v;any_other=1;}
+        for(int k=0;k<peer_count;k++)if(peer_latest(peers[k],linked[i],title,&v)&&v.created>newest_other->created) {*newest_other=v;any_other=1;}
+    }
     memset(cloud.password,0,sizeof cloud.password);
     if(!got&&!any_other)return SYNC_NONE;
     long long base=sync_base(user,title);if(got&&own.created>base)base=own.created;
@@ -1084,22 +1229,36 @@ static int sync_state(const char *user,const char *title,struct cloud_version *n
 static void sync_status_json(int sock,const char *query) {
     char user[32],title[16];if(parameter(query,"user",user,sizeof user)||!safe_word(user,16)||parameter(query,"title",title,sizeof title)||!pscloud_title_valid(title)) {reject(sock,400,"Choose a profile and game");return;}
     struct cloud_version other;long long local_time=0;webdav_quiet=1;int state=sync_state(user,title,&other,&local_time);webdav_quiet=0;
-    char name[64]="",shown[400]="";if(*other.user) {if(profile_name(other.user,name,sizeof name))snprintf(name,sizeof name,"Profile %s",other.user);escaped(shown,sizeof shown,name);}
+    char name[64]="",shown[400]="";
+    if(*other.user) {
+        if(profile_name(other.user,name,sizeof name))snprintf(name,sizeof name,"Profile %s",other.user);
+        if(*other.peer) {char body[8192];size_t got=0;if(peer_get(other.peer,"/api/peer/info",body,sizeof body-1,&got,5)==200) {
+            char pattern[64];snprintf(pattern,sizeof pattern,"\"user\":\"%s\",\"name\":\"",other.user);char *at=strstr(body,pattern);
+            if(at) {at+=strlen(pattern);size_t k=0;while(*at&&*at!='"'&&k+1<sizeof name)name[k++]=*at++;name[k]=0;}}}
+        escaped(shown,sizeof shown,name);
+    }
     char linked[4][17];int links=links_for(user,linked);
-    char json[1600];snprintf(json,sizeof json,"{\"state\":\"%s\",\"local_time\":%lld,\"base\":%lld,\"cloud\":{\"file\":\"%s\",\"user\":\"%s\",\"name\":\"%s\",\"created\":%lld,\"sha256\":\"%s\"},\"links\":%d}",
-        sync_names[state],local_time,sync_base(user,title),other.file,other.user,shown,other.created,other.sha,links);
+    char json[1800];snprintf(json,sizeof json,"{\"state\":\"%s\",\"local_time\":%lld,\"base\":%lld,\"cloud\":{\"file\":\"%s\",\"user\":\"%s\",\"name\":\"%s\",\"created\":%lld,\"sha256\":\"%s\",\"source\":\"%s\",\"peer\":\"%s\"},\"links\":%d}",
+        sync_names[state],local_time,sync_base(user,title),other.file,other.user,shown,other.created,other.sha,*other.peer?"network":"cloud",other.peer,links);
     respond(sock,200,"application/json",json,strlen(json));
 }
 /* Fetch the newest linked cloud version into share/ and run the staged check for this
  * profile. On success the normal Replace my save step can use it. */
 static int sync_fetch(const char *user,const char *title,char file[128],char sha[65],char *why,size_t why_max) {
     struct cloud_version other;long long local_time=0;webdav_quiet=1;int state=sync_state(user,title,&other,&local_time);webdav_quiet=0;
-    if(!*other.file) {snprintf(why,why_max,"No save from your other PS5 in the cloud");return -1;}
-    (void)state;struct settings cloud={0};if(pscloud_configure(cloudpath,&cloud)) {snprintf(why,why_max,"Connect your cloud first");return -1;}
-    struct pscloud_snapshot who={0};snprintf(who.user,sizeof who.user,"%s",other.user);snprintf(who.title,sizeof who.title,"%s",title);strcpy(who.slot,"WholeGame");memset(who.sha256,'0',64);
-    char folder[256],url[4400];pscloud_snapshot_folder(&who,folder,sizeof folder);snprintf(url,sizeof url,"%s/%s/%s",cloud.url,folder,other.file);
-    unsigned char *data=malloc(PSCLOUD_RESTORE_MAX+1U);if(!data) {snprintf(why,why_max,"Out of memory");return -1;}
-    struct response r={(char *)data,0,PSCLOUD_RESTORE_MAX};long status=webdav(&cloud,url,"GET",&r);memset(cloud.password,0,sizeof cloud.password);
+    if(!*other.file) {snprintf(why,why_max,"No save from your other PS5 was found in the cloud or on your network");return -1;}
+    (void)state;unsigned char *data=malloc(PSCLOUD_RESTORE_MAX+1U);if(!data) {snprintf(why,why_max,"Out of memory");return -1;}
+    struct response r={(char *)data,0,PSCLOUD_RESTORE_MAX};long status=0;
+    if(*other.peer) {
+        char path_file[200];snprintf(path_file,sizeof path_file,"/api/peer/file?file=%s",other.file);size_t got=0;
+        status=peer_get(other.peer,path_file,(char *)data,PSCLOUD_RESTORE_MAX,&got,300);r.size=got;
+        pscloud_log("INFO","Network copy from %s: HTTP %ld, %zu bytes",other.peer,status,got);
+    } else {
+        struct settings cloud={0};if(pscloud_configure(cloudpath,&cloud)) {free(data);snprintf(why,why_max,"Connect your cloud first");return -1;}
+        struct pscloud_snapshot who={0};snprintf(who.user,sizeof who.user,"%s",other.user);snprintf(who.title,sizeof who.title,"%s",title);strcpy(who.slot,"WholeGame");memset(who.sha256,'0',64);
+        char folder[256],url[4400];pscloud_snapshot_folder(&who,folder,sizeof folder);snprintf(url,sizeof url,"%s/%s/%s",cloud.url,folder,other.file);
+        status=webdav(&cloud,url,"GET",&r);memset(cloud.password,0,sizeof cloud.password);
+    }
     int sealed=status==200?pscloud_decrypt_if_needed(data,&r.size):0;
     if(sealed) {free(data);snprintf(why,why_max,sealed==-2?"This cloud save is encrypted. Enter your encryption password in Cloud settings":"Wrong encryption password, or the cloud copy is damaged");return -1;}
     if(status!=200||pscloud_verify_hash(data,r.size,other.sha)||pscloud_share_validate(data,r.size,title)) {free(data);snprintf(why,why_max,"Cloud save could not be downloaded or did not verify");return -1;}
@@ -1116,7 +1275,7 @@ static int sync_fetch(const char *user,const char *title,char file[128],char sha
     char proof[1700];snprintf(proof,sizeof proof,"%s/%s.check-%s",share,file,user);atomic_config(proof,sha);
     snprintf(path,sizeof path,"%s/sync",root);(void)mkdir(path,0700);
     char pending[1400],text[256];snprintf(pending,sizeof pending,"%s/sync/%s-%s.pending",root,user,title);snprintf(text,sizeof text,"FILE=%s\n",file);atomic_config(pending,text);
-    pscloud_log("EVENT","Newer save for %s fetched from the cloud and checked; ready to replace",title);
+    pscloud_log("EVENT","Newer save for %s fetched from %s and checked; ready to replace",title,*other.peer?other.peer:"the cloud");
     return 0;
 }
 /* After a replace: if it used the fetched sync file, this game is now in sync. */
@@ -1161,7 +1320,8 @@ static void cloud_profiles_json(int sock) {
 }
 /* Background: games with "download newer saves automatically" are checked every 15 minutes. */
 static void sync_tick(void) {
-    struct settings cloud={0};if(pscloud_configure(cloudpath,&cloud))return;memset(cloud.password,0,sizeof cloud.password);
+    struct settings cloud={0};char peers[8][64];int has_cloud=!pscloud_configure(cloudpath,&cloud);memset(cloud.password,0,sizeof cloud.password);
+    if(!has_cloud&&!peers_list(peers))return;
     struct game_setting copy[512];unsigned n;pthread_mutex_lock(&settings_mutex);n=game_settings_count;memcpy(copy,game_settings,n*sizeof copy[0]);pthread_mutex_unlock(&settings_mutex);
     for(unsigned i=0;i<n&&!stopped;i++) {
         if(!copy[i].auto_sync||title_running(copy[i].title)>0)continue;
@@ -1562,6 +1722,16 @@ static void action(int sock,const char *path,const char *form) {
         if(atomic_config(path_conf,text)) {message(sock,500,"Setting could not be saved");return;}
         cloud_keep=k;message(sock,200,k?"Older cloud versions will be removed after each upload":"All cloud versions are kept");return;
     }
+    if(!strcmp(path,"/api/peers")) {
+        char list[600]={0},copy[600],text[640]={0};size_t n=0;(void)parameter(form,"peers",list,sizeof list);snprintf(copy,sizeof copy,"%s",list);
+        for(char *save=NULL,*tok=strtok_r(copy,",",&save);tok;tok=strtok_r(NULL,",",&save)) {
+            if(!peer_address_valid(tok)) {message(sock,400,"Use the other PS5's IP address and port, like 192.168.0.198:8082");return;}
+            n+=(size_t)snprintf(text+n,sizeof text-n,"%s\n",tok);
+        }
+        char path_conf[1400];snprintf(path_conf,sizeof path_conf,"%s/peers.conf",root);
+        if(atomic_config(path_conf,text)) {message(sock,500,"Could not save");return;}
+        message(sock,200,*list?"Saved the PS5s on your network":"No other PS5s on your network");return;
+    }
     if(!strcmp(path,"/api/links")) {
         char user[32],list[200]={0};if(parameter(form,"user",user,sizeof user)||!safe_word(user,16)) {message(sock,400,"Choose a profile");return;}
         if(!parameter(form,"linked",list,sizeof list)&&*list) {char copy[200];snprintf(copy,sizeof copy,"%s",list);
@@ -1854,6 +2024,10 @@ static void serve(int sock,int *locked) {
     snprintf(expected_host,sizeof expected_host,"%s:%u",ip,ntohs(local.sin_port));
     if(strcmp(host,expected_host) && !(ntohs(local.sin_port)==80 && !strcmp(host,ip))) {reject(sock,403,"Open the dashboard using the console IP address");return;}
     if(!strcmp(method,"GET") && !strcmp(url,"/")) {respond(sock,200,"text/html; charset=utf-8",(const char *)pscloud_ui,pscloud_ui_size);return;}
+    /* Read-only, for other consoles running PSCloud on this network. */
+    if(!strcmp(method,"GET") && !strcmp(url,"/api/peer/info")) {peer_info_json(sock);return;}
+    if(!strcmp(method,"GET") && !strncmp(url,"/api/peer/latest?",17)) {peer_latest_json(sock,url+17);return;}
+    if(!strcmp(method,"GET") && !strncmp(url,"/api/peer/file?",15)) {peer_file(sock,url+15);return;}
     char supplied[64];
     int legacy=header_value(request,"X-PSCloud-Token",supplied,sizeof supplied)==0 && !strcmp(supplied,token);
     if(!legacy && !session(request)) {reject(sock,401,"Reload the dashboard to refresh your browser session");return;}
@@ -1973,6 +2147,8 @@ static void serve(int sock,int *locked) {
     if(!strcmp(method,"GET") && !strcmp(url,"/api/slot-icon")) {slot_icon(sock,query);return;}
     if(!strcmp(method,"GET") && !strcmp(url,"/api/sync-status")) {sync_status_json(sock,query);return;}
     if(!strcmp(method,"GET") && !strcmp(url,"/api/cloud-profiles")) {cloud_profiles_json(sock);return;}
+    if(!strcmp(method,"GET") && !strcmp(url,"/api/peers")) {peers_json(sock);return;}
+    if(!strcmp(method,"GET") && !strcmp(url,"/api/peers/discover")) {peers_discover_json(sock);return;}
     if(!strcmp(method,"GET") && !strcmp(url,"/api/cloud-housekeeping")) {cloud_housekeeping_json(sock);return;}
     if(!strcmp(method,"GET") && !strcmp(url,"/api/encryption")) {const char *json=pscloud_encryption_on()?"{\"on\":true}":"{\"on\":false}";respond(sock,200,"application/json",json,strlen(json));return;}
     if(!strcmp(method,"GET") && !strcmp(url,"/api/game-settings")) {game_settings_json(sock,query);return;}
@@ -2289,6 +2465,12 @@ int main(int argc,char **argv) {
     address.sin_addr.s_addr=htonl(INADDR_ANY);
     if(bind(server,(struct sockaddr *)&address,sizeof address) || listen(server,8)) {close(server);return 2;}
     socklen_t length=sizeof address;getsockname(server,(struct sockaddr *)&address,&length);
+    http_port_number=ntohs(address.sin_port);
+#ifdef PSCLOUD_HOST_TEST
+    if(getenv("PSCLOUD_TEST_UDP_PORT"))peer_udp_port=(unsigned)atoi(getenv("PSCLOUD_TEST_UDP_PORT"));
+#endif
+    {pthread_t beacon;pthread_attr_t attr;pthread_attr_init(&attr);pthread_attr_setstacksize(&attr,256U*1024);
+     if(!pthread_create(&beacon,&attr,peer_beacon,NULL))pthread_detach(beacon);pthread_attr_destroy(&attr);}
     printf("PSCLOUD_DASHBOARD_PORT=%u\nPSCLOUD_DASHBOARD_READY=1\n",ntohs(address.sin_port));fflush(stdout);
     pscloud_notify("PSCloud dashboard ready on port %u - open in your browser",ntohs(address.sin_port));
     if(!firmware_tested()) {pscloud_log_open(logpath);pscloud_log("WARN","Firmware %x.%02x has not been tested with PSCloud yet; every replace still runs the staged check first and keeps a rollback copy",firmware_id>>24,(firmware_id>>16)&255);}
