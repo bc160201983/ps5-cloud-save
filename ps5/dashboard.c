@@ -1445,7 +1445,10 @@ static int sync_fetch(const char *user,const char *title,char file[128],char sha
     while(!bad&&at<r.size) {ssize_t w=write(fd,data+at,r.size-at);if(w<=0)bad=1;else at+=(size_t)w;}
     if(fd>=0) {if(fsync(fd))bad=1;close(fd);}
     if(bad) {free(data);snprintf(why,why_max,"Could not store the cloud save");return -1;}
-    char published[128];struct pscloud_share_options options={.skip_missing=1,.system_root=system_root};
+    /* A check writes nothing: allow games not installed here and slots this profile lacks; the
+     * replace that follows asks first and creates the missing slots. */
+    char published[128],installed_version[32];struct pscloud_share_options options={.skip_missing=1,.create_missing=1,.system_root=system_root};
+    options.not_installed=pscloud_app_version(appmeta,title,installed_version,sizeof installed_version)!=0;
     bad=pscloud_share_game(home,root,appmeta,user,title,1,data,r.size,&options,published,sha);free(data);
     if(bad) {unlink(path);const char *e=pscloud_share_error();snprintf(why,why_max,"Check failed: %s",*e?e:"see Activity");return -1;}
     char proof[1700];snprintf(proof,sizeof proof,"%s/%s.check-%s",share,file,user);atomic_config(proof,sha);
@@ -1523,7 +1526,7 @@ static void sync_tick(void) {
             pscloud_log_open(logpath);int bad=sync_fetch(u->d_name,copy[i].title,file,sha,why,sizeof why);
             if(!bad&&copy[i].auto_apply&&title_running(copy[i].title)<=0) {
                 char published[128],check[65];unsigned char *data=NULL;size_t size=0;char share[1400];snprintf(share,sizeof share,"%s/share",root);int dir=pscloud_open_directory(share);
-                struct pscloud_share_options options={.skip_missing=1,.system_root=system_root};
+                struct pscloud_share_options options={.skip_missing=1,.create_missing=1,.system_root=system_root};
                 bad=dir<0||pscloud_read_archive(dir,file,&data,&size)||pscloud_share_game(home,root,appmeta,u->d_name,copy[i].title,2,data,size,&options,published,check);free(data);if(dir>=0)close(dir);
                 if(!bad) {sync_after_restore(u->d_name,copy[i].title,file);pscloud_notify("Updated %s with your newer save from the cloud",name);}
                 else pscloud_log("WARN","Automatic replace of %s stopped; your save is unchanged or a rollback copy was kept",name);
@@ -1578,7 +1581,8 @@ static void peer_push(int sock,const char *query,const char *from_ip) {
     if(bad) {pthread_mutex_unlock(&operation_mutex);char msg[400];snprintf(msg,sizeof msg,"The other PS5 could not use it: %s",why);reject(sock,400,msg);return;}
     if(!strcmp(replace,"1")&&remote_replace_allowed()&&title_running(title)<=0) {
         char share[1400],published[128],check[65];snprintf(share,sizeof share,"%s/share",root);int dir=pscloud_open_directory(share);unsigned char *data=NULL;size_t size=0;
-        struct pscloud_share_options options={.skip_missing=1,.system_root=system_root};
+        struct pscloud_share_options options={.skip_missing=1,.create_missing=1,.system_root=system_root};char installed_version[32];
+        options.not_installed=pscloud_app_version(appmeta,title,installed_version,sizeof installed_version)!=0; /* this console allowed remote replaces */
         bad=dir<0||pscloud_read_archive(dir,file,&data,&size)||pscloud_share_game(home,root,appmeta,to,title,2,data,size,&options,published,check);
         free(data);if(dir>=0)close(dir);
         pthread_mutex_unlock(&operation_mutex);
