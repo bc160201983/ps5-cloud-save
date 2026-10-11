@@ -34,7 +34,40 @@
 #include <openssl/evp.h>
 #ifndef PSCLOUD_HOST_TEST
 #include <ps5/kernel.h>
+#include <sys/types.h>
+#include <sys/sysctl.h>
+#include <sys/user.h>
+/* Layout as used by the SDK's ps sample. */
+struct pscloud_app_info {uint32_t app_id;uint64_t unknown1;uint32_t app_type;char title_id[10];char unknown2[0x3c];};
+int sceKernelGetAppInfo(pid_t pid,struct pscloud_app_info *info);
 #endif
+/* Whether a process of this game is running: 1 yes, 0 no, -1 process list unavailable.
+ * Games may mount saves only while writing, so an unmounted save does not mean closed. */
+static int title_running(const char *title) {
+#ifdef PSCLOUD_HOST_TEST
+    /* Tests name a file listing running titles, or containing "unavailable". */
+    const char *path=getenv("PSCLOUD_TEST_RUNNING_TITLES");char list[256]={0};
+    FILE *f=path?fopen(path,"r"):NULL;if(!f)return 0;
+    size_t n=fread(list,1,sizeof list-1,f);fclose(f);list[n]=0;
+    if(strstr(list,"unavailable"))return -1;
+    return strstr(list,title)!=NULL;
+#else
+    int mib[4]={CTL_KERN,KERN_PROC,KERN_PROC_PROC,0};size_t size=0;
+    if(sysctl(mib,4,NULL,&size,NULL,0)||!size)return -1;
+    size+=size/4;char *buffer=malloc(size);if(!buffer)return -1;
+    if(sysctl(mib,4,buffer,&size,NULL,0)) {free(buffer);return -1;}
+    int found=0;unsigned seen=0;
+    for(size_t offset=0;offset+sizeof(int)<=size&&!found;) {
+        struct kinfo_proc *ki=(struct kinfo_proc *)(buffer+offset);
+        if(ki->ki_structsize<=0||offset+(size_t)ki->ki_structsize>size)break;
+        offset+=(size_t)ki->ki_structsize;seen++;
+        struct pscloud_app_info info;memset(&info,0,sizeof info);
+        if(sceKernelGetAppInfo(ki->ki_pid,&info))continue;
+        info.title_id[9]=0;if(!strcmp(info.title_id,title))found=1;
+    }
+    free(buffer);return found?1:seen?0:-1;
+#endif
+}
 extern int pscloud_backup_main(int,char **);
 extern const char *pscloud_backup_archive(void);
 extern int pscloud_worker_main(int,char **);
@@ -300,9 +333,9 @@ static void users(int sock) {
 static void save_status(int sock,const char *query) {
     char user[32],title[16];
     if(parameter(query,"user",user,sizeof user) || !safe_word(user,16) || parameter(query,"title",title,sizeof title) || !pscloud_title_valid(title)) {message(sock,400,"Choose a profile and game");return;}
-    char version[32],name[256],escaped_name[1536];int installed=!pscloud_app_version(appmeta,title,version,sizeof version);
+    char version[32],name[256],escaped_name[1536];int installed=!pscloud_app_version(appmeta,title,version,sizeof version),running=title_running(title);
     pscloud_app_name(appmeta,title,name,sizeof name);escaped(escaped_name,sizeof escaped_name,name);
-    char json[16384];int pos=snprintf(json,sizeof json,"{\"title\":\"%s\",\"name\":\"%s\",\"installed\":%s,\"mounted\":%s,\"slots\":[",title,escaped_name,installed?"true":"false",pscloud_no_foreign_mount()?"true":"false");
+    char json[16384];int pos=snprintf(json,sizeof json,"{\"title\":\"%s\",\"name\":\"%s\",\"installed\":%s,\"mounted\":%s,\"running\":%s,\"slots\":[",title,escaped_name,installed?"true":"false",pscloud_no_foreign_mount()?"true":"false",running>0?"true":running<0?"null":"false");
     char path[1400];snprintf(path,sizeof path,"%s/%s/savedata_prospero/%s",home,user,title);
     int fd=pscloud_open_directory(path);DIR *slots=fd>=0?fdopendir(fd):NULL;unsigned count=0;
     if(!slots&&fd>=0)close(fd);
@@ -1039,8 +1072,8 @@ static void *client_main(void *arg) {
  * backup path runs under the operation lock (skipped and retried while another
  * operation runs); backups read staged copies and refuse saves that change while
  * being copied. Only changes made while this option is on are backed up. */
-struct watched_save {char user[17],title[10];time_t mtime;unsigned stable,attempts;int pending;};
-static struct watched_save watched[512];static unsigned watched_count;static int watch_ready;
+struct watched_save {char user[17],title[10];time_t mtime;unsigned stable,attempts;int pending,waiting;};
+static struct watched_save watched[512];static unsigned watched_count;static int watch_ready,detection_warned;
 static time_t newest_container(int titledir) {
     int scan=dup(titledir);DIR *d=scan<0?NULL:fdopendir(scan);if(!d) {if(scan>=0)close(scan);return 0;}
     time_t newest=0;struct dirent *e;
@@ -1076,7 +1109,7 @@ static void watch_scan(void) {
             }
             if(newest!=w->mtime) {
                 w->mtime=newest;w->stable=0;
-                if(!w->pending) {w->pending=1;w->attempts=0;pscloud_log("INFO","Save changed for %s; backup after the game closes",w->title);}
+                if(!w->pending) {w->pending=1;w->attempts=0;w->waiting=0;pscloud_log("INFO","Save changed for %s; backup after the game closes",w->title);}
             } else if(w->pending)w->stable++;
         }
         closedir(titles);close(saves);
@@ -1119,7 +1152,12 @@ static void *game_close_watch(void *unused) {
         if(!watch_ready) {watch_ready=1;continue;}
         if(pscloud_no_foreign_mount())continue; /* A mounted save means a game is still running. */
         for(unsigned i=0;i<watched_count&&!stopped;i++) {
-            if(!watched[i].pending||watched[i].stable<2)continue;
+            struct watched_save *w=&watched[i];
+            if(!w->pending||w->stable<2)continue;
+            int running=title_running(w->title);
+            if(running>0) {if(!w->waiting) {w->waiting=1;pscloud_log("INFO","%s is still running; backup waits until it is closed",w->title);}continue;}
+            /* Without a process list, only back up after five quiet minutes. */
+            if(running<0) {if(!detection_warned) {detection_warned=1;pscloud_log("WARN","Running games cannot be detected on this console; game-close backups wait for 5 minutes without save changes");}if(w->stable<30)continue;}
             if(pthread_mutex_trylock(&operation_mutex))break;
             watch_backup(&watched[i]);pthread_mutex_unlock(&operation_mutex);
         }

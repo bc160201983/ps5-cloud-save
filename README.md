@@ -1,4 +1,26 @@
-# PS5 Cloud Save — development milestone 0.18.0
+# PS5 Cloud Save — development milestone 0.18.1
+
+## Version 0.18.1 — game-close backup waits for the game to really close
+
+**Bug found on the 11.40 console:** with "Back up automatically when a game closes"
+on, Marvel's Wolverine was backed up 7 times in 15 minutes while it was still being
+played, and automatic upload sent every copy to the cloud. Wolverine mounts its save
+only while writing it, so "no save mounted" was read as "game closed" after each
+autosave. One upload attempt also failed with transport 35 (a TLS connection error);
+that backup stayed queued and uploaded on the next attempt.
+
+**Fix:** before a game-close backup, the watcher now reads the console's process list
+(sysctl kern.proc plus sceKernelGetAppInfo, as in the SDK's ps sample) and waits
+while any process of that game is running. It logs once per wait ("still running;
+backup waits until it is closed"). If the process list cannot be read, it only backs
+up after 5 minutes with no save changes. /api/save-status also reports `running`
+(true, false, or null when unknown), and Receive a shared save now waits on the
+"close the game" step while the game is running.
+
+Verified: host tests, including a simulated game that autosaves while running with
+no mounted save (no backup until it closes). Running-game detection on a real
+console has not been verified yet.
+
 
 ## Version 0.18.0 — a separate view for each PS5 profile
 

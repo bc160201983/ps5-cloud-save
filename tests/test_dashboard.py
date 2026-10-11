@@ -406,6 +406,33 @@ class DashboardTests(unittest.TestCase):
         self.assertEqual(self.image.read_bytes(),self.original)
         self.assertIn('Game closed: backing up',(self.root/'pscloud.log').read_text())
 
+    def test_game_close_backup_waits_while_the_game_is_still_running(self):
+        import test_portable
+        self.process.terminate();self.process.communicate(timeout=5)
+        fixture=self.fixture.root/'compact';test_portable.PortableTests.sfo(self,fixture/SLOT,SLOT,b'D'*8)
+        metadata=self.root/'appmeta/PPSA02433';metadata.mkdir(parents=True);(metadata/'param.json').write_text(json.dumps({'contentVersion':'01.000.002'}))
+        running=self.fixture.root/'running.txt';running.write_text('PPSA02433')
+        self.start_server(PSCLOUD_TEST_GENERIC_PAYLOADS=str(fixture),PSCLOUD_TEST_WATCH_SECONDS='1',PSCLOUD_TEST_RUNNING_TITLES=str(running))
+        def queue():
+            for _ in range(60):
+                data=self.request('/api/queue')[1]
+                if 'items' in data:return data['items']
+                time.sleep(0.5)
+            self.fail('dashboard stayed busy')
+        status,data=self.request('/api/save-status?user=1eb70483&title=PPSA02433');self.assertTrue(data['running'])
+        self.request('/api/preferences',{'auto_upload':'0','activity_refresh':'1','compact_backups':'1','game_close_backup':'1'})
+        time.sleep(3)
+        # The game autosaves while running and its save is not mounted between saves.
+        for offset in (100,200):
+            t=time.time()+offset;os.utime(self.image,(t,t));time.sleep(5)
+        self.assertEqual(queue(),[])
+        self.assertIn('still running; backup waits',(self.root/'pscloud.log').read_text())
+        running.write_text('')
+        deadline=time.monotonic()+15
+        while time.monotonic()<deadline and len(queue())!=1:time.sleep(0.5)
+        self.assertEqual(len(queue()),1)
+        self.assertFalse(self.request('/api/save-status?user=1eb70483&title=PPSA02433')[1]['running'])
+
     def test_generic_dashboard_import_check_and_download(self):
         import test_sharing
         import test_portable
