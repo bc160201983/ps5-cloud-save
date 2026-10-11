@@ -93,15 +93,20 @@ static int write_file(const char *path,const unsigned char *data,size_t size,con
     int fd=open(path,O_WRONLY|O_CREAT|O_EXCL|O_NOFOLLOW,0600);if(fd<0)return -1;size_t at=0;int bad=0;
     while(at<size) {ssize_t n=write(fd,data+at,size-at);if(n<0&&errno==EINTR)continue;if(n<=0) {bad=1;break;}at+=(size_t)n;}
     if(!bad&&owner&&(fchown(fd,owner->st_uid,owner->st_gid)||fchmod(fd,owner->st_mode&07777)))bad=1;
-    if(fsync(fd))bad=1;if(close(fd))bad=1;
-    if(bad)unlink(path);return bad?-1:0;
+    if(fsync(fd))bad=1;
+    if(close(fd))bad=1;
+    if(bad)unlink(path);
+    return bad?-1:0;
 }
 static int copy_path(const char *from,const char *to,const struct stat *owner) {
     int in=open(from,O_RDONLY|O_NOFOLLOW),out=in<0?-1:open(to,O_WRONLY|O_CREAT|O_EXCL|O_NOFOLLOW,0600);
     int bad=in<0||out<0||pscloud_copy_image(in,out);
     if(!bad&&owner&&(fchown(out,owner->st_uid,owner->st_gid)||fchmod(out,owner->st_mode&07777)))bad=1;
     if(!bad&&fsync(out))bad=1;
-    if(in>=0)close(in);if(out>=0)close(out);if(bad&&out>=0)unlink(to);return bad?-1:0;
+    if(in>=0)close(in);
+    if(out>=0)close(out);
+    if(bad&&out>=0)unlink(to);
+    return bad?-1:0;
 }
 static void free_sys(struct sys_files *s) {free(s->sfo);free(s->keystone);memset(s,0,sizeof *s);}
 static int load_sys(const char *payload,struct sys_files *s) {
