@@ -144,7 +144,7 @@ static int pick_template(const char *home,const char *user,const char *db,const 
         char base[1200];snprintf(base,sizeof base,"%s/%s/savedata_prospero",home,user);DIR *games=opendir(base);struct dirent *g;
         while(games&&(g=readdir(games))&&found) {
             if(!pscloud_title_valid(g->d_name)||(any_game?!strcmp(g->d_name,title):strcmp(g->d_name,title)))continue;
-            char folder[1300];snprintf(folder,sizeof folder,"%s/%s",base,g->d_name);DIR *d=opendir(folder);struct dirent *e;
+            char folder[1300];snprintf(folder,sizeof folder,"%s/%.15s",base,g->d_name);DIR *d=opendir(folder);struct dirent *e;
             /* Prefer a regular slot; the system-memory slot is the fallback. */
             for(int pass=0;pass<2&&found&&d;pass++) {
                 rewinddir(d);
@@ -152,7 +152,7 @@ static int pick_template(const char *home,const char *user,const char *db,const 
                     if(strncmp(e->d_name,"sdimg_",6)||!strncmp(e->d_name,"sdimg_sce_bu",12)||!name_ok(e->d_name+6,63))continue;
                     if(!pass&&!strcmp(e->d_name,"sdimg_sce_sdmemory"))continue;
                     sqlite3_reset(q);sqlite3_bind_text(q,1,g->d_name,-1,SQLITE_TRANSIENT);sqlite3_bind_text(q,2,e->d_name+6,-1,SQLITE_TRANSIENT);
-                    if(sqlite3_step(q)==SQLITE_ROW) {snprintf(slot,max,"%s",e->d_name+6);snprintf(template_title,16,"%s",g->d_name);found=0;}
+                    if(sqlite3_step(q)==SQLITE_ROW) {snprintf(slot,max,"%s",e->d_name+6);snprintf(template_title,16,"%.15s",g->d_name);found=0;}
                 }
             }
             if(d)closedir(d);
