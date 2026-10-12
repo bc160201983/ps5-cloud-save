@@ -3,6 +3,17 @@
 Every release, newest first, with what was verified on a console and what was not.
 The current overview is in [README.md](README.md).
 
+## Version 0.34.10 — profile instructions on the page
+
+- **Reusable save profiles** now explains, as numbered steps, how to use a profile on a
+  newer save: let the game save and close it, Load the save, Queue Set or Queue adjustment,
+  then Make the changed save and check it. It also says profiles stop matching after a game
+  update.
+- Each save profile card says what Queue Set will change ("puts the same number into all
+  5 fields") and reminds you to load the save first until one is loaded.
+- **Retained Live profiles** explains what to do after restarting the game, including the
+  several-matches case: type the current number, Next search, then Save selected places.
+
 ## Version 0.34.9 — Relocate & bind with several matches
 
 On the 11.40 console, Relocate & bind for LINEN in PPSA03210 read all 11.6 GB in 84 s and
