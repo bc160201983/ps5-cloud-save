@@ -35,7 +35,7 @@ class DashboardTests(unittest.TestCase):
         subprocess.run(['cc','-O2','-std=c11','-Wall','-Wextra','-Werror',
                         '-DPSCLOUD_HOST_TEST','-DPSCLOUD_BACKUP_EMBEDDED','-DPSCLOUD_DOWNLOAD_EMBEDDED','-DPSCLOUD_EMBEDDED',
                         *[str(ROOT/p) for p in ['ps5/dashboard.c','ps5/backup.c','ps5/download.c','src/worker.c']],
-                        *[str(ROOT/'ps5/common'/n) for n in ['managed.c','mount.c','restore.c','zip.c','log.c','cloud.c','snapshot.c','appmeta.c','bundle.c','savemeta.c','google.c','sharing.c','slotcreate.c']],
+                        *[str(ROOT/'ps5/common'/n) for n in ['managed.c','mount.c','restore.c','zip.c','log.c','cloud.c','snapshot.c','appmeta.c','bundle.c','savemeta.c','google.c','sharing.c','slotcreate.c','livemem.c']],
                         '-o',str(ROOT/'dashboard-host'),'-lcurl','-lcrypto','-lsqlite3','-pthread'],check=True)
 
     def setUp(self):
@@ -767,6 +767,35 @@ const found=SaveImport.slots(files);const pkg=SaveImport.pack(found,'7.00');fs.w
         for path in ('/api/share-check','/api/share-restore'):
             status,data=self.request(path,self.selected(slot='WholeGame',closed='live',file='portable-x.zip',sha256='0'*64,confirm='yes'))
             self.assertEqual(status,400);self.assertIn('Close the selected game',data['message'])
+
+    def test_live_mode_finds_narrows_and_changes_a_value_in_the_running_game(self):
+        """A file stands in for the game's memory (PSCLOUD_TEST_LIVE); the test changes it like a game would."""
+        self.process.terminate();self.process.communicate(timeout=5)
+        memory=self.fixture.root/'game-memory.bin';data=bytearray(64*1024)
+        for o in (0x100,0x2000,0x3000):data[o:o+4]=struct.pack('<i',1234)
+        memory.write_bytes(bytes(data))
+        self.start_server(PSCLOUD_TEST_LIVE=str(memory))
+        def wait():
+            for _ in range(100):
+                state=self.request('/api/live/state')[1]
+                if not state['busy']:return state
+                time.sleep(0.05)
+            self.fail('live search did not finish')
+        self.assertTrue(self.request('/api/live/state')[1]['running'])
+        status,r=self.request('/api/live/scan',{'type':'int32','value':'1234'});self.assertEqual(status,200,r)
+        self.assertEqual(wait()['count'],3)
+        # The game spends some: two of the three places now hold 1240.
+        for o in (0x100,0x3000):data[o:o+4]=struct.pack('<i',1240)
+        memory.write_bytes(bytes(data))
+        status,r=self.request('/api/live/next',{'value':'1240'});self.assertEqual(status,200,r)
+        self.assertEqual(wait()['count'],2)
+        places=self.request('/api/live/list')[1]['places'];self.assertEqual([p['value'] for p in places],[1240,1240])
+        status,r=self.request('/api/live/set',{'address':places[1]['address'],'value':'9999'});self.assertEqual(status,200,r)
+        self.assertEqual(struct.unpack('<i',memory.read_bytes()[0x3000:0x3004])[0],9999)
+        # Only addresses from the results can be changed, and only with numbers that fit.
+        self.assertEqual(self.request('/api/live/set',{'address':'0x10002000','value':'5'})[0],400)
+        self.assertEqual(self.request('/api/live/set',{'address':places[0]['address'],'value':'1.5'})[0],400)
+        self.assertEqual(self.request('/api/live/scan',{'type':'uint8','value':'300'})[0],400)
 
     def test_sync_with_a_linked_profile_from_another_console(self):
         import test_sharing,test_portable

@@ -11,6 +11,7 @@
 #include "common/google.h"
 #include "common/transfer.h"
 #include "common/sharing.h"
+#include "common/livemem.h"
 #include <pthread.h>
 #include <stdatomic.h>
 #include "ui.h"
@@ -2493,6 +2494,21 @@ static void serve(int sock,int *locked) {
         if(parameter(query,"file",file,sizeof file)||strncmp(file,"portable-",9)||strchr(file,'/')||strchr(file,'\\')) {message(sock,400,"Invalid shared package filename");return;}
         snprintf(directory,sizeof directory,"%s/share",root);int dir=pscloud_open_directory(directory);int bad=dir<0||pscloud_read_archive(dir,file,&data,&bytes);if(dir>=0)close(dir);
         if(bad)message(sock,404,"Shared package unavailable");else respond(sock,200,"application/zip",(const char *)data,bytes);free(data);return;
+    }
+    /* Live mode: find and change a number in the running game (Edit tab). */
+    if(!strcmp(method,"GET") && !strcmp(url,"/api/live/state")) {char json[1024];pscloud_live_state_json(json,sizeof json);respond(sock,200,"application/json",json,strlen(json));return;}
+    if(!strcmp(method,"GET") && !strcmp(url,"/api/live/list")) {char *json=malloc(65536);if(!json) {message(sock,500,"Out of memory");return;}pscloud_live_list_json(json,65536,200);respond(sock,200,"application/json",json,strlen(json));free(json);return;}
+    if(!strcmp(method,"POST") && !strncmp(url,"/api/live/",10)) {
+        char type[16]="",value[64]="",address[32]="",msg[300];int bad=-1;
+        parameter(body,"type",type,sizeof type);parameter(body,"value",value,sizeof value);parameter(body,"address",address,sizeof address);
+        char *end=NULL;double number=strtod(value,&end);int number_ok=*value&&end&&!*end;
+        if(!strcmp(url,"/api/live/reset")) {pscloud_live_reset();message(sock,200,"Search cleared");return;}
+        if(!number_ok) {message(sock,400,"Type the number you see in the game");return;}
+        if(!strcmp(url,"/api/live/scan"))bad=pscloud_live_scan(type,number,msg,sizeof msg);
+        else if(!strcmp(url,"/api/live/next"))bad=pscloud_live_next(number,msg,sizeof msg);
+        else if(!strcmp(url,"/api/live/set")) {unsigned long long a=strtoull(address,&end,16);if(!*address||*end) {message(sock,400,"Choose a place from the results");return;}bad=pscloud_live_set(a,number,msg,sizeof msg);}
+        else {message(sock,404,"Unknown live action");return;}
+        message(sock,bad?400:200,msg);return;
     }
     if(!strcmp(method,"POST") && !strcmp(url,"/api/stop")) {message(sock,200,"Dashboard stopping");stopped=1;return;}
     if(!strcmp(method,"POST") && !strcmp(url,"/api/connect")) {configure_cloud(sock,body);return;}
