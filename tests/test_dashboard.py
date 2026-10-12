@@ -1637,3 +1637,27 @@ const found=SaveImport.slots(files);const pkg=SaveImport.pack(found,'7.00');fs.w
         for other in [str(self.root/'staging/mount'),str(self.fixture.root/('portable-stage-'+'ab'*16)/'mount-0'),str(stage/'mount-1')+'/../../x/mount-0']:
             self.restart_with_marker(other)
             self.assertTrue((self.root/'.mount-active').exists(),other)
+
+    def test_new_dashboard_takes_over_a_running_one(self):
+        import socket
+        self.process.terminate();self.process.communicate(timeout=5)
+        probe=socket.socket();probe.bind(('127.0.0.1',0));port=probe.getsockname()[1];probe.close()
+        env=dict(os.environ,PSCLOUD_TEST_PAYLOAD=str(self.payload))
+        command=[str(ROOT/'dashboard-host'),str(self.root),str(self.home),str(port)]
+        def ready(process):
+            seen=[]
+            for line in process.stdout:
+                seen.append(line)
+                if line.startswith('PSCLOUD_DASHBOARD_PORT='):return seen
+            self.fail('Dashboard exited without starting: '+''.join(seen))
+        first=subprocess.Popen(command,env=env,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,text=True)
+        ready(first)
+        self.process=subprocess.Popen(command,env=env,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,text=True)
+        lines=ready(self.process)
+        self.assertTrue(any('replacing it with version' in l for l in lines),lines)
+        first.stdout.close();self.assertEqual(first.wait(timeout=30),0)
+        self.process.stdout.readline()
+        self.port=port
+        connection=http.client.HTTPConnection('127.0.0.1',port,timeout=10)
+        connection.request('GET','/');response=connection.getresponse();self.cookie=response.getheader('Set-Cookie').split(';')[0];response.read();connection.close()
+        self.assertEqual(self.request('/api/state')[0],200)

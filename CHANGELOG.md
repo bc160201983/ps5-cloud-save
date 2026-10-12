@@ -3,6 +3,20 @@
 Every release, newest first, with what was verified on a console and what was not.
 The current overview is in [README.md](README.md).
 
+## Version 0.34.4 — send a new dashboard without restarting the PS5
+
+- Sending `pscloud-dashboard.elf` while PSCloud was already running did nothing visible:
+  the old dashboard kept port 8082, and the new one exited without a notification, so the
+  PS5 had to be restarted for every update. The new dashboard now shows "PSCloud is
+  already running; replacing it with version …", asks the running dashboard to stop
+  through its own Stop request, waits up to 30 seconds for the port, and starts with the
+  usual "ready" notification.
+- While an upload is running the old dashboard refuses to stop, as before. The new one
+  then says so on screen and exits; send it again when the upload finishes.
+- If the port stays in use, a notification now says so instead of exiting silently.
+- Host test: a second dashboard on the same port takes over and the first exits cleanly.
+  PS5 verification is pending.
+
 ## Version 0.34.3 — wider Live signatures and visible actions
 
 - **Retain profile works for values in sparse memory**, such as an inventory count like

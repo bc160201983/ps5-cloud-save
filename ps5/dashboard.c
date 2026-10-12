@@ -2844,6 +2844,31 @@ static void *game_close_watch(void *unused) {
     }
     pthread_mutex_lock(&clients_mutex);clients--;pthread_cond_broadcast(&clients_done);pthread_mutex_unlock(&clients_mutex);return NULL;
 }
+/* Sending a new dashboard while one is running: the old one still holds the port. Ask it to
+ * stop through its own /api/stop (as a browser would), so the new version takes over without
+ * a PS5 restart. Returns 0 when it agreed to stop, 1 when it is busy, -1 otherwise. */
+static int local_request(unsigned port,const char *request,char *reply,size_t max) {
+    int fd=socket(AF_INET,SOCK_STREAM,0);if(fd<0)return -1;
+    struct timeval wait={5,0};setsockopt(fd,SOL_SOCKET,SO_RCVTIMEO,&wait,sizeof wait);setsockopt(fd,SOL_SOCKET,SO_SNDTIMEO,&wait,sizeof wait);
+    struct sockaddr_in to={0};to.sin_family=AF_INET;to.sin_port=htons((uint16_t)port);to.sin_addr.s_addr=htonl(INADDR_LOOPBACK);
+    if(connect(fd,(struct sockaddr *)&to,sizeof to)) {close(fd);return -1;}
+    size_t n=strlen(request),sent=0;
+    while(sent<n) {ssize_t w=send(fd,request+sent,n-sent,0);if(w<=0) {close(fd);return -1;}sent+=(size_t)w;}
+    size_t got=0;
+    while(got+1<max) {ssize_t r=recv(fd,reply+got,max-1-got,0);if(r<=0)break;got+=(size_t)r;reply[got]=0;if(strstr(reply,"\r\n\r\n"))break;}
+    reply[got]=0;close(fd);return got?0:-1;
+}
+static int take_over(unsigned port) {
+    char request[512],reply[4096],cookie[96]="";
+    snprintf(request,sizeof request,"GET / HTTP/1.1\r\nHost: 127.0.0.1:%u\r\nConnection: close\r\n\r\n",port);
+    if(local_request(port,request,reply,sizeof reply))return -1;
+    const char *c=strstr(reply,"PSCloudSession=");if(!c)return -1;
+    size_t len=strcspn(c,";\r\n");if(len>=sizeof cookie)return -1;memcpy(cookie,c,len);cookie[len]=0;
+    snprintf(request,sizeof request,"POST /api/stop HTTP/1.1\r\nHost: 127.0.0.1:%u\r\nCookie: %s\r\nX-PSCloud-Request: 1\r\nContent-Type: application/x-www-form-urlencoded\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",port,cookie);
+    if(local_request(port,request,reply,sizeof reply))return -1;
+    if(!strncmp(reply,"HTTP/1.1 200",12))return 0;
+    return !strncmp(reply,"HTTP/1.1 409",12)?1:-1;
+}
 int main(int argc,char **argv) {
     unsigned port=8082;
 #ifdef PSCLOUD_HOST_TEST
@@ -2889,7 +2914,14 @@ int main(int argc,char **argv) {
     int yes=1;setsockopt(server,SOL_SOCKET,SO_REUSEADDR,&yes,sizeof yes);
     struct sockaddr_in address={0};address.sin_family=AF_INET;address.sin_port=htons((uint16_t)port);
     address.sin_addr.s_addr=htonl(INADDR_ANY);
-    if(bind(server,(struct sockaddr *)&address,sizeof address) || listen(server,8)) {close(server);return 2;}
+    int bound=!bind(server,(struct sockaddr *)&address,sizeof address);
+    if(!bound&&errno==EADDRINUSE&&port) {
+        pscloud_notify("PSCloud is already running; replacing it with version %s",PSCLOUD_VERSION);
+        int asked=take_over(port);
+        if(asked==1) {pscloud_notify("PSCloud is busy with an upload; the new version was not started. Send it again when the upload finishes");close(server);return 2;}
+        for(int i=0;asked==0&&!bound&&i<60;i++) {struct timespec pause={0,500000000L};nanosleep(&pause,NULL);bound=!bind(server,(struct sockaddr *)&address,sizeof address);}
+    }
+    if(!bound||listen(server,8)) {pscloud_notify("PSCloud could not start: port %u is in use. Close the running PSCloud or restart the PS5",port);close(server);return 2;}
     socklen_t length=sizeof address;getsockname(server,(struct sockaddr *)&address,&length);
     http_port_number=ntohs(address.sin_port);
 #ifdef PSCLOUD_HOST_TEST
