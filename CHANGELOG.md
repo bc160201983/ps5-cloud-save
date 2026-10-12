@@ -3,6 +3,23 @@
 Every release, newest first, with what was verified on a console and what was not.
 The current overview is in [README.md](README.md).
 
+## Version 0.34.3 — wider Live signatures and visible actions
+
+- **Retain profile works for values in sparse memory**, such as an inventory count like
+  Yew Wood in Ghost of Tsushima. New Live rules keep 256 bytes around the value (value at
+  offset 128) instead of 64, so a count surrounded by zeros still gets enough stable
+  context. Context that cannot be read and the value's other places become wildcards.
+  64-byte profiles from 0.34.0 still load and relocate. A profile holds at most 12 places
+  (the 8 KiB request limit).
+- **Retain profile explains failures**: expired value, unknown game version, an unreadable
+  value, or too little stable memory (with the byte counts) instead of one combined message.
+- **Actions are visible on the console.** Live searches and their results, saved values,
+  Set / Increase / Freeze / Unfreeze, a freeze that stops on its own, Retain profile,
+  relocation results and replaced saves now show a PS5 notification and an Activity
+  entry. Every Live and profile request is logged as a dashboard action.
+- Host tests cover the wide window in sparse memory and the weak-context reason.
+  PS5 verification is pending.
+
 ## Version 0.34.2 — Live profile retention fixes
 
 - **Retain profile works on the console.** Before any profile was saved, the Edit tab

@@ -276,3 +276,24 @@ class LiveMemoryTests(unittest.TestCase):
         self.assertFalse(self.json('state')['error'])
         self.assertEqual([p['address'] for p in self.json('list')['places']],['0x10000200','0x10000800'])
         self.assertEqual(self.memory.read_bytes(),bytes(moved))
+
+    def locator(self, group):
+        out=ctypes.create_string_buffer(16000)
+        result=self.lib.pscloud_live_locator(group,b'01.000.000',out,len(out))
+        return result,out.value.decode()
+
+    def test_wide_window_retains_a_count_in_sparse_memory(self):
+        # Nothing distinctive within 24 bytes of the count; an item table header 110 bytes before it.
+        with self.memory.open('r+b') as f:
+            for index,offset in enumerate((256,1024)):
+                f.seek(offset-110);f.write(('YewWoodItemTableHeader%02d' % index).encode())
+        result,text=self.locator(self.pin())
+        self.assertEqual(result,0,text)
+        rule=json.loads(text)['rules'][0]
+        self.assertEqual((len(rule['pattern']),rule['offset']),(512,128))
+        self.assertEqual(rule['pattern'][256:264],'????????')
+
+    def test_weak_context_reports_the_reason(self):
+        result,text=self.locator(self.pin())  # only zeros around both values
+        self.assertEqual(result,-1)
+        self.assertIn('Too little stable memory',text)

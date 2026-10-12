@@ -186,7 +186,7 @@ static void *freeze_main(void *arg) {
                 double now;
                 double held=p->type==T_FLOAT?(double)(float)p->target[j]:p->target[j];
                 if(read_value(p->type,p->addr[j],&now)||(now!=held&&write_value(p->type,p->addr[j],p->target[j]))) {
-                    if(i<pin_count) {p->frozen=0;snprintf(p->error,sizeof p->error,"Freeze stopped: a place could not be read or written. Check the game and search again.");}
+                    if(i<pin_count) {p->frozen=0;snprintf(p->error,sizeof p->error,"Freeze stopped: a place could not be read or written. Check the game and search again.");pscloud_notify("Live: freezing %s stopped; a place could not be read or written",p->name);}
                     break;
                 }
             }
@@ -234,7 +234,9 @@ static void *scan_main(void *arg) {
         }
         pthread_mutex_lock(&lock);L.done+=len;L.count=count;L.overflow=overflow;pthread_mutex_unlock(&lock);
     }
-    int ok=buf!=NULL;free(buf);free(list);finish(!ok?"Out of memory":!alive?"The game session changed; search again":NULL);return NULL;
+    int ok=buf!=NULL;free(buf);free(list);
+    if(ok&&alive)pscloud_notify("Live search in %s: %zu places%s",L.title,count,overflow?" (too many; narrow it down)":"");
+    finish(!ok?"Out of memory":!alive?"The game session changed; search again":NULL);return NULL;
 }
 static void *next_main(void *arg) {
     (void)arg;unsigned char page[4096];uint64_t loaded=UINT64_MAX;int ok=0,alive=1;size_t kept=0;const unsigned size=TYPE_SIZE[L.type];size_t count=L.count;
@@ -247,7 +249,9 @@ static void *next_main(void *arg) {
         else if(mem_read(L.pid,a,value,size))continue;
         if(same(L.type,get(L.type,value),L.value))L.addr[kept++]=a;
     }
-    pthread_mutex_lock(&lock);L.count=kept;pthread_mutex_unlock(&lock);finish(alive?NULL:"The game session changed; search again");return NULL;
+    pthread_mutex_lock(&lock);L.count=kept;pthread_mutex_unlock(&lock);
+    if(alive)pscloud_notify("Live next search in %s: %zu places left",L.title,kept);
+    finish(alive?NULL:"The game session changed; search again");return NULL;
 }
 static int start(void *(*fn)(void *),const char *phase,char *message,size_t max) {
     if(searcher_started) {pthread_join(searcher,NULL);searcher_started=0;}
@@ -266,14 +270,16 @@ int pscloud_live_scan(const char *type_name,double value,char *message,size_t ma
     if(!L.addr)L.addr=malloc(CAP*sizeof *L.addr);
     if(!L.addr) {pthread_mutex_unlock(&lock);snprintf(message,max,"Out of memory");return -1;}
     L.pid=pid;L.session=stamp;snprintf(L.title,sizeof L.title,"%s",title);L.type=type;L.value=value;L.count=0;L.overflow=0;L.has=0;L.total=0;
+    pscloud_log("EVENT","Live search in %s for %g (%s)",title,value,TYPE_NAMES[type]);
     int r=start(scan_main,"scan",message,max);pthread_mutex_unlock(&lock);return r;
 }
 int pscloud_live_next(double value,char *message,size_t max) {
     pthread_mutex_lock(&lock);
     if(L.busy||!session_ok()||!L.has||!fits(L.type,value)) {pthread_mutex_unlock(&lock);snprintf(message,max,"Wait for the search, check the value, or search again for this game session");return -1;}
+    pscloud_log("EVENT","Live next search in %s for %g",L.title,value);
     L.value=value;L.total=L.count;int r=start(next_main,"next",message,max);pthread_mutex_unlock(&lock);return r;
 }
-void pscloud_live_reset(void) {pthread_mutex_lock(&lock);if(L.busy)cancel_search=1;if(!L.busy) {L.count=0;L.has=0;L.overflow=0;L.error[0]=0;}pthread_mutex_unlock(&lock);}
+void pscloud_live_reset(void) {pthread_mutex_lock(&lock);pscloud_log("EVENT","Live search cleared%s",L.busy?" (stopping the running search)":"");if(L.busy)cancel_search=1;if(!L.busy) {L.count=0;L.has=0;L.overflow=0;L.error[0]=0;}pthread_mutex_unlock(&lock);}
 void pscloud_live_state_json(char *out,size_t max) {
     pthread_mutex_lock(&lock);char title[16]="";uint64_t stamp=0;int pid=find_game(title,&stamp);int same_game=session_ok();
     snprintf(out,max,"{\"running\":%s,\"title\":\"%s\",\"busy\":%s,\"phase\":\"%s\",\"done\":%llu,\"total\":%llu,\"count\":%zu,\"has\":%s,\"overflow\":%s,\"type\":\"%s\",\"value\":%g,\"error\":\"%s\",\"same_game\":%s,\"pinned\":%u}",
@@ -317,7 +323,7 @@ int pscloud_live_pin(const char *addresses,const char *name,char *message,size_t
         }
         p.type=L.type;for(unsigned j=0;j<p.n;j++)if(read_value(p.type,p.addr[j],&p.target[j]))bad=1;
         if(bad||start_freezer())snprintf(message,max,"These places are unreadable, overlap a saved value, or could not be saved. Use the existing saved value or search again.");
-        else {p.id=next_id++;snprintf(p.name,sizeof p.name,"%s",name);pins[pin_count++]=p;result=0;snprintf(message,max,"Saved %s (%u places) for this game session",name,p.n);}
+        else {p.id=next_id++;snprintf(p.name,sizeof p.name,"%s",name);pins[pin_count++]=p;result=0;snprintf(message,max,"Saved %s (%u places) for this game session",name,p.n);pscloud_notify("Live: saved %s (%u places) in %s",name,p.n,L.title);}
     }
     pthread_mutex_unlock(&lock);return result;
 }
@@ -328,8 +334,8 @@ int pscloud_live_edit(const char *addresses,unsigned id,const char *action,doubl
     if(!session_ok()) {snprintf(message,max,"The game session changed; search again");goto done;}
     if(id) {for(unsigned i=0;i<pin_count;i++)if(pins[i].id==id)p=&pins[i];if(!p) {snprintf(message,max,"This saved value expired; search again");goto done;}n=p->n;type=p->type;memcpy(addr,p->addr,n*sizeof *addr);}
     else if(selected(addresses,addr,&n)) {snprintf(message,max,"Select up to 32 places from the current search");goto done;}
-    if(!strcmp(action,"remove")&&p) {unsigned i=(unsigned)(p-pins);memmove(p,p+1,(pin_count-i-1)*sizeof *p);pin_count--;result=0;snprintf(message,max,"Saved value removed");goto done;}
-    if(!strcmp(action,"unfreeze")&&p) {p->frozen=0;p->error[0]=0;result=0;snprintf(message,max,"Value unfrozen");goto done;}
+    if(!strcmp(action,"remove")&&p) {pscloud_log("EVENT","Live: removed saved value %s",p->name);unsigned i=(unsigned)(p-pins);memmove(p,p+1,(pin_count-i-1)*sizeof *p);pin_count--;result=0;snprintf(message,max,"Saved value removed");goto done;}
+    if(!strcmp(action,"unfreeze")&&p) {p->frozen=0;p->error[0]=0;result=0;snprintf(message,max,"Value unfrozen");pscloud_notify("Live: %s unfrozen",p->name);goto done;}
     int add=!strcmp(action,"add"),freeze=!strcmp(action,"freeze");
     if((strcmp(action,"set")&&!add&&!freeze)||(freeze&&!p)||!finite(value)) {snprintf(message,max,"Choose Set, Increase/decrease, Freeze or Unfreeze");goto done;}
     if(!p)for(unsigned k=0;k<pin_count;k++)for(unsigned j=0;j<pins[k].n;j++)for(unsigned i=0;i<n;i++) {
@@ -354,7 +360,8 @@ int pscloud_live_edit(const char *addresses,unsigned id,const char *action,doubl
     if(p) {memcpy(p->target,target,n*sizeof *target);if(freeze)p->frozen=1;p->error[0]=0;pthread_cond_signal(&wake);}
     else for(unsigned k=0;k<pin_count;k++)for(unsigned j=0;j<pins[k].n;j++)for(unsigned i=0;i<n;i++)if(pins[k].addr[j]==addr[i]&&pins[k].type==type)pins[k].target[j]=target[i];
     result=0;snprintf(message,max,freeze?"Frozen %u places at %g":add?"Adjusted %u places by %g":"Set %u places to %g",n,value);
-    pscloud_log("EVENT","Live %s in %s: %u places, value %g",action,L.title,n,value);
+    if(p)pscloud_notify(freeze?"Live: %s frozen at %g":add?"Live: %s changed by %g":"Live: %s set to %g",p->name,value);
+    else pscloud_notify(add?"Live: %u places in %s changed by %g":"Live: %u places in %s set to %g",n,L.title,value);
 done:
     pthread_mutex_unlock(&lock);return result;
 }
@@ -374,38 +381,63 @@ void pscloud_live_pins_json(char *out,size_t max) {
     snprintf(out+at,max-at,"]}");pthread_mutex_unlock(&lock);
 }
 
-/* Portable Live locators use masked context, never a saved absolute address. */
-#define LOCATOR_BYTES 64
+/* Portable Live locators use masked context, never a saved absolute address. New rules keep
+ * 256 bytes around the value (value at offset 128); 64-byte rules (offset 24) from 0.34.0
+ * still load. A value in mostly empty memory needs the wider window to stay distinctive. */
+#define WINDOW 256
+#define WINDOW_OFFSET 128
+#define OLD_WINDOW 64
+#define OLD_OFFSET 24
+#define PROFILE_RULES 12 /* 256-byte rules for 12 places fit the 8 KiB request limit */
 #define PAGE 4096
-struct locator_rule {unsigned char bytes[LOCATOR_BYTES],mask[LOCATOR_BYTES];unsigned matches,first;uint64_t address;};
+struct locator_rule {unsigned char bytes[WINDOW],mask[WINDOW];unsigned len,offset,matches,first;uint64_t address;};
 static struct locator_rule locator_rules[TARGETS];static unsigned locator_count;
-static int signature_strength(const unsigned char *b,const unsigned char *mask) {
-    unsigned fixed=0,nonzero=0;for(unsigned i=0;i<LOCATOR_BYTES;i++)if(mask[i]) {fixed++;if(b[i])nonzero++;}
-    return fixed>=16&&nonzero>=8;
+static int signature_strength(const unsigned char *b,const unsigned char *mask,unsigned len,unsigned *fixed,unsigned *nonzero) {
+    *fixed=0;*nonzero=0;for(unsigned i=0;i<len;i++)if(mask[i]) {(*fixed)++;if(b[i])(*nonzero)++;}
+    return *fixed>=16&&*nonzero>=8;
 }
+/* Writes the profile JSON to out, or on failure the reason (plain text) and returns -1. */
 int pscloud_live_locator(unsigned id,const char *version,char *out,size_t max) {
-    pthread_mutex_lock(&lock);int bad=0;struct pin *p=NULL;
-    if(!session_ok())bad=1;
-    for(unsigned i=0;i<pin_count;i++)if(pins[i].id==id)p=&pins[i];
-    if(!p||strlen(version)>31||!*version)bad=1;
-    for(const char *v=version;*v;v++)if((*v<'0'||*v>'9')&&*v!='.')bad=1;
+    pthread_mutex_lock(&lock);char why[200]="";struct pin *p=NULL;
+    if(!session_ok())snprintf(why,sizeof why,"The game restarted, so this saved value expired. Search for it again");
+    for(unsigned i=0;!*why&&i<pin_count;i++)if(pins[i].id==id)p=&pins[i];
+    if(!*why&&!p)snprintf(why,sizeof why,"This saved value expired. Search for it again");
+    if(!*why&&(strlen(version)>31||!*version||strspn(version,"0123456789.")!=strlen(version)))snprintf(why,sizeof why,"The game version could not be identified");
+    if(!*why&&p->n>PROFILE_RULES)snprintf(why,sizeof why,"Retain at most %d places in one profile",PROFILE_RULES);
     size_t pos=0;char name[100];
-    if(!bad) {escape_name(name,p->name);pos=(size_t)snprintf(out,max,"{\"format\":\"PSCLOUD_EDIT_PROFILE_V1\",\"kind\":\"live\",\"name\":\"%s\",\"title\":\"%s\",\"version\":\"%s\",\"rules\":[",name,L.title,version);}
-    for(unsigned j=0;!bad&&j<p->n;j++) {
-        unsigned char b[LOCATOR_BYTES],mask[LOCATOR_BYTES];memset(mask,1,sizeof mask);
-        if(p->addr[j]<24||mem_read_back(L.pid,p->addr[j]-24,b,sizeof b)) {bad=1;break;}
-        memset(mask+24,0,TYPE_SIZE[p->type]);
+    if(!*why) {escape_name(name,p->name);pos=(size_t)snprintf(out,max,"{\"format\":\"PSCLOUD_EDIT_PROFILE_V1\",\"kind\":\"live\",\"name\":\"%s\",\"title\":\"%s\",\"version\":\"%s\",\"rules\":[",name,L.title,version);}
+    const unsigned size=*why?0:TYPE_SIZE[p->type];
+    for(unsigned j=0;!*why&&j<p->n;j++) {
+        unsigned char b[WINDOW],mask[WINDOW];memset(mask,1,sizeof mask);
+        if(p->addr[j]<WINDOW_OFFSET) {snprintf(why,sizeof why,"This place is too close to the start of memory to retain");break;}
+        const uint64_t start=p->addr[j]-WINDOW_OFFSET;
+        /* Read page by page; context that cannot be read becomes a wildcard. */
+        for(unsigned i=0;i<WINDOW;) {
+            unsigned len=PAGE-(unsigned)((start+i)%PAGE);if(len>WINDOW-i)len=WINDOW-i;
+            if(mem_read_back(L.pid,start+i,b+i,len)) {memset(b+i,0,len);memset(mask+i,0,len);}
+            i+=len;
+        }
+        for(unsigned i=0;i<size;i++)if(!mask[WINDOW_OFFSET+i]) {snprintf(why,sizeof why,"The value itself could not be read. Check the game and search again");break;}
+        if(*why)break;
+        memset(mask+WINDOW_OFFSET,0,size);
+        /* The other places of this value change with it. */
+        for(unsigned k=0;k<p->n;k++)if(k!=j&&p->addr[k]+size>start&&p->addr[k]<start+WINDOW)
+            for(unsigned i=0;i<size;i++)if(p->addr[k]+i>=start&&p->addr[k]+i<start+WINDOW)mask[p->addr[k]+i-start]=0;
         /* Mask likely pointers: their absolute values change with allocation and ASLR. */
-        for(unsigned i=0;i+8<=LOCATOR_BYTES;i++)if(!((p->addr[j]-24+i)&7U)) {
+        for(unsigned i=0;i+8<=WINDOW;i++)if(!((start+i)&7U)) {
             uint64_t v=0;memcpy(&v,b+i,8);
             if(v>=0x100000ULL&&v<0x800000000000ULL)memset(mask+i,0,8);
         }
-        if(!signature_strength(b,mask)||pos+256>=max) {bad=1;break;}
-        char pattern[129];for(unsigned i=0;i<LOCATOR_BYTES;i++) {if(mask[i])snprintf(pattern+2*i,3,"%02x",b[i]);else memcpy(pattern+2*i,"??",2);}pattern[128]=0;
-        pos+=(size_t)snprintf(out+pos,max-pos,"%s{\"type\":\"%s\",\"offset\":24,\"pattern\":\"%s\"}",j?",":"",TYPE_NAMES[p->type],pattern);
+        unsigned fixed,nonzero;
+        if(!signature_strength(b,mask,WINDOW,&fixed,&nonzero)) {snprintf(why,sizeof why,"Too little stable memory around this value (%u fixed bytes, %u nonzero; 16 and 8 are needed). Retain another place of the same value",fixed,nonzero);break;}
+        if(pos+2*WINDOW+128>=max) {snprintf(why,sizeof why,"The profile is too large");break;}
+        char pattern[2*WINDOW+1];for(unsigned i=0;i<WINDOW;i++) {if(mask[i])snprintf(pattern+2*i,3,"%02x",b[i]);else memcpy(pattern+2*i,"??",2);}pattern[2*WINDOW]=0;
+        pos+=(size_t)snprintf(out+pos,max-pos,"%s{\"type\":\"%s\",\"offset\":%d,\"pattern\":\"%s\"}",j?",":"",TYPE_NAMES[p->type],WINDOW_OFFSET,pattern);
     }
-    if(!bad&&session_ok())snprintf(out+pos,max-pos,"]}");else bad=1;
-    pthread_mutex_unlock(&lock);return bad?-1:0;
+    if(!*why&&!session_ok())snprintf(why,sizeof why,"The game restarted, so this saved value expired. Search for it again");
+    if(!*why) {snprintf(out+pos,max-pos,"]}");pscloud_notify("Live: retained profile %s for %s %s",p->name,L.title,version);}
+    else {snprintf(out,max,"%s",why);pscloud_log("WARN","Live profile not retained: %s",why);}
+    pthread_mutex_unlock(&lock);return *why?-1:0;
 }
 int pscloud_live_game(char title[16]) {
     pthread_mutex_lock(&lock);uint64_t stamp=0;int pid=find_game(title,&stamp);pthread_mutex_unlock(&lock);return pid<0?-1:0;
@@ -414,17 +446,19 @@ static int hex_digit(char c) {return c>='0'&&c<='9'?c-'0':c>='a'&&c<='f'?c-'a'+1
 static int locator_parse(const char *patterns,int type) {
     locator_count=0;
     for(const char *p=patterns;*p;) {
-        if(locator_count==TARGETS||strlen(p)<128)return -1;
+        const char *end=strchr(p,',');size_t chars=end?(size_t)(end-p):strlen(p);
+        if(locator_count==TARGETS||(chars!=2*OLD_WINDOW&&chars!=2*WINDOW))return -1;
         struct locator_rule *r=&locator_rules[locator_count];memset(r,0,sizeof *r);
-        for(unsigned i=0;i<LOCATOR_BYTES;i++) {
+        r->len=(unsigned)chars/2;r->offset=r->len==WINDOW?WINDOW_OFFSET:OLD_OFFSET;
+        for(unsigned i=0;i<r->len;i++) {
             if((p[2*i]=='x'&&p[2*i+1]=='x')||(p[2*i]=='?'&&p[2*i+1]=='?'))continue;
             int a=hex_digit(p[2*i]),b=hex_digit(p[2*i+1]);if(a<0||b<0)return -1;
             r->mask[i]=1;r->bytes[i]=(unsigned char)(a*16+b);
         }
-        for(unsigned i=24;i<24+TYPE_SIZE[type];i++)if(r->mask[i])return -1;
-        if(!signature_strength(r->bytes,r->mask))return -1;
-        for(unsigned i=0;i<LOCATOR_BYTES;i++)if(r->mask[i]) {r->first=i;break;}
-        locator_count++;p+=128;if(!*p)break;if(*p++!=','||!*p)return -1;
+        for(unsigned i=r->offset;i<r->offset+TYPE_SIZE[type];i++)if(r->mask[i])return -1;
+        unsigned fixed,nonzero;if(!signature_strength(r->bytes,r->mask,r->len,&fixed,&nonzero))return -1;
+        for(unsigned i=0;i<r->len;i++)if(r->mask[i]) {r->first=i;break;}
+        locator_count++;if(!end)break;p=end+1;if(!*p)return -1;
     }
     return locator_count?0:-1;
 }
@@ -435,38 +469,42 @@ static void *resolve_main(void *arg) {
     unsigned long long total=0;for(size_t i=0;i<count;i++) {if(list[i].end<list[i].start) {error="Invalid memory map";break;}total+=list[i].end-list[i].start;}
     if(total>16ULL*1024*1024*1024)error="Memory scan exceeds 16 GiB; this profile needs a more specific locator";
     pthread_mutex_lock(&lock);L.total=total;pthread_mutex_unlock(&lock);
-    unsigned char *buf=malloc(CHUNK+LOCATOR_BYTES);if(!buf)error="Not enough memory";time_t deadline=time(NULL)+180;
+    unsigned char *buf=malloc(CHUNK+WINDOW);if(!buf)error="Not enough memory";time_t deadline=time(NULL)+180;
     /* Like the search, unreadable memory is skipped: a failed chunk is retried page by page and
      * no signature window touching an unread page can match. Matches stay unique among the
      * memory that was read. */
-    unsigned char bad[CHUNK/PAGE+2];unsigned long long skipped=0;
+    unsigned char bad[(CHUNK+WINDOW)/PAGE+2];unsigned long long skipped=0;
     for(size_t i=0;!error&&i<count;i++)for(uint64_t base=list[i].start;base<list[i].end;base+=CHUNK) {
         if(!search_alive()) {error="Search stopped or game session changed";break;}
         if(time(NULL)>deadline) {error="Relocation exceeded three minutes; nothing was bound";break;}
-        size_t remain=(size_t)(list[i].end-base),n=remain<CHUNK+LOCATOR_BYTES-1?remain:CHUNK+LOCATOR_BYTES-1;
+        size_t remain=(size_t)(list[i].end-base),n=remain<CHUNK+WINDOW-1?remain:CHUNK+WINDOW-1;
         memset(bad,0,sizeof bad);
         if(mem_read(L.pid,base,buf,n))for(size_t k=0;k*PAGE<n;k++) {
             size_t len=n-k*PAGE<PAGE?n-k*PAGE:PAGE;
             if(mem_read(L.pid,base+k*PAGE,buf+k*PAGE,len)) {bad[k]=1;if(k*PAGE<CHUNK)skipped+=len;}
         }
-        size_t starts=n>=LOCATOR_BYTES?n-LOCATOR_BYTES+1:0;if(starts>CHUNK)starts=CHUNK;
         for(unsigned k=0;k<locator_count;k++) {
             struct locator_rule *r=&locator_rules[k];if(r->matches>1)continue;
+            size_t starts=n>=r->len?n-r->len+1:0;if(starts>CHUNK)starts=CHUNK;
             for(size_t o=0;o<starts;o++) {
-                if((base+o+24)%TYPE_SIZE[L.type]||buf[o+r->first]!=r->bytes[r->first]||bad[o/PAGE]||bad[(o+LOCATOR_BYTES-1)/PAGE])continue;
-                unsigned j=0;for(;j<LOCATOR_BYTES;j++)if(r->mask[j]&&buf[o+j]!=r->bytes[j])break;
-                if(j==LOCATOR_BYTES) {r->address=base+o+24;if(++r->matches>1)break;}
+                if((base+o+r->offset)%TYPE_SIZE[L.type]||buf[o+r->first]!=r->bytes[r->first]||bad[o/PAGE]||bad[(o+r->len-1)/PAGE])continue;
+                unsigned j=0;for(;j<r->len;j++)if(r->mask[j]&&buf[o+j]!=r->bytes[j])break;
+                if(j==r->len) {r->address=base+o+r->offset;if(++r->matches>1)break;}
             }
         }
         pthread_mutex_lock(&lock);L.done+=remain<CHUNK?remain:CHUNK;pthread_mutex_unlock(&lock);
         struct timespec pause={0,3000000};nanosleep(&pause,NULL);
     }
     if(skipped)pscloud_log("INFO","Relocation skipped %llu KiB of unreadable game memory",skipped/1024);
+    unsigned found_rules=0;
     for(unsigned k=0;!error&&k<locator_count;k++) {
         if(locator_rules[k].matches!=1)error=locator_rules[k].matches?"Signature is ambiguous; profile needs refinement":"Signature not found; profile needs refinement";
         else for(unsigned j=0;j<k;j++)if(locator_rules[j].address==locator_rules[k].address)error="Profile targets overlap; nothing was bound";
     }
     pthread_mutex_lock(&lock);
+    if(!error)found_rules=locator_count;
+    if(!error)pscloud_notify("Live profile found %u places in %s. Check the values before changing them",found_rules,L.title);
+    else pscloud_notify("Live profile could not be relocated in %s: %s",L.title,error);
     if(!error) {for(unsigned k=0;k<locator_count;k++)L.addr[k]=locator_rules[k].address;L.count=locator_count;qsort(L.addr,L.count,sizeof *L.addr,address_order);}
     else L.count=0;
     pthread_mutex_unlock(&lock);free(buf);free(list);finish(error);return NULL;
@@ -482,7 +520,8 @@ int pscloud_live_resolve(const char *title,const char *type,const char *patterns
         else {
             if(!L.addr)L.addr=malloc(CAP*sizeof *L.addr);
             if(!L.addr)snprintf(message,max,"Not enough memory");
-            else {L.type=t;L.pid=pid;L.session=stamp;strcpy(L.title,running);L.has=0;L.count=0;L.value=0;result=start(resolve_main,"resolve",message,max);}
+            else {L.type=t;L.pid=pid;L.session=stamp;strcpy(L.title,running);L.has=0;L.count=0;L.value=0;
+                pscloud_log("EVENT","Relocating a Live profile in %s (%u places)",running,locator_count);result=start(resolve_main,"resolve",message,max);}
         }
     }
     pthread_mutex_unlock(&lock);return result;

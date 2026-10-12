@@ -2114,7 +2114,7 @@ static void action(int sock,const char *path,const char *form) {
             options.not_installed=!parameter(form,"not_installed",flag,sizeof flag)&&!strcmp(flag,"yes");
         }
         int bad=pscloud_share_game(home,root,appmeta,chosen.user,chosen.title,exporting?0:checking?1:2,data,size,&options,published,sha);free(data);
-        if(!bad&&restoring)sync_after_restore(chosen.user,chosen.title,file);
+        if(!bad&&restoring) {sync_after_restore(chosen.user,chosen.title,file);pscloud_notify("Save replaced for %s. The previous save is kept for rollback",chosen.title);}
         if(!bad&&checking) {char proof[240],proofpath[1800];snprintf(proof,sizeof proof,"%s.check-%s",file,chosen.user);snprintf(proofpath,sizeof proofpath,"%s/%s",directory,proof);bad=atomic_config(proofpath,sha);}
         if(dir>=0)close(dir);
         if(bad) {
@@ -2353,6 +2353,7 @@ static void editor_profiles_get(int sock) {
     free(text);free(shown);free(json);
 }
 static void editor_profiles_store(int sock,const char *query,const char *text,size_t size) {
+    pscloud_log("EVENT","Dashboard action: save edit profiles (%zu bytes)",size);
     char expected[65];size_t old_size=0;char *old=editor_profile_read(&old_size);
     if(!old) {message(sock,500,"Existing profiles could not be read; nothing overwritten");return;}
     int mismatch=parameter(query,"revision",expected,sizeof expected)||strlen(expected)!=64||pscloud_verify_hash((const unsigned char *)old,old_size,expected);free(old);
@@ -2550,20 +2551,22 @@ static void serve(int sock,int *locked) {
     }
     /* Live mode: find and change a number in the running game (Edit tab). */
     if(!strcmp(method,"GET")&&!strcmp(url,"/api/live/locator")) {
+        pscloud_log("EVENT","Dashboard action: Retain profile");
         char id[16],title[16],version[32],*end=NULL;
         if(parameter(query,"id",id,sizeof id)) {message(sock,400,"Choose a saved value");return;}
         unsigned long group=strtoul(id,&end,10);
         if(!*id||*end||!group||group>0xffffffffUL||pscloud_live_game(title)||pscloud_app_version(appmeta,title,version,sizeof version)) {message(sock,400,"Exact game version could not be identified");return;}
-        char json[14000];if(pscloud_live_locator((unsigned)group,version,json,sizeof json))message(sock,400,"Saved value expired or its context is too weak for a portable signature");else respond(sock,200,"application/json",json,strlen(json));return;
+        char json[16000];if(pscloud_live_locator((unsigned)group,version,json,sizeof json))message(sock,400,json);else respond(sock,200,"application/json",json,strlen(json));return;
     }
     if(!strcmp(method,"GET") && !strcmp(url,"/api/live/pins")) {char json[20000];pscloud_live_pins_json(json,sizeof json);respond(sock,200,"application/json",json,strlen(json));return;}
     if(!strcmp(method,"GET") && !strcmp(url,"/api/live/state")) {char json[1024];pscloud_live_state_json(json,sizeof json);respond(sock,200,"application/json",json,strlen(json));return;}
     if(!strcmp(method,"GET") && !strcmp(url,"/api/live/list")) {char *json=malloc(65536);if(!json) {message(sock,500,"Out of memory");return;}pscloud_live_list_json(json,65536,200);respond(sock,200,"application/json",json,strlen(json));free(json);return;}
     if(!strcmp(method,"POST") && !strncmp(url,"/api/live/",10)) {
+        pscloud_log("EVENT","Dashboard action: %s",url);
         char type[16]="",value[64]="",address[32]="",msg[300];int bad=-1;
         parameter(body,"type",type,sizeof type);parameter(body,"value",value,sizeof value);parameter(body,"address",address,sizeof address);
         if(!strcmp(url,"/api/live/resolve")) {
-            char title[16],version[32],actual[32],patterns[5000];
+            char title[16],version[32],actual[32],patterns[8192];
             if(parameter(body,"title",title,sizeof title)||!pscloud_title_valid(title)||parameter(body,"version",version,sizeof version)||parameter(body,"patterns",patterns,sizeof patterns)||pscloud_app_version(appmeta,title,actual,sizeof actual)||strcmp(actual,version)) {message(sock,400,"Profile game version differs or cannot be verified");return;}
             bad=pscloud_live_resolve(title,type,patterns,msg,sizeof msg);
             if(bad)message(sock,400,msg);else {char json[500],shown[320];escaped(shown,sizeof shown,msg);snprintf(json,sizeof json,"{\"ok\":true,\"message\":\"%s\",\"search_sequence\":%u}",shown,pscloud_live_sequence());respond(sock,200,"application/json",json,strlen(json));}return;
