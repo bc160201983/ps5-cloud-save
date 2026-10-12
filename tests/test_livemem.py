@@ -164,3 +164,42 @@ class LiveMemoryTests(unittest.TestCase):
         for value in (float('nan'), float('inf'), 1e300):
             self.edit('set', value, id=group, ok=False)
         self.assertEqual(self.values(), [1234, 1234])
+
+    def test_batch_updates_frozen_targets_and_blocks_different_type_overlap(self):
+        group = self.pin()
+        self.edit('freeze', 2000, id=group)
+        self.call('scan', b'int16', 2000)
+        self.wait_for(lambda: not self.json('state')['busy'])
+        self.addresses = [p['address'] for p in self.json('list')['places']]
+        self.edit('set', 300, ok=False)
+        self.assertEqual(self.values(), [2000, 2000])
+        self.call('scan', b'int32', 2000)
+        self.wait_for(lambda: not self.json('state')['busy'])
+        self.addresses = [p['address'] for p in self.json('list')['places']]
+        self.edit('set', 2500)
+        self.game_write(5)
+        self.wait_for(lambda: self.values() == [2500, 2500])
+
+    def test_decimal_freeze_and_float_overflow(self):
+        with self.memory.open('r+b') as f:
+            for offset in (256, 1024):
+                f.seek(offset)
+                f.write(struct.pack('<f', 12.5))
+        self.call('scan', b'float', 12.5)
+        self.wait_for(lambda: not self.json('state')['busy'])
+        self.addresses = [p['address'] for p in self.json('list')['places']]
+        group = self.pin(b'Health')
+        before = self.memory.read_bytes()
+        self.edit('freeze', 1e39, id=group, ok=False)
+        self.assertEqual(self.memory.read_bytes(), before)
+        self.edit('freeze', 25.25, id=group)
+        with self.memory.open('r+b') as f:
+            for offset in (256, 1024):
+                f.seek(offset)
+                f.write(struct.pack('<f', 2.5))
+        def values():
+            data = self.memory.read_bytes()
+            return [struct.unpack_from('<f', data, o)[0] for o in (256, 1024)]
+        self.wait_for(lambda: values() == [25.25, 25.25])
+        self.edit('add', 0.25, id=group)
+        self.assertEqual(values(), [25.5, 25.5])

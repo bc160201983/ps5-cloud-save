@@ -18,6 +18,8 @@ The current overview is in [README.md](README.md).
   are tied to the process ID, title and process start time. Unreadable or rejected
   writes stop that group's freeze. Overlapping groups are refused. PSCloud waits
   for Live workers to finish when stopping.
+- Batch changes to already-frozen places update their held targets too. Results
+  from a different numeric type cannot overwrite overlapping saved places.
 - Host fixtures cover batches, bounds, saved groups across searches, freeze,
   adjustments, unfreeze, invalid addresses and session expiry. Browser syntax
   and request fixtures pass locally. Linux host and payload validation run in CI.

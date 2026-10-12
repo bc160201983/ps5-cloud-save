@@ -178,7 +178,7 @@ static void *freeze_main(void *arg) {
             for(unsigned j=0;j<p->n;j++) {
                 double now;
                 double held=p->type==T_FLOAT?(double)(float)p->target[j]:p->target[j];
-                if(read_value(p->type,p->addr[j],&now)||!session_ok()||(now!=held&&write_value(p->type,p->addr[j],p->target[j]))) {
+                if(read_value(p->type,p->addr[j],&now)||(now!=held&&write_value(p->type,p->addr[j],p->target[j]))) {
                     if(i<pin_count) {p->frozen=0;snprintf(p->error,sizeof p->error,"Freeze stopped: a place could not be read or written. Check the game and search again.");}
                     break;
                 }
@@ -325,6 +325,12 @@ int pscloud_live_edit(const char *addresses,unsigned id,const char *action,doubl
     if(!strcmp(action,"unfreeze")&&p) {p->frozen=0;p->error[0]=0;result=0;snprintf(message,max,"Value unfrozen");goto done;}
     int add=!strcmp(action,"add"),freeze=!strcmp(action,"freeze");
     if((strcmp(action,"set")&&!add&&!freeze)||(freeze&&!p)||!finite(value)) {snprintf(message,max,"Choose Set, Increase/decrease, Freeze or Unfreeze");goto done;}
+    if(!p)for(unsigned k=0;k<pin_count;k++)for(unsigned j=0;j<pins[k].n;j++)for(unsigned i=0;i<n;i++) {
+        uint64_t a=addr[i],b=pins[k].addr[j];
+        if(a<b+TYPE_SIZE[pins[k].type]&&b<a+TYPE_SIZE[type]&&(a!=b||type!=pins[k].type)) {
+            snprintf(message,max,"These places overlap a saved value with a different type. Use or remove the saved value first; nothing changed.");goto done;
+        }
+    }
     for(unsigned i=0;i<n;i++) {
         double current;if(read_value(type,addr[i],&current)) {if(p)p->frozen=0;snprintf(message,max,"A place is unreadable; no values were changed");goto done;}
         target[i]=add?(p&&p->frozen?p->target[i]:current)+value:value;
