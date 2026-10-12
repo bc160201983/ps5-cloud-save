@@ -723,6 +723,43 @@ const out=SaveLab.write(pkg,[{...hits[0],value:99999}]);fs.writeFileSync(process
         self.assertIn(struct.pack('<i',99999),written)
         self.assertEqual(struct.unpack('<I',written[8:12])[0],zlib.crc32(written[12:]))  # the game's own checksum is right
 
+    def test_import_a_save_folder_zip_from_a_save_site(self):
+        """A deflated ZIP of a decrypted save folder (sce_sys/param.sfo plus game files), as save
+        tools export them, is converted by the page (run with node) and written by the dashboard."""
+        import test_portable,zipfile,shutil,tempfile as tf
+        node=shutil.which('node')
+        if not node:self.skipTest('node not installed')
+        self.process.terminate();self.process.communicate(timeout=5)
+        fixture=self.fixture.root/'generic'
+        test_portable.PortableTests.sfo(self,fixture/SLOT,SLOT,b'\x44'*8)
+        metadata=self.root/'appmeta/PPSA02433';metadata.mkdir(parents=True)
+        (metadata/'param.json').write_text(json.dumps({'contentVersion':'01.000.002'}))
+        self.start_server(PSCLOUD_TEST_GENERIC_PAYLOADS=str(fixture))
+        sfo=self.sfo_bytes([('ACCOUNT_ID',0x0004,b'\x77'*8,8),('MAINTITLE',0x0204,b'Crash 4',128),('SAVEDATA_DIRECTORY',0x0204,SLOT.encode(),32),('SUBTITLE',0x0204,b'106%',128),('TITLE_ID',0x0204,b'PPSA02433',12)])
+        with tf.TemporaryDirectory() as tmp:
+            community=Path(tmp,'crash-106-percent.zip')
+            with zipfile.ZipFile(community,'w',zipfile.ZIP_DEFLATED) as z:
+                z.writestr('Crash 106%/'+SLOT+'/sce_sys/param.sfo',sfo);z.writestr('Crash 106%/'+SLOT+'/sce_sys/keystone',b'K'*96)
+                z.writestr('Crash 106%/'+SLOT+'/ue4savegame.dpx.sav',b'completed everything'*50)
+            script=open(ROOT/'ps5/ui.html',encoding='utf-8').read()
+            def block(name):
+                start=script.index('const '+name+'=(()=>{');return script[start:script.index('})();',start)+5]
+            Path(tmp,'convert.js').write_text(block('SaveLab')+'\n'+block('SaveImport')+"""
+const fs=require('fs');(async()=>{const files=await SaveImport.unzip(new Uint8Array(fs.readFileSync(process.argv[2])));
+const found=SaveImport.slots(files);const pkg=SaveImport.pack(found,'7.00');fs.writeFileSync(process.argv[3],Buffer.from(pkg.bytes));console.log(pkg.title,pkg.slots.join(','));})().catch(e=>{console.error(e);process.exit(1);});
+""",encoding='utf-8')
+            run=subprocess.run([node,str(Path(tmp,'convert.js')),str(community),str(Path(tmp,'package.zip'))],capture_output=True,text=True,timeout=60)
+            self.assertEqual(run.returncode,0,run.stderr);self.assertEqual(run.stdout.strip(),'PPSA02433 '+SLOT)
+            package=Path(tmp,'package.zip').read_bytes()
+        c=http.client.HTTPConnection('127.0.0.1',self.port,timeout=15)
+        c.request('POST','/api/share-import?'+urllib.parse.urlencode(self.selected()),package,{'Cookie':self.cookie,'X-PSCloud-Request':'1','Content-Type':'application/zip'})
+        response=c.getresponse();result=json.loads(response.read());self.assertEqual(response.status,200,result);c.close()
+        context=self.selected(closed='yes',file=result['file'],sha256=result['sha256'],allow_version='yes')
+        status,check=self.request('/api/share-check',context);self.assertEqual(status,200,check)
+        status,done=self.request('/api/share-restore',dict(context,confirm='yes'));self.assertEqual(status,200,done)
+        self.assertEqual((fixture/SLOT/'ue4savegame.dpx.sav').read_bytes(),b'completed everything'*50)
+        self.assertIn(b'\x44'*8,(fixture/SLOT/'sce_sys/param.sfo').read_bytes())  # this console's own identity kept for an existing slot
+
     def test_sync_with_a_linked_profile_from_another_console(self):
         import test_sharing,test_portable
         self.process.terminate();self.process.communicate(timeout=5)
