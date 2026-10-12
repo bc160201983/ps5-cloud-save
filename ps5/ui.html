@@ -801,14 +801,30 @@ $('labCompare').addEventListener('click',()=>{const box=$('labDiff');box.replace
  for(const x of d){const row=el('div','labrow');row.append(el('span','grow',slotName(x.slot)+' · '+x.file),el('code','',x.note||('@'+x.off+' · '+x.len+' bytes')),el('strong','',x.int32?x.int32[0]+' → '+x.int32[1]:''),el('span','subtitle',x.name||''));box.append(row);}});
 async function editorClosedCheck(){const r=await api('/api/running');if(!r||!r.known||r.running)throw Error(r&&r.running?'Close the game before checking or replacing its save.':'Game closure cannot be verified. No save replacement will run.');}
 /* Named fields: decoded text formats of the loaded save; edits rebuild the changed files. */
-const fields={files:[],edits:[]};
+const fields={files:[],edits:[],profiles:[]};
+/* Save profiles for this game and version, with the values they find in the loaded save: named
+ * fields for binary saves that have been taught once (for example Ghost of Tsushima). */
+function fieldsProfiles(pkg){const out=[];
+ for(const p of profileBook.items){if(p.kind!=='save'||p.title!==pkg.title||p.version!==pkg.version)continue;
+  try{out.push({profile:p,values:EditorProfiles.resolve(p,pkg,0,'add').map(e=>e.value)});}catch(e){out.push({profile:p,error:e.message});}}
+ return out;}
 async function fieldsLoad(){const sel=$('fieldFile');if(!sel)return;sel.onchange=fieldsRender;$('fieldSearch').oninput=fieldsRender;const pkg=lab.loads.at(-1)&&lab.loads.at(-1).pkg;fields.files=[];fields.edits=[];sel.replaceChildren();
  if(!pkg){fieldsRender();return;}
+ try{await editorProfilesLoad();}catch(e){}fields.profiles=fieldsProfiles(pkg);
+ if(fields.profiles.length){const o=document.createElement('option');o.value='profiles';o.textContent='Your save profiles for this game · '+fields.profiles.length;sel.append(o);}
  for(const s of pkg.slots)for(const f of s.files){if(f.size>32*1024*1024)continue;const d=await SaveFields.decode(pkg.bytes.slice(f.start,f.start+f.size));
   fields.files.push({slot:s.slot,file:f.name,decoded:d});const o=document.createElement('option');o.value=String(fields.files.length-1);
   o.textContent=s.slot+' / '+f.name+' · '+(d.fields.length?d.kind+(d.gzip?' (compressed)':'')+' · '+d.fields.length+' fields':'binary: use Find a value');sel.append(o);}
- const best=fields.files.findIndex(x=>x.decoded.fields.length);if(best>=0)sel.value=String(best);fieldsRender();}
+ const best=fields.files.findIndex(x=>x.decoded.fields.length);if(fields.profiles.length)sel.value='profiles';else if(best>=0)sel.value=String(best);fieldsRender();}
 function fieldsRender(){const box=$('fieldList'),note=$('fieldNote'),queued=$('fieldEdits');if(!box)return;box.replaceChildren();queued.replaceChildren();
+ if($('fieldFile').value==='profiles'){note.textContent='Values found by your save profiles in the loaded save. Set queues the change under 3 · Your changes.';
+  const q=$('fieldSearch').value.trim().toLowerCase();
+  for(const x of fields.profiles.filter(x=>!q||x.profile.name.toLowerCase().includes(q))){const row=el('div','labrow');
+   if(x.error){row.append(el('span','',x.profile.name+': '+x.error));box.append(row);continue;}
+   const shown=[...new Set(x.values.map(String))];const input=el('input');input.value=shown.length===1?shown[0]:'';input.style.maxWidth='140px';input.setAttribute('aria-label','New value for '+x.profile.name);
+   const set=el('button','ghost','Set');set.onclick=()=>editorProfilesQueue(x.profile,input.value,'set');
+   row.append(el('span','',x.profile.name+' = '+shown.join(' / ')+(x.values.length>1?' ('+x.values.length+' fields)':'')),input,set);box.append(row);}
+  return;}
  const cur=fields.files[+$('fieldFile').value];note.textContent=cur?(cur.decoded.note||''):'';
  if(cur&&cur.decoded.fields.length){const q=$('fieldSearch').value.trim().toLowerCase();const list=cur.decoded.fields.filter(f=>!q||f.path.toLowerCase().includes(q)||f.value===q);
   for(const f of list.slice(0,200)){const row=el('div','labrow'),input=el('input');input.value=f.value;input.style.maxWidth='140px';input.setAttribute('aria-label','New value for '+f.path);

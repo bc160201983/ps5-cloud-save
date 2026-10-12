@@ -3,6 +3,15 @@
 Every release, newest first, with what was verified on a console and what was not.
 The current overview is in [README.md](README.md).
 
+## Version 0.34.21 — your save profiles as named fields
+
+- Binary saves showed nothing in Named fields (for example Ghost of Tsushima). The list now
+  starts with **Your save profiles for this game**: every save profile for the loaded game and
+  version, with the values it finds in the loaded save (for Ghost of Tsushima: LINEN and
+  Supplies = 6112 / 9999 / 9999 / 9999 / 9949, steel = 9987 / 9999), a box for a new value and
+  Set, which queues the change as before. A profile that no longer matches says why.
+- Checked with the profiles stored on the 11.40 console and an exported Ghost of Tsushima save.
+
 ## Version 0.34.20 — Unreal Engine saves in the universal editor
 
 - **Unreal Engine 4 GVAS saves** (`ue4savegame.dpx.sav` and similar) now list their values by
