@@ -75,9 +75,17 @@ static int find_game(char title[16],uint64_t *session) {
     if(stamp) {FILE *f=fopen(stamp,"r");unsigned long long v=0;if(!f)return -1;int ok=fscanf(f,"%llu",&v)==1;fclose(f);if(!ok)return -1;*session=v;}
     strcpy(title,"PPSA02433");return 4242;
 }
-static int regions(int pid,struct region **out,size_t *n) {
+static int regions_all(int pid,struct region **out,size_t *n,int writable_only) {
     (void)pid;int fd=open(getenv("PSCLOUD_TEST_LIVE"),O_RDONLY);off_t size=fd<0?0:lseek(fd,0,SEEK_END);if(fd>=0)close(fd);
     if(size<=0)return -1;
+    if(!writable_only&&getenv("PSCLOUD_TEST_UNNAMED")) {
+        /* As on the 11.40 console: no names; code (r-x) first, then the program's data (rw). */
+        *out=calloc(3,sizeof **out);if(!*out)return -1;
+        (*out)[0].start=FAKE_BASE-0x100000;(*out)[0].end=FAKE_BASE-0x10000;(*out)[0].prot=5;
+        (*out)[1].start=FAKE_BASE;(*out)[1].end=FAKE_BASE+(uint64_t)size;(*out)[1].prot=3;
+        (*out)[2].start=FAKE_BASE+0x40000000ULL;(*out)[2].end=FAKE_BASE+0x40010000ULL;(*out)[2].prot=5;
+        *n=3;return 0;
+    }
     *out=malloc(sizeof **out);if(!*out)return -1;(*out)[0].start=FAKE_BASE;(*out)[0].end=FAKE_BASE+(uint64_t)size;(*out)[0].prot=3;(*out)[0].type=0;snprintf((*out)[0].name,sizeof (*out)[0].name,"eboot.bin");*n=1;return 0;
 }
 /* PSCLOUD_TEST_LIVE_UNREADABLE="start:end" (file offsets) makes reads touching that range fail. */
@@ -85,6 +93,7 @@ static int unreadable(uint64_t a,size_t len) {
     const char *r=getenv("PSCLOUD_TEST_LIVE_UNREADABLE");unsigned long long s,e;
     return r&&sscanf(r,"%llu:%llu",&s,&e)==2&&a-FAKE_BASE<e&&s<a-FAKE_BASE+len;
 }
+static int regions(int pid,struct region **out,size_t *n) {return regions_all(pid,out,n,1);}
 static int mem_read(int pid,uint64_t a,void *buf,size_t len) {(void)pid;if(unreadable(a,len))return -1;int fd=open(getenv("PSCLOUD_TEST_LIVE"),O_RDONLY);if(fd<0)return -1;ssize_t r=pread(fd,buf,len,(off_t)(a-FAKE_BASE));close(fd);return r==(ssize_t)len?0:-1;}
 static int mem_write(int pid,uint64_t a,const void *buf,size_t len) {(void)pid;int fd=open(getenv("PSCLOUD_TEST_LIVE"),O_WRONLY);if(fd<0)return -1;ssize_t r=pwrite(fd,buf,len,(off_t)(a-FAKE_BASE));close(fd);return r==(ssize_t)len?0:-1;}
 static int mem_read_back(int pid,uint64_t a,void *buf,size_t len) {return mem_read(pid,a,buf,len);}
@@ -106,7 +115,7 @@ static int find_game(char title[16],uint64_t *session) {
     }
     free(buffer);return found;
 }
-static int regions(int pid,struct region **out,size_t *n) {
+static int regions_all(int pid,struct region **out,size_t *n,int writable_only) {
     int mib[4]={CTL_KERN,KERN_PROC,KERN_PROC_VMMAP,pid};size_t size=0;
     if(sysctl(mib,4,NULL,&size,NULL,0)||!size)return -1;
     size=size*4/3;char *buffer=malloc(size);if(!buffer)return -1;
@@ -116,7 +125,7 @@ static int regions(int pid,struct region **out,size_t *n) {
         struct kinfo_vmentry *e=(struct kinfo_vmentry *)(buffer+offset);
         if(e->kve_structsize<=0||offset+(size_t)e->kve_structsize>size)break;
         offset+=(size_t)e->kve_structsize;
-        if((e->kve_protection&(KVME_PROT_READ|KVME_PROT_WRITE))!=(KVME_PROT_READ|KVME_PROT_WRITE))continue;
+        if(writable_only&&(e->kve_protection&(KVME_PROT_READ|KVME_PROT_WRITE))!=(KVME_PROT_READ|KVME_PROT_WRITE))continue;
         if(count==cap) {struct region *bigger=realloc(list,cap*2*sizeof *list);if(!bigger)break;list=bigger;cap*=2;}
         list[count].start=e->kve_start;list[count].end=e->kve_end;list[count].prot=e->kve_protection;list[count].type=e->kve_type;
         {const char *base=strrchr(e->kve_path,'/');snprintf(list[count].name,sizeof list[count].name,"%s",base?base+1:e->kve_path);}
@@ -124,6 +133,7 @@ static int regions(int pid,struct region **out,size_t *n) {
     }
     free(buffer);if(!list)return -1;*out=list;*n=count;return 0;
 }
+static int regions(int pid,struct region **out,size_t *n) {return regions_all(pid,out,n,1);}
 static int mem_read(int pid,uint64_t a,void *buf,size_t len) {return mdbg_copyout(pid,(intptr_t)a,buf,len);}
 /* Writes: the debug service first; if the game's memory refuses it, the SDK writes to the
  * resident page behind the address (it checks the page table, so unmapped addresses fail). */
@@ -619,7 +629,12 @@ int pscloud_live_frame_probe(char *out,size_t max) {
     pthread_mutex_unlock(&lock);
     if(pid<0) {snprintf(out,max,"{\"ok\":false,\"message\":\"Start the game first\"}");return -1;}
     struct region *list=NULL;size_t n=0;
-    if(regions(pid,&list,&n)) {snprintf(out,max,"{\"ok\":false,\"message\":\"The game's memory map could not be read\"}");return -1;}
+    if(regions_all(pid,&list,&n,0)) {snprintf(out,max,"{\"ok\":false,\"message\":\"The game's memory map could not be read\"}");return -1;}
+    /* The start of the map, so the layout can be studied when names are missing (11.40). */
+    char map[6000];size_t mp=0;
+    for(size_t i=0;i<n&&i<60&&mp+120<sizeof map;i++)
+        mp+=(size_t)snprintf(map+mp,sizeof map-mp,"%s[\"0x%llx\",\"0x%llx\",%d,%d]",i?",":"",(unsigned long long)list[i].start,(unsigned long long)list[i].end,list[i].prot,list[i].type);
+    map[mp]=0;
     /* Module list for the report, and the game's own writable data. */
     size_t pos=(size_t)snprintf(out,max,"{\"ok\":true,\"title\":\"%s\",\"modules\":[",title);unsigned names=0;
     uint64_t total=0;size_t picked=0;
@@ -629,9 +644,22 @@ int pscloud_live_frame_probe(char *out,size_t max) {
             char clean[40];size_t k=0;for(const char *c=list[i].name;*c&&k+1<sizeof clean;c++)if(*c!='"'&&*c!='\\'&&(unsigned char)*c>=32)clean[k++]=*c;clean[k]=0;
             pos+=(size_t)snprintf(out+pos,max-pos,"%s\"%s\"",names?",":"",clean);names++;
         }
-        if(strstr(list[i].name,"eboot")&&total+(list[i].end-list[i].start)<=PROBE_LIMIT) {list[picked++]=list[i];total+=list[i].end-list[i].start;}
+        if(strstr(list[i].name,"eboot")&&(list[i].prot&3)==3&&total+(list[i].end-list[i].start)<=PROBE_LIMIT) {list[picked++]=list[i];total+=list[i].end-list[i].start;}
     }
-    if(!picked) {free(list);snprintf(out+pos,max-pos,"],\"read_kib\":0,\"candidates\":[],\"message\":\"No writable eboot.bin data was found\"}");return 0;}
+    const char *how="by name";
+    if(!picked) {
+        /* No names: the program's code is the first executable region and its own data is the
+         * writable regions right after it, up to the next executable region. */
+        how="by position";size_t i=0;while(i<n&&!(list[i].prot&4))i++;
+        int data_seen=0;
+        for(i++;i<n;i++) {
+            if(list[i].prot&4) {if(data_seen)break;continue;}
+            if((list[i].prot&3)!=3)continue;
+            uint64_t len=list[i].end-list[i].start;if(total+len>PROBE_LIMIT)break;
+            list[picked++]=list[i];total+=len;data_seen=1;
+        }
+    }
+    if(!picked) {free(list);snprintf(out+pos,max-pos,"],\"map\":[%s],\"read_kib\":0,\"candidates\":[],\"message\":\"The game's own data could not be located\"}",map);return 0;}
     unsigned char *snap=malloc((size_t)total);struct probe_hit *hits=malloc(PROBE_CANDIDATES*sizeof *hits);size_t count=0,unread=0;
     if(!snap||!hits) {free(snap);free(hits);free(list);snprintf(out,max,"{\"ok\":false,\"message\":\"Not enough memory for the probe\"}");return -1;}
     /* Pass 1: snapshot. */
@@ -653,7 +681,7 @@ int pscloud_live_frame_probe(char *out,size_t max) {
         uint32_t slack=d1/5>3?d1/5:3;if(d2>=10&&d2<=300&&(d2>d1?d2-d1:d1-d2)<=slack) {hits[kept]=hits[k];hits[kept].v2=v;kept++;}}
     t2=now_seconds();
     double span=t2-t1>0.05?t2-t1:1.0;(void)t0;
-    pos+=(size_t)snprintf(out+pos,max-pos,"],\"read_kib\":%llu,\"unread_kib\":%llu,\"interval_ms\":%u,\"candidates\":[",(unsigned long long)(total>>10),(unsigned long long)(unread>>10),probe_interval_ms());
+    pos+=(size_t)snprintf(out+pos,max-pos,"],\"located\":\"%s\",\"regions_read\":%zu,\"map\":[%s],\"read_kib\":%llu,\"unread_kib\":%llu,\"interval_ms\":%u,\"candidates\":[",how,picked,map,(unsigned long long)(total>>10),(unsigned long long)(unread>>10),probe_interval_ms());
     for(size_t k=0;k<kept&&k<64&&pos+128<max;k++)
         pos+=(size_t)snprintf(out+pos,max-pos,"%s{\"address\":\"0x%llx\",\"value\":%u,\"per_second\":%.1f}",k?",":"",(unsigned long long)hits[k].address,hits[k].v2,(double)(hits[k].v2-hits[k].v1)/span);
     snprintf(out+pos,max-pos,"],\"total_candidates\":%zu}",kept);

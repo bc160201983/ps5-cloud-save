@@ -3,6 +3,17 @@
 Every release, newest first, with what was verified on a console and what was not.
 The current overview is in [README.md](README.md).
 
+## Version 0.34.17 — frame probe finds the game's data without module names
+
+- On the 11.40 console the memory map gives no module names, so 0.34.16's frame probe
+  found nothing to read (tested with PPSA03210). The probe now locates the game's own data by
+  position when names are missing: the writable regions right after the first executable
+  region (the program's code), up to the next executable region, at most 128 MiB.
+- The report includes how the data was located, how many regions were read, and the first
+  60 entries of the game's memory map (start, end, protection, type) for further study.
+- Host test: an unnamed layout with code, data and a later library is located by position and
+  the counter is still found.
+
 ## Version 0.34.16 — frame counter diagnostic (first step toward an FPS display)
 
 - New read-only diagnostic `GET /api/live/frame-probe` for the running game. It lists the

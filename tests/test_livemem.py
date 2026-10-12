@@ -347,6 +347,13 @@ class LiveMemoryTests(unittest.TestCase):
             self.lib.pscloud_live_allow_freeze(1)
 
     def test_frame_probe_finds_a_steady_counter_and_only_reads(self):
+        self.check_frame_probe(named=True)
+
+    def test_frame_probe_locates_unnamed_game_data_by_position(self):
+        self.check_frame_probe(named=False)
+
+    def check_frame_probe(self, named):
+        if not named: os.environ['PSCLOUD_TEST_UNNAMED'] = '1'
         import threading
         self.lib.pscloud_live_frame_probe.argtypes = [ctypes.c_void_p, ctypes.c_size_t]
         os.environ['PSCLOUD_TEST_PROBE_MS'] = '500'
@@ -367,9 +374,10 @@ class LiveMemoryTests(unittest.TestCase):
             out = ctypes.create_string_buffer(16384)
             self.assertEqual(self.lib.pscloud_live_frame_probe(out, len(out)), 0, out.value)
         finally:
-            stop.set(); worker.join(); os.environ.pop('PSCLOUD_TEST_PROBE_MS', None)
+            stop.set(); worker.join(); os.environ.pop('PSCLOUD_TEST_PROBE_MS', None); os.environ.pop('PSCLOUD_TEST_UNNAMED', None)
         report = json.loads(out.value)
-        self.assertIn('eboot.bin', report['modules'])
+        self.assertEqual(report['located'], 'by name' if named else 'by position')
+        if named: self.assertIn('eboot.bin', report['modules'])
         self.assertEqual([c['address'] for c in report['candidates']], ['0x10001000'])
         actual = len(drawn) / drawn[-1]
         self.assertLess(abs(report['candidates'][0]['per_second'] - actual), actual * 0.3, (report, actual))

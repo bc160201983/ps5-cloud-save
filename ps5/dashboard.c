@@ -2594,8 +2594,8 @@ static void serve(int sock,int *locked) {
     }
     if(!strcmp(method,"GET") && !strcmp(url,"/api/live/frame-probe")) {
         pscloud_log("EVENT","Dashboard action: frame counter diagnostic");
-        char *json=malloc(16384);if(!json) {message(sock,500,"Out of memory");return;}
-        int bad=pscloud_live_frame_probe(json,16384);respond(sock,bad?400:200,"application/json",json,strlen(json));free(json);return;
+        char *json=malloc(32768);if(!json) {message(sock,500,"Out of memory");return;}
+        int bad=pscloud_live_frame_probe(json,32768);respond(sock,bad?400:200,"application/json",json,strlen(json));free(json);return;
     }
     if(!strcmp(method,"GET") && !strcmp(url,"/api/live/pins")) {char json[20000];pscloud_live_pins_json(json,sizeof json);respond(sock,200,"application/json",json,strlen(json));return;}
     if(!strcmp(method,"GET") && !strcmp(url,"/api/live/state")) {char json[1024];pscloud_live_state_json(json,sizeof json);respond(sock,200,"application/json",json,strlen(json));return;}
