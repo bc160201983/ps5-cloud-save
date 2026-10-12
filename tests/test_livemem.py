@@ -345,3 +345,32 @@ class LiveMemoryTests(unittest.TestCase):
             self.assertEqual(self.values(), [2000, 2000])
         finally:
             self.lib.pscloud_live_allow_freeze(1)
+
+    def test_frame_probe_finds_a_steady_counter_and_only_reads(self):
+        import threading
+        self.lib.pscloud_live_frame_probe.argtypes = [ctypes.c_void_p, ctypes.c_size_t]
+        os.environ['PSCLOUD_TEST_PROBE_MS'] = '500'
+        stop = threading.Event()
+        drawn = []
+        def frames():  # the "game" draws frames as fast as this PC's timer allows (about 30-60 per second)
+            n = 1000
+            started = time.monotonic()
+            while not stop.is_set():
+                drawn.append(time.monotonic()-started)
+                n += 1
+                with self.memory.open('r+b') as f:
+                    f.seek(4096); f.write(struct.pack('<I', n))
+                time.sleep(1/60)
+        worker = threading.Thread(target=frames); worker.start()
+        try:
+            time.sleep(0.2)
+            out = ctypes.create_string_buffer(16384)
+            self.assertEqual(self.lib.pscloud_live_frame_probe(out, len(out)), 0, out.value)
+        finally:
+            stop.set(); worker.join(); os.environ.pop('PSCLOUD_TEST_PROBE_MS', None)
+        report = json.loads(out.value)
+        self.assertIn('eboot.bin', report['modules'])
+        self.assertEqual([c['address'] for c in report['candidates']], ['0x10001000'])
+        actual = len(drawn) / drawn[-1]
+        self.assertLess(abs(report['candidates'][0]['per_second'] - actual), actual * 0.3, (report, actual))
+        self.assertEqual(self.values(), [1234, 1234])  # the probe never writes

@@ -23,4 +23,6 @@ unsigned pscloud_live_sequence(void);
 void pscloud_live_set_trace(const char *path);
 /* Freeze is refused unless switched on (off in the dashboard; see livemem.c). */
 void pscloud_live_allow_freeze(int on);
+/* Read-only diagnostic: frame counter candidates in the game's own data, as JSON. */
+int pscloud_live_frame_probe(char *out,size_t max);
 #endif

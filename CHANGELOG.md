@@ -3,6 +3,18 @@
 Every release, newest first, with what was verified on a console and what was not.
 The current overview is in [README.md](README.md).
 
+## Version 0.34.16 — frame counter diagnostic (first step toward an FPS display)
+
+- New read-only diagnostic `GET /api/live/frame-probe` for the running game. It lists the
+  game's loaded modules, then reads the game's own writable data (eboot.bin, up to 128 MiB)
+  three times about a second apart and reports 32-bit values that rose by a steady 10-300 per
+  second: frame counter candidates, with their rate per second. Nothing is written to the
+  game; the result is also saved as `/data/pscloud/frame-probe.txt` and logged.
+- If one candidate matches the game's frame rate, a later version can show live FPS on the
+  dashboard by reading that counter once a second, without hooking the game.
+- Host test: a counter bumped by a background thread is the only candidate and its rate
+  matches; memory is unchanged. Not yet run on a console.
+
 ## Version 0.34.15 — PC save format check removed
 
 - The file-format check added in 0.34.14 is removed at the owner's request. Use a PC save

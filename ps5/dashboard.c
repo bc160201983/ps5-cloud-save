@@ -2592,6 +2592,11 @@ static void serve(int sock,int *locked) {
         if(!*id||*end||!group||group>0xffffffffUL||pscloud_live_game(title)||pscloud_app_version(appmeta,title,version,sizeof version)) {message(sock,400,"Exact game version could not be identified");return;}
         char json[16000];if(pscloud_live_locator((unsigned)group,version,json,sizeof json))message(sock,400,json);else respond(sock,200,"application/json",json,strlen(json));return;
     }
+    if(!strcmp(method,"GET") && !strcmp(url,"/api/live/frame-probe")) {
+        pscloud_log("EVENT","Dashboard action: frame counter diagnostic");
+        char *json=malloc(16384);if(!json) {message(sock,500,"Out of memory");return;}
+        int bad=pscloud_live_frame_probe(json,16384);respond(sock,bad?400:200,"application/json",json,strlen(json));free(json);return;
+    }
     if(!strcmp(method,"GET") && !strcmp(url,"/api/live/pins")) {char json[20000];pscloud_live_pins_json(json,sizeof json);respond(sock,200,"application/json",json,strlen(json));return;}
     if(!strcmp(method,"GET") && !strcmp(url,"/api/live/state")) {char json[1024];pscloud_live_state_json(json,sizeof json);respond(sock,200,"application/json",json,strlen(json));return;}
     if(!strcmp(method,"GET") && !strcmp(url,"/api/live/list")) {char *json=malloc(65536);if(!json) {message(sock,500,"Out of memory");return;}pscloud_live_list_json(json,65536,200);respond(sock,200,"application/json",json,strlen(json));free(json);return;}

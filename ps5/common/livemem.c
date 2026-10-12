@@ -43,7 +43,7 @@ static struct {
     uint64_t *addr;size_t count;double value;unsigned long long done,total;
 } L;
 
-struct region {uint64_t start,end;int prot,type;};
+struct region {uint64_t start,end;int prot,type;char name[40];};
 /* Search trace: before each memory region is read, one line naming it is written and forced
  * to storage, so after a console freeze the last line shows which region was being read. */
 static char trace_path[1100];static int trace_fd=-1;
@@ -78,7 +78,7 @@ static int find_game(char title[16],uint64_t *session) {
 static int regions(int pid,struct region **out,size_t *n) {
     (void)pid;int fd=open(getenv("PSCLOUD_TEST_LIVE"),O_RDONLY);off_t size=fd<0?0:lseek(fd,0,SEEK_END);if(fd>=0)close(fd);
     if(size<=0)return -1;
-    *out=malloc(sizeof **out);if(!*out)return -1;(*out)[0].start=FAKE_BASE;(*out)[0].end=FAKE_BASE+(uint64_t)size;(*out)[0].prot=3;(*out)[0].type=0;*n=1;return 0;
+    *out=malloc(sizeof **out);if(!*out)return -1;(*out)[0].start=FAKE_BASE;(*out)[0].end=FAKE_BASE+(uint64_t)size;(*out)[0].prot=3;(*out)[0].type=0;snprintf((*out)[0].name,sizeof (*out)[0].name,"eboot.bin");*n=1;return 0;
 }
 /* PSCLOUD_TEST_LIVE_UNREADABLE="start:end" (file offsets) makes reads touching that range fail. */
 static int unreadable(uint64_t a,size_t len) {
@@ -118,7 +118,9 @@ static int regions(int pid,struct region **out,size_t *n) {
         offset+=(size_t)e->kve_structsize;
         if((e->kve_protection&(KVME_PROT_READ|KVME_PROT_WRITE))!=(KVME_PROT_READ|KVME_PROT_WRITE))continue;
         if(count==cap) {struct region *bigger=realloc(list,cap*2*sizeof *list);if(!bigger)break;list=bigger;cap*=2;}
-        list[count].start=e->kve_start;list[count].end=e->kve_end;list[count].prot=e->kve_protection;list[count].type=e->kve_type;count++;
+        list[count].start=e->kve_start;list[count].end=e->kve_end;list[count].prot=e->kve_protection;list[count].type=e->kve_type;
+        {const char *base=strrchr(e->kve_path,'/');snprintf(list[count].name,sizeof list[count].name,"%s",base?base+1:e->kve_path);}
+        count++;
     }
     free(buffer);if(!list)return -1;*out=list;*n=count;return 0;
 }
@@ -592,4 +594,71 @@ int pscloud_live_resolve(const char *title,const char *type,const char *patterns
         }
     }
     pthread_mutex_unlock(&lock);return result;
+}
+
+/* ---------- frame counter diagnostic ----------
+ * Read only. Most engines keep a number that rises by one per frame. The game's own writable
+ * module data (eboot.bin) is read three times about a second apart; 32-bit values that rose
+ * by a steady 15-250 per second are reported as frame counter candidates. Nothing is written
+ * to the game. Results also go to the trace file's folder as frame-probe.txt. */
+#define PROBE_LIMIT (128u*1024*1024)
+#define PROBE_CANDIDATES 4096
+static unsigned probe_interval_ms(void) {
+#ifdef PSCLOUD_HOST_TEST
+    const char *v=getenv("PSCLOUD_TEST_PROBE_MS");if(v)return (unsigned)atoi(v);
+#endif
+    return 1000;
+}
+static double now_seconds(void) {struct timespec t;clock_gettime(CLOCK_MONOTONIC,&t);return t.tv_sec+t.tv_nsec/1e9;}
+static void sleep_ms(unsigned ms) {struct timespec t={ms/1000,(long)(ms%1000)*1000000L};nanosleep(&t,NULL);}
+struct probe_hit {uint64_t address;uint32_t v0,v1,v2;};
+int pscloud_live_frame_probe(char *out,size_t max) {
+    pthread_mutex_lock(&lock);
+    if(L.busy||stopping) {pthread_mutex_unlock(&lock);snprintf(out,max,"{\"ok\":false,\"message\":\"Wait for the current search to finish\"}");return -1;}
+    char title[16]="";uint64_t stamp=0;int pid=find_game(title,&stamp);
+    pthread_mutex_unlock(&lock);
+    if(pid<0) {snprintf(out,max,"{\"ok\":false,\"message\":\"Start the game first\"}");return -1;}
+    struct region *list=NULL;size_t n=0;
+    if(regions(pid,&list,&n)) {snprintf(out,max,"{\"ok\":false,\"message\":\"The game's memory map could not be read\"}");return -1;}
+    /* Module list for the report, and the game's own writable data. */
+    size_t pos=(size_t)snprintf(out,max,"{\"ok\":true,\"title\":\"%s\",\"modules\":[",title);unsigned names=0;
+    uint64_t total=0;size_t picked=0;
+    for(size_t i=0;i<n;i++) {
+        int seen=0;for(size_t j=0;j<i;j++)if(!strcmp(list[j].name,list[i].name))seen=1;
+        if(!seen&&*list[i].name&&names<64&&pos+64<max) {
+            char clean[40];size_t k=0;for(const char *c=list[i].name;*c&&k+1<sizeof clean;c++)if(*c!='"'&&*c!='\\'&&(unsigned char)*c>=32)clean[k++]=*c;clean[k]=0;
+            pos+=(size_t)snprintf(out+pos,max-pos,"%s\"%s\"",names?",":"",clean);names++;
+        }
+        if(strstr(list[i].name,"eboot")&&total+(list[i].end-list[i].start)<=PROBE_LIMIT) {list[picked++]=list[i];total+=list[i].end-list[i].start;}
+    }
+    if(!picked) {free(list);snprintf(out+pos,max-pos,"],\"read_kib\":0,\"candidates\":[],\"message\":\"No writable eboot.bin data was found\"}");return 0;}
+    unsigned char *snap=malloc((size_t)total);struct probe_hit *hits=malloc(PROBE_CANDIDATES*sizeof *hits);size_t count=0,unread=0;
+    if(!snap||!hits) {free(snap);free(hits);free(list);snprintf(out,max,"{\"ok\":false,\"message\":\"Not enough memory for the probe\"}");return -1;}
+    /* Pass 1: snapshot. */
+    size_t off=0;for(size_t i=0;i<picked;i++) {size_t len=(size_t)(list[i].end-list[i].start);
+        for(size_t p=0;p<len;p+=4096) {size_t l=len-p<4096?len-p:4096;if(mem_read(pid,list[i].start+p,snap+off+p,l)) {memset(snap+off+p,0,l);unread+=l;}}
+        off+=len;}
+    double t0=now_seconds();sleep_ms(probe_interval_ms());
+    /* Pass 2: values that rose by a frame-like step. */
+    unsigned char page[4096];off=0;double t1=0;
+    for(size_t i=0;i<picked;i++) {size_t len=(size_t)(list[i].end-list[i].start);
+        for(size_t p=0;p<len;p+=4096) {size_t l=len-p<4096?len-p:4096;if(mem_read(pid,list[i].start+p,page,l))continue;
+            for(size_t o=0;o+4<=l&&count<PROBE_CANDIDATES;o+=4) {uint32_t a,b;memcpy(&a,snap+off+p+o,4);memcpy(&b,page+o,4);uint32_t d=b-a;
+                if(d>=10&&d<=300) {hits[count].address=list[i].start+p+o;hits[count].v0=a;hits[count].v1=b;count++;}}}
+        off+=len;}
+    t1=now_seconds();sleep_ms(probe_interval_ms());
+    /* Pass 3: keep steady counters only. */
+    size_t kept=0;double t2=0;
+    for(size_t k=0;k<count;k++) {uint32_t v;if(mem_read(pid,hits[k].address,&v,4))continue;uint32_t d1=hits[k].v1-hits[k].v0,d2=v-hits[k].v1;
+        uint32_t slack=d1/5>3?d1/5:3;if(d2>=10&&d2<=300&&(d2>d1?d2-d1:d1-d2)<=slack) {hits[kept]=hits[k];hits[kept].v2=v;kept++;}}
+    t2=now_seconds();
+    double span=t2-t1>0.05?t2-t1:1.0;(void)t0;
+    pos+=(size_t)snprintf(out+pos,max-pos,"],\"read_kib\":%llu,\"unread_kib\":%llu,\"interval_ms\":%u,\"candidates\":[",(unsigned long long)(total>>10),(unsigned long long)(unread>>10),probe_interval_ms());
+    for(size_t k=0;k<kept&&k<64&&pos+128<max;k++)
+        pos+=(size_t)snprintf(out+pos,max-pos,"%s{\"address\":\"0x%llx\",\"value\":%u,\"per_second\":%.1f}",k?",":"",(unsigned long long)hits[k].address,hits[k].v2,(double)(hits[k].v2-hits[k].v1)/span);
+    snprintf(out+pos,max-pos,"],\"total_candidates\":%zu}",kept);
+    pscloud_log("EVENT","Frame probe in %s: read %llu KiB of eboot data, %zu steady counters",title,(unsigned long long)(total>>10),kept);
+    if(*trace_path) {char path[1200];snprintf(path,sizeof path,"%s",trace_path);char *slash=strrchr(path,'/');
+        if(slash) {snprintf(slash+1,sizeof path-(size_t)(slash+1-path),"frame-probe.txt");FILE *f=fopen(path,"w");if(f) {fputs(out,f);fputc('\n',f);fflush(f);fsync(fileno(f));fclose(f);}}}
+    free(snap);free(hits);free(list);return 0;
 }
