@@ -2496,11 +2496,28 @@ static void serve(int sock,int *locked) {
         if(bad)message(sock,404,"Shared package unavailable");else respond(sock,200,"application/zip",(const char *)data,bytes);free(data);return;
     }
     /* Live mode: find and change a number in the running game (Edit tab). */
+    if(!strcmp(method,"GET") && !strcmp(url,"/api/live/pins")) {char json[20000];pscloud_live_pins_json(json,sizeof json);respond(sock,200,"application/json",json,strlen(json));return;}
     if(!strcmp(method,"GET") && !strcmp(url,"/api/live/state")) {char json[1024];pscloud_live_state_json(json,sizeof json);respond(sock,200,"application/json",json,strlen(json));return;}
     if(!strcmp(method,"GET") && !strcmp(url,"/api/live/list")) {char *json=malloc(65536);if(!json) {message(sock,500,"Out of memory");return;}pscloud_live_list_json(json,65536,200);respond(sock,200,"application/json",json,strlen(json));free(json);return;}
     if(!strcmp(method,"POST") && !strncmp(url,"/api/live/",10)) {
         char type[16]="",value[64]="",address[32]="",msg[300];int bad=-1;
         parameter(body,"type",type,sizeof type);parameter(body,"value",value,sizeof value);parameter(body,"address",address,sizeof address);
+        if(!strcmp(url,"/api/live/pin")) {
+            char addresses[1100],name[49];
+            if(parameter(body,"addresses",addresses,sizeof addresses)||parameter(body,"name",name,sizeof name)) {message(sock,400,"Select places and name the saved value");return;}
+            bad=pscloud_live_pin(addresses,name,msg,sizeof msg);message(sock,bad?400:200,msg);return;
+        }
+        if(!strcmp(url,"/api/live/edit")) {
+            char addresses[1100]="",id[16]="",action_name[16]="";
+            int has_addresses=parameter(body,"addresses",addresses,sizeof addresses)==0;
+            int has_id=parameter(body,"id",id,sizeof id)==0;
+            char *tail=NULL;unsigned long group=has_id?strtoul(id,&tail,10):0;
+            if(has_id==has_addresses||(has_id&&(!*id||*tail||group==0||group>0xffffffffUL))||parameter(body,"action",action_name,sizeof action_name)) {message(sock,400,"Choose saved values or search results and an action");return;}
+            char *number_end=NULL;double number=strtod(value,&number_end);
+            int needs_number=strcmp(action_name,"remove")&&strcmp(action_name,"unfreeze");
+            if(needs_number&&(!*value||*number_end)) {message(sock,400,"Type a number");return;}
+            bad=pscloud_live_edit(addresses,(unsigned)group,action_name,number,msg,sizeof msg);message(sock,bad?400:200,msg);return;
+        }
         char *end=NULL;double number=strtod(value,&end);int number_ok=*value&&end&&!*end;
         if(!strcmp(url,"/api/live/reset")) {pscloud_live_reset();message(sock,200,"Search cleared");return;}
         if(!number_ok) {message(sock,400,"Type the number you see in the game");return;}
@@ -2838,5 +2855,5 @@ int main(int argc,char **argv) {
         else pthread_detach(thread);
     }
     pthread_mutex_lock(&clients_mutex);while(clients)pthread_cond_wait(&clients_done,&clients_mutex);pthread_mutex_unlock(&clients_mutex);
-    close(server);curl_global_cleanup();pscloud_log_close();return 0;
+    pscloud_live_shutdown();close(server);curl_global_cleanup();pscloud_log_close();return 0;
 }

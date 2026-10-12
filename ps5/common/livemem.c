@@ -15,6 +15,10 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <sys/types.h>
+#include <sys/stat.h>
+#include <time.h>
+#include <errno.h>
+#include <float.h>
 #ifndef PSCLOUD_HOST_TEST
 #include <sys/sysctl.h>
 #include <sys/user.h>
@@ -34,7 +38,7 @@ static const unsigned TYPE_SIZE[]={4,2,1,4,8};
 
 static pthread_mutex_t lock=PTHREAD_MUTEX_INITIALIZER;
 static struct {
-    int pid,type,busy,overflow,has;char title[16],error[200],phase[16];
+    int pid,type,busy,overflow,has;uint64_t session;char title[16],error[200],phase[16];
     uint64_t *addr;size_t count;double value;unsigned long long done,total;
 } L;
 
@@ -44,7 +48,13 @@ struct region {uint64_t start,end;};
 #ifdef PSCLOUD_HOST_TEST
 /* Tests: PSCLOUD_TEST_LIVE names a file that stands in for the game's memory at 0x10000000. */
 #define FAKE_BASE 0x10000000ULL
-static int find_game(char title[16]) {if(!getenv("PSCLOUD_TEST_LIVE"))return -1;strcpy(title,"PPSA02433");return 4242;}
+static int find_game(char title[16],uint64_t *session) {
+    const char *path=getenv("PSCLOUD_TEST_LIVE");struct stat st;
+    if(!path||stat(path,&st))return -1;
+    *session=(uint64_t)st.st_ino;const char *stamp=getenv("PSCLOUD_TEST_LIVE_SESSION");
+    if(stamp) {FILE *f=fopen(stamp,"r");unsigned long long v=0;if(!f)return -1;int ok=fscanf(f,"%llu",&v)==1;fclose(f);if(!ok)return -1;*session=v;}
+    strcpy(title,"PPSA02433");return 4242;
+}
 static int regions(int pid,struct region **out,size_t *n) {
     (void)pid;int fd=open(getenv("PSCLOUD_TEST_LIVE"),O_RDONLY);off_t size=fd<0?0:lseek(fd,0,SEEK_END);if(fd>=0)close(fd);
     if(size<=0)return -1;
@@ -54,7 +64,7 @@ static int mem_read(int pid,uint64_t a,void *buf,size_t len) {(void)pid;int fd=o
 static int mem_write(int pid,uint64_t a,const void *buf,size_t len) {(void)pid;int fd=open(getenv("PSCLOUD_TEST_LIVE"),O_WRONLY);if(fd<0)return -1;ssize_t r=pwrite(fd,buf,len,(off_t)(a-FAKE_BASE));close(fd);return r==(ssize_t)len?0:-1;}
 static int mem_read_back(int pid,uint64_t a,void *buf,size_t len) {return mem_read(pid,a,buf,len);}
 #else
-static int find_game(char title[16]) {
+static int find_game(char title[16],uint64_t *session) {
     int mib[4]={CTL_KERN,KERN_PROC,KERN_PROC_PROC,0};size_t size=0;
     if(sysctl(mib,4,NULL,&size,NULL,0)||!size)return -1;
     size+=size/4;char *buffer=malloc(size);if(!buffer)return -1;
@@ -62,12 +72,12 @@ static int find_game(char title[16]) {
     int found=-1;
     for(size_t offset=0;offset+sizeof(int)<=size;) {
         struct kinfo_proc *ki=(struct kinfo_proc *)(buffer+offset);
-        if(ki->ki_structsize<=0||offset+(size_t)ki->ki_structsize>size)break;
+        if(ki->ki_structsize<=0||offset+(size_t)ki->ki_structsize>size||(size_t)ki->ki_structsize<offsetof(struct kinfo_proc,ki_start)+sizeof ki->ki_start)break;
         offset+=(size_t)ki->ki_structsize;
         if(strcmp(ki->ki_comm,"eboot.bin"))continue;
         char info[256];memset(info,0,sizeof info);if(sceKernelGetAppInfo(ki->ki_pid,info))continue;
         if(memcmp(info+0x10,"PPSA",4))continue;
-        memcpy(title,info+0x10,9);title[9]=0;found=ki->ki_pid;break;
+        memcpy(title,info+0x10,9);title[9]=0;*session=(uint64_t)ki->ki_start.tv_sec*1000000ULL+(uint64_t)ki->ki_start.tv_usec;if(!*session)continue;found=ki->ki_pid;break;
     }
     free(buffer);return found;
 }
@@ -94,7 +104,17 @@ static int mem_write(int pid,uint64_t a,const void *buf,size_t len) {return kern
 static int mem_read_back(int pid,uint64_t a,void *buf,size_t len) {return kernel_proc_copyout(pid,(intptr_t)a,buf,len);}
 #endif
 
-/* ---------- values ---------- */
+/* ---------- values and session controls ---------- */
+#define GROUPS 32
+#define TARGETS 32
+#define PIN_LIMIT 128
+static struct pin {unsigned id,n;int type,frozen;char name[49],error[128];uint64_t addr[TARGETS];double target[TARGETS];} pins[GROUPS];
+static unsigned pin_count,next_id=1;
+static pthread_cond_t wake=PTHREAD_COND_INITIALIZER;
+static pthread_t freezer;
+static pthread_t searcher;
+static int searcher_started;
+static int freezer_started,stopping;
 static int type_of(const char *name) {for(int i=0;i<5;i++)if(!strcmp(name,TYPE_NAMES[i]))return i;return -1;}
 static double get(int type,const unsigned char *p) {
     switch(type) {
@@ -120,116 +140,223 @@ static int same(int type,double a,double x) {
     if(type==T_FLOAT||type==T_DOUBLE) {
         if(!finite(a))return 0;
         double tolerance=absolute(x)*1e-6;if(tolerance<0.01)tolerance=0.01;
-        double rounded=(double)(long long)(a+(a>=0?0.5:-0.5));
-        return absolute(a-x)<=tolerance||rounded==x;
+        return absolute(a-x)<=tolerance||(a>=-9e15&&a<=9e15&&(double)(long long)(a+(a>=0?0.5:-0.5))==x);
     }
     return a==x;
 }
 static int fits(int type,double x) {
-    if(type==T_FLOAT||type==T_DOUBLE)return finite(x);
-    if(!finite(x)||x!=(double)(long long)x)return 0;
-    return type==T_INT32?x>=-2147483648.0&&x<=2147483647.0:type==T_INT16?x>=-32768&&x<=32767:x>=0&&x<=255;
+    if(!finite(x))return 0;
+    if(type==T_DOUBLE)return 1;
+    if(type==T_FLOAT)return x>=-FLT_MAX&&x<=FLT_MAX;
+    double min=type==T_INT32?-2147483648.0:type==T_INT16?-32768:0;
+    double max=type==T_INT32?2147483647.0:type==T_INT16?32767:255;
+    return x>=min&&x<=max&&x==(double)(long long)x;
 }
-
-/* ---------- background work ---------- */
+/* Called with lock held. PID plus process start time prevents PID reuse from retaining writes. */
+static int session_ok(void) {
+    char title[16]="";uint64_t stamp=0;int pid=find_game(title,&stamp);
+    int ok=!stopping&&pid==L.pid&&stamp==L.session&&!strcmp(title,L.title);
+    if(!ok) {pin_count=0;L.has=0;if(!L.busy)L.count=0;}
+    return ok;
+}
+static int read_value(int type,uint64_t addr,double *value) {
+    unsigned char v[8];if(mem_read_back(L.pid,addr,v,TYPE_SIZE[type]))return -1;
+    *value=get(type,v);return finite(*value)?0:-1;
+}
+static int write_value(int type,uint64_t addr,double value) {
+    double before;unsigned char v[8],back[8];
+    if(!session_ok()||!fits(type,value)||read_value(type,addr,&before))return -1;
+    put(type,v,value);
+    if(mem_write(L.pid,addr,v,TYPE_SIZE[type])||mem_read_back(L.pid,addr,back,TYPE_SIZE[type])||memcmp(v,back,TYPE_SIZE[type]))return -1;
+    return 0;
+}
+static void *freeze_main(void *arg) {
+    (void)arg;pthread_mutex_lock(&lock);
+    while(!stopping) {
+        if(pin_count&&session_ok())for(unsigned i=0;i<pin_count;i++)if(pins[i].frozen) {
+            struct pin *p=&pins[i];
+            for(unsigned j=0;j<p->n;j++) {
+                double now;
+                double held=p->type==T_FLOAT?(double)(float)p->target[j]:p->target[j];
+                if(read_value(p->type,p->addr[j],&now)||!session_ok()||(now!=held&&write_value(p->type,p->addr[j],p->target[j]))) {
+                    if(i<pin_count) {p->frozen=0;snprintf(p->error,sizeof p->error,"Freeze stopped: a place could not be read or written. Check the game and search again.");}
+                    break;
+                }
+            }
+        }
+        struct timespec until;clock_gettime(CLOCK_REALTIME,&until);until.tv_nsec+=250000000L;
+        if(until.tv_nsec>=1000000000L) {until.tv_sec++;until.tv_nsec-=1000000000L;}
+        (void)pthread_cond_timedwait(&wake,&lock,&until);
+    }
+    pthread_mutex_unlock(&lock);return NULL;
+}
+static int start_freezer(void) {
+    if(freezer_started)return 0;
+    pthread_attr_t attr;pthread_attr_init(&attr);pthread_attr_setstacksize(&attr,256U*1024);
+    int bad=pthread_create(&freezer,&attr,freeze_main,NULL);pthread_attr_destroy(&attr);
+    if(!bad)freezer_started=1;
+    return bad?-1:0;
+}
+void pscloud_live_shutdown(void) {
+    pthread_mutex_lock(&lock);stopping=1;pin_count=0;pthread_cond_broadcast(&wake);
+    while(L.busy)pthread_cond_wait(&wake,&lock);
+    int join=freezer_started,join_search=searcher_started;pthread_mutex_unlock(&lock);
+    if(join_search)pthread_join(searcher,NULL);
+    if(join)pthread_join(freezer,NULL);
+    free(L.addr);L.addr=NULL;
+}
+/* ---------- background searches ---------- */
 static void finish(const char *error) {
-    pthread_mutex_lock(&lock);if(error)snprintf(L.error,sizeof L.error,"%s",error);L.busy=0;L.has=!error;pthread_mutex_unlock(&lock);
+    pthread_mutex_lock(&lock);if(error)snprintf(L.error,sizeof L.error,"%s",error);
+    L.busy=0;L.has=!error&&session_ok();pthread_cond_broadcast(&wake);pthread_mutex_unlock(&lock);
 }
+static int search_alive(void) {pthread_mutex_lock(&lock);int ok=session_ok();pthread_mutex_unlock(&lock);return ok;}
 static void *scan_main(void *arg) {
     (void)arg;struct region *list=NULL;size_t n=0;
     if(regions(L.pid,&list,&n)) {finish("The game's memory map could not be read");return NULL;}
     unsigned long long total=0;for(size_t i=0;i<n;i++)total+=list[i].end-list[i].start;
     pthread_mutex_lock(&lock);L.total=total;pthread_mutex_unlock(&lock);
-    unsigned char *buf=malloc(CHUNK+8);const unsigned size=TYPE_SIZE[L.type],step=size;
-    for(size_t i=0;buf&&i<n;i++)for(uint64_t a=list[i].start;a<list[i].end;a+=CHUNK) {
+    unsigned char *buf=malloc(CHUNK+8);const unsigned size=TYPE_SIZE[L.type];size_t count=0;int overflow=0,alive=1;
+    for(size_t i=0;buf&&alive&&i<n;i++)for(uint64_t a=list[i].start;a<list[i].end;a+=CHUNK) {
+        if(!(alive=search_alive()))break;
         size_t len=list[i].end-a<CHUNK?(size_t)(list[i].end-a):CHUNK;
-        if(!mem_read(L.pid,a,buf,len))for(size_t o=0;o+size<=len;o+=step) {
+        if(!overflow&&!mem_read(L.pid,a,buf,len))for(size_t o=0;o+size<=len;o+=size) {
             if(!same(L.type,get(L.type,buf+o),L.value))continue;
-            if(L.count==CAP) {L.overflow=1;break;}
-            if(L.overflow)break;
-            L.addr[L.count++]=a+o;
+            if(count==CAP) {overflow=1;break;}
+            L.addr[count++]=a+o;
         }
-        pthread_mutex_lock(&lock);L.done+=len;pthread_mutex_unlock(&lock);
+        pthread_mutex_lock(&lock);L.done+=len;L.count=count;L.overflow=overflow;pthread_mutex_unlock(&lock);
     }
-    int ok=buf!=NULL;free(buf);free(list);
-    pscloud_log("INFO","Live search in %s: %zu places hold %g (%s)%s",L.title,L.count,L.value,TYPE_NAMES[L.type],L.overflow?", list full":"");
-    finish(ok?NULL:"Out of memory");return NULL;
+    int ok=buf!=NULL;free(buf);free(list);finish(!ok?"Out of memory":!alive?"The game session changed; search again":NULL);return NULL;
 }
 static void *next_main(void *arg) {
-    (void)arg;unsigned char page[4096];uint64_t loaded=UINT64_MAX;int ok=0;size_t kept=0;const unsigned size=TYPE_SIZE[L.type];
-    for(size_t i=0;i<L.count;i++) {
+    (void)arg;unsigned char page[4096];uint64_t loaded=UINT64_MAX;int ok=0,alive=1;size_t kept=0;const unsigned size=TYPE_SIZE[L.type];size_t count=L.count;
+    for(size_t i=0;i<count;i++) {
+        if((i&4095)==0) {if(!(alive=search_alive()))break;pthread_mutex_lock(&lock);L.done=i;pthread_mutex_unlock(&lock);}
         uint64_t a=L.addr[i],base=a&~(uint64_t)4095;
         if(base!=loaded) {loaded=base;ok=!mem_read(L.pid,base,page,sizeof page);}
         unsigned char value[8];
         if(a-base+size<=sizeof page) {if(!ok)continue;memcpy(value,page+(a-base),size);}
         else if(mem_read(L.pid,a,value,size))continue;
         if(same(L.type,get(L.type,value),L.value))L.addr[kept++]=a;
-        if((i&4095)==0) {pthread_mutex_lock(&lock);L.done=i;pthread_mutex_unlock(&lock);}
     }
-    L.count=kept;finish(NULL);return NULL;
+    pthread_mutex_lock(&lock);L.count=kept;pthread_mutex_unlock(&lock);finish(alive?NULL:"The game session changed; search again");return NULL;
 }
 static int start(void *(*fn)(void *),const char *phase,char *message,size_t max) {
-    pthread_t thread;pthread_attr_t attr;pthread_attr_init(&attr);pthread_attr_setdetachstate(&attr,PTHREAD_CREATE_DETACHED);
+    if(searcher_started) {pthread_join(searcher,NULL);searcher_started=0;}
+    pthread_attr_t attr;pthread_attr_init(&attr);pthread_attr_setstacksize(&attr,256U*1024);
     snprintf(L.phase,sizeof L.phase,"%s",phase);L.busy=1;L.done=0;L.error[0]=0;
-    int bad=pthread_create(&thread,&attr,fn,NULL);pthread_attr_destroy(&attr);
+    int bad=pthread_create(&searcher,&attr,fn,NULL);pthread_attr_destroy(&attr);
     if(bad) {L.busy=0;snprintf(message,max,"Could not start the search");return -1;}
-    snprintf(message,max,"Searching the running game…");return 0;
+    searcher_started=1;snprintf(message,max,"Searching the running game…");return 0;
 }
-
-/* ---------- API ---------- */
 int pscloud_live_scan(const char *type_name,double value,char *message,size_t max) {
     int type=type_of(type_name);if(type<0||!fits(type,value)) {snprintf(message,max,"That number does not fit the chosen kind of value");return -1;}
     pthread_mutex_lock(&lock);
-    if(L.busy) {pthread_mutex_unlock(&lock);snprintf(message,max,"A search is still running");return -1;}
-    char title[16]="";int pid=find_game(title);
+    if(L.busy||stopping) {pthread_mutex_unlock(&lock);snprintf(message,max,"A search is still running or PSCloud is stopping");return -1;}
+    (void)session_ok();char title[16]="";uint64_t stamp=0;int pid=find_game(title,&stamp);
     if(pid<0) {pthread_mutex_unlock(&lock);snprintf(message,max,"Start the game first; no game is running");return -1;}
     if(!L.addr)L.addr=malloc(CAP*sizeof *L.addr);
     if(!L.addr) {pthread_mutex_unlock(&lock);snprintf(message,max,"Out of memory");return -1;}
-    L.pid=pid;snprintf(L.title,sizeof L.title,"%s",title);L.type=type;L.value=value;L.count=0;L.overflow=0;L.has=0;L.total=0;
+    L.pid=pid;L.session=stamp;snprintf(L.title,sizeof L.title,"%s",title);L.type=type;L.value=value;L.count=0;L.overflow=0;L.has=0;L.total=0;
     int r=start(scan_main,"scan",message,max);pthread_mutex_unlock(&lock);return r;
 }
 int pscloud_live_next(double value,char *message,size_t max) {
     pthread_mutex_lock(&lock);
-    if(L.busy) {pthread_mutex_unlock(&lock);snprintf(message,max,"A search is still running");return -1;}
-    if(!L.has) {pthread_mutex_unlock(&lock);snprintf(message,max,"Search first");return -1;}
-    char title[16]="";int pid=find_game(title);
-    if(pid!=L.pid) {L.has=0;pthread_mutex_unlock(&lock);snprintf(message,max,"The game was restarted or closed; search again");return -1;}
-    if(!fits(L.type,value)) {pthread_mutex_unlock(&lock);snprintf(message,max,"That number does not fit the chosen kind of value");return -1;}
-    L.value=value;L.total=L.count;
-    int r=start(next_main,"next",message,max);pthread_mutex_unlock(&lock);return r;
+    if(L.busy||!session_ok()||!L.has||!fits(L.type,value)) {pthread_mutex_unlock(&lock);snprintf(message,max,"Wait for the search, check the value, or search again for this game session");return -1;}
+    L.value=value;L.total=L.count;int r=start(next_main,"next",message,max);pthread_mutex_unlock(&lock);return r;
 }
 void pscloud_live_reset(void) {pthread_mutex_lock(&lock);if(!L.busy) {L.count=0;L.has=0;L.overflow=0;L.error[0]=0;}pthread_mutex_unlock(&lock);}
 void pscloud_live_state_json(char *out,size_t max) {
-    char title[16]="";int pid=find_game(title);
-    pthread_mutex_lock(&lock);
-    snprintf(out,max,"{\"running\":%s,\"title\":\"%s\",\"busy\":%s,\"phase\":\"%s\",\"done\":%llu,\"total\":%llu,\"count\":%zu,\"has\":%s,\"overflow\":%s,\"type\":\"%s\",\"value\":%g,\"error\":\"%s\",\"same_game\":%s}",
-        pid>=0?"true":"false",title,L.busy?"true":"false",L.phase,L.done,L.total,L.count,L.has?"true":"false",L.overflow?"true":"false",TYPE_NAMES[L.type],L.value,L.error,pid>=0&&pid==L.pid?"true":"false");
+    pthread_mutex_lock(&lock);char title[16]="";uint64_t stamp=0;int pid=find_game(title,&stamp);int same_game=session_ok();
+    snprintf(out,max,"{\"running\":%s,\"title\":\"%s\",\"busy\":%s,\"phase\":\"%s\",\"done\":%llu,\"total\":%llu,\"count\":%zu,\"has\":%s,\"overflow\":%s,\"type\":\"%s\",\"value\":%g,\"error\":\"%s\",\"same_game\":%s,\"pinned\":%u}",
+        pid>=0?"true":"false",title,L.busy?"true":"false",L.phase,L.done,L.total,L.count,L.has?"true":"false",L.overflow?"true":"false",TYPE_NAMES[L.type],L.value,L.error,same_game?"true":"false",pin_count);
     pthread_mutex_unlock(&lock);
 }
 void pscloud_live_list_json(char *out,size_t max,int limit) {
-    pthread_mutex_lock(&lock);size_t pos=(size_t)snprintf(out,max,"{\"places\":[");
-    for(size_t i=0;L.has&&!L.busy&&i<L.count&&(int)i<limit&&pos+96<max;i++) {
-        unsigned char v[8];double now=0;if(!mem_read(L.pid,L.addr[i],v,TYPE_SIZE[L.type]))now=get(L.type,v);
-        pos+=(size_t)snprintf(out+pos,max-pos,"%s{\"address\":\"0x%llx\",\"value\":%.10g}",i?",":"",(unsigned long long)L.addr[i],finite(now)?now:0);
+    pthread_mutex_lock(&lock);(void)session_ok();size_t pos=(size_t)snprintf(out,max,"{\"places\":[");
+    for(size_t i=0;L.has&&!L.busy&&i<L.count&&(int)i<limit&&pos+128<max;i++) {
+        double now;int bad=read_value(L.type,L.addr[i],&now);char number[48]="null";if(!bad)snprintf(number,sizeof number,"%.17g",now);
+        pos+=(size_t)snprintf(out+pos,max-pos,"%s{\"address\":\"0x%llx\",\"value\":%s}",i?",":"",(unsigned long long)L.addr[i],number);
     }
-    snprintf(out+pos,max-pos,"],\"count\":%zu,\"type\":\"%s\"}",L.count,TYPE_NAMES[L.type]);
-    pthread_mutex_unlock(&lock);
+    snprintf(out+pos,max-pos,"],\"count\":%zu,\"type\":\"%s\"}",L.count,TYPE_NAMES[L.type]);pthread_mutex_unlock(&lock);
+}
+static int selected(const char *text,uint64_t addresses[TARGETS],unsigned *n) {
+    *n=0;if(!text||!*text||L.busy||!L.has)return -1;
+    const char *p=text;
+    while(*p) {
+        if(*n==TARGETS||strncmp(p,"0x",2))return -1;
+        char *end=NULL;errno=0;unsigned long long a=strtoull(p+2,&end,16);
+        if(errno||end==p+2||(*end&&*end!=','))return -1;
+        for(unsigned j=0;j<*n;j++)if(addresses[j]==a)return -1;
+        size_t lo=0,hi=L.count;while(lo<hi) {size_t mid=(lo+hi)/2;if(L.addr[mid]<a)lo=mid+1;else hi=mid;}
+        if(lo==L.count||L.addr[lo]!=a)return -1;
+        addresses[(*n)++]=a;if(!*end)break;p=end+1;if(!*p)return -1;
+    }
+    return 0;
+}
+int pscloud_live_pin(const char *addresses,const char *name,char *message,size_t max) {
+    pthread_mutex_lock(&lock);int result=-1;struct pin p={0};unsigned total=0;
+    (void)session_ok();
+    for(unsigned i=0;i<pin_count;i++)total+=pins[i].n;
+    if(!session_ok()||selected(addresses,p.addr,&p.n))snprintf(message,max,"Select up to 32 places from the current search");
+    else if(!name||!*name||strlen(name)>48)snprintf(message,max,"Name this value (up to 48 characters)");
+    else if(pin_count==GROUPS||total+p.n>PIN_LIMIT)snprintf(message,max,"Saved values are full; remove a value first");
+    else {
+        int bad=0;for(const unsigned char *c=(const unsigned char *)name;*c;c++)if(*c<32||*c==127)bad=1;
+        for(unsigned i=0;i<pin_count;i++)for(unsigned j=0;j<pins[i].n;j++)for(unsigned k=0;k<p.n;k++) {
+            uint64_t a=p.addr[k],b=pins[i].addr[j];
+            if(a<b+TYPE_SIZE[pins[i].type]&&b<a+TYPE_SIZE[L.type])bad=1;
+        }
+        p.type=L.type;for(unsigned j=0;j<p.n;j++)if(read_value(p.type,p.addr[j],&p.target[j]))bad=1;
+        if(bad||start_freezer())snprintf(message,max,"These places are unreadable, overlap a saved value, or could not be saved. Use the existing saved value or search again.");
+        else {p.id=next_id++;snprintf(p.name,sizeof p.name,"%s",name);pins[pin_count++]=p;result=0;snprintf(message,max,"Saved %s (%u places) for this game session",name,p.n);}
+    }
+    pthread_mutex_unlock(&lock);return result;
+}
+/* All addresses and computed values are checked before the first write. A game can still
+ * reject a later write; report the exact partial count rather than claiming atomicity. */
+int pscloud_live_edit(const char *addresses,unsigned id,const char *action,double value,char *message,size_t max) {
+    pthread_mutex_lock(&lock);int result=-1;struct pin *p=NULL;uint64_t addr[TARGETS];double target[TARGETS];unsigned n=0;int type=L.type;
+    if(!session_ok()) {snprintf(message,max,"The game session changed; search again");goto done;}
+    if(id) {for(unsigned i=0;i<pin_count;i++)if(pins[i].id==id)p=&pins[i];if(!p) {snprintf(message,max,"This saved value expired; search again");goto done;}n=p->n;type=p->type;memcpy(addr,p->addr,n*sizeof *addr);}
+    else if(selected(addresses,addr,&n)) {snprintf(message,max,"Select up to 32 places from the current search");goto done;}
+    if(!strcmp(action,"remove")&&p) {unsigned i=(unsigned)(p-pins);memmove(p,p+1,(pin_count-i-1)*sizeof *p);pin_count--;result=0;snprintf(message,max,"Saved value removed");goto done;}
+    if(!strcmp(action,"unfreeze")&&p) {p->frozen=0;p->error[0]=0;result=0;snprintf(message,max,"Value unfrozen");goto done;}
+    int add=!strcmp(action,"add"),freeze=!strcmp(action,"freeze");
+    if((strcmp(action,"set")&&!add&&!freeze)||(freeze&&!p)||!finite(value)) {snprintf(message,max,"Choose Set, Increase/decrease, Freeze or Unfreeze");goto done;}
+    for(unsigned i=0;i<n;i++) {
+        double current;if(read_value(type,addr[i],&current)) {if(p)p->frozen=0;snprintf(message,max,"A place is unreadable; no values were changed");goto done;}
+        target[i]=add?(p&&p->frozen?p->target[i]:current)+value:value;
+        if(!fits(type,target[i])) {snprintf(message,max,"A resulting number does not fit; no values were changed");goto done;}
+    }
+    unsigned changed=0;
+    for(;changed<n;changed++)if(write_value(type,addr[changed],target[changed]))break;
+    if(changed!=n) {
+        /* session_ok may have expired the group during a write. */
+        if(p&&pin_count&&(unsigned)(p-pins)<pin_count)p->frozen=0;
+        if(!p)for(unsigned k=0;k<pin_count;k++)for(unsigned j=0;j<pins[k].n;j++)for(unsigned i=0;i<n;i++)if(pins[k].addr[j]==addr[i])pins[k].frozen=0;
+        snprintf(message,max,"Confirmed %u of %u places. A later write failed or changed back; freeze stopped. Check the game.",changed,n);goto done;
+    }
+    if(p) {memcpy(p->target,target,n*sizeof *target);if(freeze)p->frozen=1;p->error[0]=0;pthread_cond_signal(&wake);}
+    else for(unsigned k=0;k<pin_count;k++)for(unsigned j=0;j<pins[k].n;j++)for(unsigned i=0;i<n;i++)if(pins[k].addr[j]==addr[i]&&pins[k].type==type)pins[k].target[j]=target[i];
+    result=0;snprintf(message,max,freeze?"Frozen %u places at %g":add?"Adjusted %u places by %g":"Set %u places to %g",n,value);
+    pscloud_log("EVENT","Live %s in %s: %u places, value %g",action,L.title,n,value);
+done:
+    pthread_mutex_unlock(&lock);return result;
 }
 int pscloud_live_set(unsigned long long address,double value,char *message,size_t max) {
-    pthread_mutex_lock(&lock);int r=-1;
-    size_t lo=0,hi=L.count;while(lo<hi) {size_t mid=(lo+hi)/2;if(L.addr[mid]<address)lo=mid+1;else hi=mid;}
-    char title[16]="";int pid=find_game(title);
-    if(L.busy)snprintf(message,max,"A search is still running");
-    else if(!L.has||lo>=L.count||L.addr[lo]!=address)snprintf(message,max,"Only places from your search results can be changed");
-    else if(pid!=L.pid)snprintf(message,max,"The game was restarted or closed; search again");
-    else if(!fits(L.type,value))snprintf(message,max,"That number does not fit this place");
-    else {
-        unsigned char v[8],back[8];put(L.type,v,value);
-        int w=mem_write(L.pid,address,v,TYPE_SIZE[L.type]);int b=w?0:mem_read_back(L.pid,address,back,TYPE_SIZE[L.type]);
-        if(w) {snprintf(message,max,"This place could not be written (the system refused, code %d)",w);pscloud_log("WARN","Live write refused in %s at 0x%llx (%d)",L.title,address,w);}
-        else if(b)snprintf(message,max,"Written, but it could not be read back to confirm");
-        else if(memcmp(v,back,TYPE_SIZE[L.type]))snprintf(message,max,"Written, but the game changed it straight back; this place is probably a copy. Try the other place");
-        else {r=0;snprintf(message,max,"Changed to %g. Check it in the game; it is kept when the game saves",value);pscloud_log("EVENT","Live change in %s at 0x%llx to %g",L.title,address,value);}
+    char addresses[32];snprintf(addresses,sizeof addresses,"0x%llx",address);return pscloud_live_edit(addresses,0,"set",value,message,max);
+}
+static void escape_name(char *out,const char *name) {
+    while(*name) {if(*name=='"'||*name=='\\')*out++='\\';*out++=*name++;}*out=0;
+}
+void pscloud_live_pins_json(char *out,size_t max) {
+    pthread_mutex_lock(&lock);(void)session_ok();size_t at=(size_t)snprintf(out,max,"{\"groups\":[");
+    for(unsigned i=0;i<pin_count&&at+512<max;i++) {
+        struct pin *p=&pins[i];char name[100],number[48]="null";double current;escape_name(name,p->name);
+        if(!read_value(p->type,p->addr[0],&current))snprintf(number,sizeof number,"%.17g",current);
+        at+=(size_t)snprintf(out+at,max-at,"%s{\"id\":%u,\"name\":\"%s\",\"count\":%u,\"type\":\"%s\",\"value\":%s,\"target\":%.17g,\"frozen\":%s,\"error\":\"%s\"}",i?",":"",p->id,name,p->n,TYPE_NAMES[p->type],number,p->target[0],p->frozen?"true":"false",p->error);
     }
-    pthread_mutex_unlock(&lock);return r;
+    snprintf(out+at,max-at,"]}");pthread_mutex_unlock(&lock);
 }

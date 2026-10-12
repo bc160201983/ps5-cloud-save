@@ -67,6 +67,12 @@ PSCloud brings together everything you need to keep your progress safe:
 - **Write saves this PS5 does not have yet** *(experimental)*. Missing slots are created the
   way the console creates saves, even when the game is not installed or was never played on
   this profile.
+- **Change values in the running game** *(beta)*. Search for money, health or another
+  number, narrow the results and select verified places. Save them as a named value
+  to set, increase or decrease it whenever you want, without searching again.
+  **Freeze** holds the chosen value until you unfreeze it, remove it, stop PSCloud
+  or close the game. Saved places expire when the game restarts. This extension
+  has not yet been tested in-game on a PS5.
 - **Change values in a save** *(beta)*. Find a number from the game (money, skill points,
   collectibles) in the save, narrow it down after playing, compare two saves, and change it.
   Checksums are fixed, and the change goes through the usual check and replace with a rollback
@@ -131,6 +137,16 @@ PS5 to update saves on this PS5**. A rollback copy is still kept.
 | **Firmware** | Tested on 7.00 and 11.40. Other firmware from 1.00 to 13.60 is supported but not yet tested; the dashboard says so. |
 
 Each release in the [changelog](CHANGELOG.md) lists exactly what was verified on a console.
+
+| Live editor extension | Verification |
+|---|---|
+| Named values, batch edits, increase/decrease and freeze | Implemented with host memory-file and HTTP fixtures; PS5/in-game verification pending |
+
+To use it, open a game's **Edit (beta)** tab while it runs. Search, narrow down
+the results, tick the places you verified and choose **Save selected places**
+with a name such as Money. Use its **Set**, **Increase +**, **Decrease −** or
+**Freeze** buttons later. Freeze continues with the browser closed. Saved places
+live only for that game session; memory locations may move even before a restart.
 
 ---
 

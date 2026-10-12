@@ -10,4 +10,9 @@ void pscloud_live_reset(void);
 void pscloud_live_state_json(char *out,size_t max);
 void pscloud_live_list_json(char *out,size_t max,int limit);
 int pscloud_live_set(unsigned long long address,double value,char *message,size_t max);
+/* Named groups retain only addresses from a search in the current process session. */
+int pscloud_live_pin(const char *addresses,const char *name,char *message,size_t max);
+int pscloud_live_edit(const char *addresses,unsigned id,const char *action,double value,char *message,size_t max);
+void pscloud_live_pins_json(char *out,size_t max);
+void pscloud_live_shutdown(void);
 #endif

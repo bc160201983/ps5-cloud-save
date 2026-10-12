@@ -796,6 +796,19 @@ const found=SaveImport.slots(files);const pkg=SaveImport.pack(found,'7.00');fs.w
         self.assertEqual(self.request('/api/live/set',{'address':'0x10002000','value':'5'})[0],400)
         self.assertEqual(self.request('/api/live/set',{'address':places[0]['address'],'value':'1.5'})[0],400)
         self.assertEqual(self.request('/api/live/scan',{'type':'uint8','value':'300'})[0],400)
+        # Named groups retain the verified addresses independently of subsequent searches.
+        addresses=','.join(p['address'] for p in places)
+        self.assertEqual(self.request('/api/live/pin',{'addresses':addresses,'name':'Money'})[0],200)
+        group=self.request('/api/live/pins')[1]['groups'][0]['id']
+        self.assertEqual(self.request('/api/live/reset',{})[0],200)
+        self.assertEqual(self.request('/api/live/edit',{'id':str(group),'action':'set','value':'2000'})[0],200)
+        self.assertEqual(self.request('/api/live/edit',{'id':str(group),'action':'add','value':'500'})[0],200)
+        self.assertEqual(struct.unpack('<i',memory.read_bytes()[0x3000:0x3004])[0],2500)
+        self.assertEqual(self.request('/api/live/edit',{'id':str(group),'action':'freeze','value':'3000'})[0],200)
+        self.assertTrue(self.request('/api/live/pins')[1]['groups'][0]['frozen'])
+        self.assertEqual(self.request('/api/live/edit',{'id':str(group),'action':'unfreeze'})[0],200)
+        self.assertEqual(self.request('/api/live/edit',{'id':str(group),'action':'remove'})[0],200)
+        self.assertEqual(self.request('/api/live/pins')[1]['groups'],[])
 
     def test_sync_with_a_linked_profile_from_another_console(self):
         import test_sharing,test_portable

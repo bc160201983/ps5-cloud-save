@@ -3,6 +3,38 @@
 Every release, newest first, with what was verified on a console and what was not.
 The current overview is in [README.md](README.md).
 
+## Version 0.33.0 — saved Live values, multiple edits and freeze (beta)
+
+- Select up to 32 verified search results and set them in one request. Every
+  address and resulting number is validated before writing; a later failure reports
+  how many writes were confirmed rather than claiming an atomic change.
+- Save selected places under a name such as **Money** or **Health**. Set, increase
+  or decrease that group without searching again, including after starting a new
+  search or using **Start over**. Each group remembers its original value type.
+- **Freeze** holds the chosen values every quarter second on the console, even
+  after the browser closes. Adjusting a frozen group changes the held target.
+  **Unfreeze** stops holding it; **Remove** forgets the group.
+- Groups are held in memory only, expire when the game closes or restarts, and
+  are tied to the process ID, title and process start time. Unreadable or rejected
+  writes stop that group's freeze. Overlapping groups are refused. PSCloud waits
+  for Live workers to finish when stopping.
+- Host fixtures cover batches, bounds, saved groups across searches, freeze,
+  adjustments, unfreeze, invalid addresses and session expiry. Browser syntax
+  and request fixtures pass locally. Linux host and payload validation run in CI.
+
+**Console status:** this extension has not been tested on a PS5 or in-game.
+Live addresses can move within a game session; verified search results do not
+guarantee that a place will continue to represent the same game value.
+
+## Version 0.32.0 — Live memory editor (beta)
+
+Added searching and narrowing numeric values in the running game's writable
+memory, setting verified result addresses and reading values back. Supported
+types are int32, int16, uint8, float and double. The save-file editor also gained
+Ghost of Tsushima checksum handling. Host fixtures simulate game memory; the
+platform memory-map and debug-service research does not establish compatibility
+with every game's values.
+
 ## Version 0.31.0 — change values in a save (beta)
 
 A new **Edit (beta)** tab on each game:
