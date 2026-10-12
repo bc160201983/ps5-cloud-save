@@ -3,6 +3,21 @@
 Every release, newest first, with what was verified on a console and what was not.
 The current overview is in [README.md](README.md).
 
+## Version 0.34.8 — finding the Live search freeze
+
+The 11.40 console froze twice during a Live search in PPSA03210. During the first freeze a
+value was frozen, so freeze writes ran while the search read the game's memory. The log
+was flushed but not forced to storage, so its last lines could be lost.
+
+- **Freeze pauses during searches and relocation** and resumes when they finish.
+- **Search trace:** `/data/pscloud/live-trace.txt` names each memory region (address range,
+  size, protection, type) and is forced to storage before the region is read. After a freeze
+  its last line shows the region being read. It is replaced by the next search.
+- Each search logs how many regions and MiB it reads.
+- Log lines other than INFO are now forced to storage when written.
+- Host test: the trace lists each region before reading it and records the result.
+  The freeze itself is not yet understood; Live search on the PS5 stays at your own risk.
+
 ## Version 0.34.7 — Retain profile actually saves
 
 On the 11.40 console, Retain profile for LINEN in PPSA03210 reported success four times,

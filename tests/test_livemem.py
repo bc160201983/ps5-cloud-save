@@ -308,3 +308,17 @@ class LiveMemoryTests(unittest.TestCase):
         state = self.json('state')
         self.assertEqual(state['error'], 'Search stopped')
         self.assertFalse(state['has'])
+
+    def test_search_trace_names_each_region_before_reading_it(self):
+        trace = Path(self.tmp.name)/'live-trace.txt'
+        self.lib.pscloud_live_set_trace.argtypes = [ctypes.c_char_p]
+        self.lib.pscloud_live_set_trace(str(trace).encode())
+        try:
+            self.call('scan', b'int32', 1234)
+            self.wait_for(lambda: not self.json('state')['busy'])
+        finally:
+            self.lib.pscloud_live_set_trace(b'')
+        lines = trace.read_text().splitlines()
+        self.assertTrue(lines[0].startswith('search in PPSA02433: 1 regions'), lines)
+        self.assertTrue(lines[1].startswith('region 1/1 0x10000000-0x10010000 64 KiB'), lines)
+        self.assertEqual(lines[-1], 'finished: ok')

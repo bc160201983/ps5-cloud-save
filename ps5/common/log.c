@@ -34,6 +34,7 @@ void pscloud_log(const char *level, const char *format, ...) {
     fprintf(stdout, "[PSCloud] %s %s %s\n", stamp, level, message); fflush(stdout);
     lock_log();if(log_file) {
         fprintf(log_file, "%s %s %s\n", stamp, level, message); fflush(log_file);
+        if(strcmp(level, "INFO")) fsync(fileno(log_file));
     }
     unlock_log();
     errno = saved;

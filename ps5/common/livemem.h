@@ -19,4 +19,6 @@ int pscloud_live_game(char title[16]);
 int pscloud_live_locator(unsigned id,const char *version,char *out,size_t max);
 int pscloud_live_resolve(const char *title,const char *type,const char *patterns,char *message,size_t max);
 unsigned pscloud_live_sequence(void);
+/* File that records each memory region before it is read (empty path: off). */
+void pscloud_live_set_trace(const char *path);
 #endif

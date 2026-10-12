@@ -19,6 +19,7 @@
 #include <time.h>
 #include <errno.h>
 #include <float.h>
+#include <stdarg.h>
 #ifndef PSCLOUD_HOST_TEST
 #include <sys/sysctl.h>
 #include <sys/user.h>
@@ -42,7 +43,26 @@ static struct {
     uint64_t *addr;size_t count;double value;unsigned long long done,total;
 } L;
 
-struct region {uint64_t start,end;};
+struct region {uint64_t start,end;int prot,type;};
+/* Search trace: before each memory region is read, one line naming it is written and forced
+ * to storage, so after a console freeze the last line shows which region was being read. */
+static char trace_path[1100];static int trace_fd=-1;
+void pscloud_live_set_trace(const char *path) {snprintf(trace_path,sizeof trace_path,"%s",path?path:"");}
+static void trace_line(const char *format,...) {
+    if(trace_fd<0)return;
+    char line[256];va_list ap;va_start(ap,format);int n=vsnprintf(line,sizeof line,format,ap);va_end(ap);
+    if(n>0&&write(trace_fd,line,(size_t)n<sizeof line?(size_t)n:sizeof line-1)>0)(void)fsync(trace_fd);
+}
+static void trace_begin(const char *what,size_t regions_count,unsigned long long total) {
+    if(!*trace_path)return;
+    if(trace_fd>=0)close(trace_fd);
+    trace_fd=open(trace_path,O_WRONLY|O_CREAT|O_TRUNC,0600);
+    trace_line("%s in %s: %zu regions, %llu MiB, started %lld\n",what,L.title,regions_count,total>>20,(long long)time(NULL));
+}
+static void trace_region(size_t i,size_t n,const struct region *r) {
+    trace_line("region %zu/%zu 0x%llx-0x%llx %llu KiB prot %d type %d\n",i+1,n,(unsigned long long)r->start,(unsigned long long)r->end,(unsigned long long)((r->end-r->start)>>10),r->prot,r->type);
+}
+static void trace_end(const char *result) {trace_line("finished: %s\n",result?result:"ok");if(trace_fd>=0) {close(trace_fd);trace_fd=-1;}}
 
 /* ---------- platform ---------- */
 #ifdef PSCLOUD_HOST_TEST
@@ -58,7 +78,7 @@ static int find_game(char title[16],uint64_t *session) {
 static int regions(int pid,struct region **out,size_t *n) {
     (void)pid;int fd=open(getenv("PSCLOUD_TEST_LIVE"),O_RDONLY);off_t size=fd<0?0:lseek(fd,0,SEEK_END);if(fd>=0)close(fd);
     if(size<=0)return -1;
-    *out=malloc(sizeof **out);if(!*out)return -1;(*out)[0].start=FAKE_BASE;(*out)[0].end=FAKE_BASE+(uint64_t)size;*n=1;return 0;
+    *out=malloc(sizeof **out);if(!*out)return -1;(*out)[0].start=FAKE_BASE;(*out)[0].end=FAKE_BASE+(uint64_t)size;(*out)[0].prot=3;(*out)[0].type=0;*n=1;return 0;
 }
 /* PSCLOUD_TEST_LIVE_UNREADABLE="start:end" (file offsets) makes reads touching that range fail. */
 static int unreadable(uint64_t a,size_t len) {
@@ -98,7 +118,7 @@ static int regions(int pid,struct region **out,size_t *n) {
         offset+=(size_t)e->kve_structsize;
         if((e->kve_protection&(KVME_PROT_READ|KVME_PROT_WRITE))!=(KVME_PROT_READ|KVME_PROT_WRITE))continue;
         if(count==cap) {struct region *bigger=realloc(list,cap*2*sizeof *list);if(!bigger)break;list=bigger;cap*=2;}
-        list[count].start=e->kve_start;list[count].end=e->kve_end;count++;
+        list[count].start=e->kve_start;list[count].end=e->kve_end;list[count].prot=e->kve_protection;list[count].type=e->kve_type;count++;
     }
     free(buffer);if(!list)return -1;*out=list;*n=count;return 0;
 }
@@ -180,7 +200,7 @@ static int write_value(int type,uint64_t addr,double value) {
 static void *freeze_main(void *arg) {
     (void)arg;pthread_mutex_lock(&lock);
     while(!stopping) {
-        if(pin_count&&session_ok())for(unsigned i=0;i<pin_count;i++)if(pins[i].frozen) {
+        if(pin_count&&!L.busy&&session_ok())for(unsigned i=0;i<pin_count;i++)if(pins[i].frozen) {
             struct pin *p=&pins[i];
             for(unsigned j=0;j<p->n;j++) {
                 double now;
@@ -231,11 +251,13 @@ static void *scan_main(void *arg) {
     if(regions(L.pid,&list,&n)) {finish("The game's memory map could not be read");return NULL;}
     unsigned long long total=0;for(size_t i=0;i<n;i++)total+=list[i].end-list[i].start;
     pthread_mutex_lock(&lock);L.total=total;pthread_mutex_unlock(&lock);
+    pscloud_log("INFO","Live search reads %zu memory regions, %llu MiB",n,total>>20);trace_begin("search",n,total);
     unsigned char *buf=malloc(CHUNK+8);const unsigned size=TYPE_SIZE[L.type];size_t count=0;int overflow=0,alive=1,timed_out=0;
     const time_t deadline=time(NULL)+SEARCH_SECONDS;
     for(size_t i=0;buf&&alive&&i<n;i++)for(uint64_t a=list[i].start;a<list[i].end;a+=CHUNK) {
         if(!(alive=search_alive()))break;
         if(time(NULL)>deadline) {alive=0;timed_out=1;break;}
+        if(a==list[i].start)trace_region(i,n,&list[i]);
         size_t len=list[i].end-a<CHUNK?(size_t)(list[i].end-a):CHUNK;
         if(!overflow&&!mem_read(L.pid,a,buf,len))for(size_t o=0;o+size<=len;o+=size) {
             if(!same(L.type,get(L.type,buf+o),L.value))continue;
@@ -247,6 +269,7 @@ static void *scan_main(void *arg) {
     }
     int ok=buf!=NULL;free(buf);free(list);
     if(ok&&alive)pscloud_notify("Live search in %s: %zu places%s",L.title,count,overflow?" (too many; narrow it down)":"");
+    trace_end(!ok?"out of memory":!alive?stop_reason(timed_out):NULL);
     if(ok&&!alive)pscloud_notify("Live search in %s: %s",L.title,stop_reason(timed_out));
     finish(!ok?"Out of memory":!alive?stop_reason(timed_out):NULL);return NULL;
 }
@@ -492,9 +515,10 @@ static void *resolve_main(void *arg) {
     /* Like the search, unreadable memory is skipped: a failed chunk is retried page by page and
      * no signature window touching an unread page can match. Matches stay unique among the
      * memory that was read. */
-    unsigned char bad[(CHUNK+WINDOW)/PAGE+2];unsigned long long skipped=0;
+    unsigned char bad[(CHUNK+WINDOW)/PAGE+2];unsigned long long skipped=0;trace_begin("relocation",count,total);
     for(size_t i=0;!error&&i<count;i++)for(uint64_t base=list[i].start;base<list[i].end;base+=CHUNK) {
         if(!search_alive()) {error=stop_reason(0);break;}
+        if(base==list[i].start)trace_region(i,count,&list[i]);
         if(time(NULL)>deadline) {error="Relocation exceeded three minutes; nothing was bound";break;}
         size_t remain=(size_t)(list[i].end-base),n=remain<CHUNK+WINDOW-1?remain:CHUNK+WINDOW-1;
         memset(bad,0,sizeof bad);
@@ -514,6 +538,7 @@ static void *resolve_main(void *arg) {
         pthread_mutex_lock(&lock);L.done+=remain<CHUNK?remain:CHUNK;pthread_mutex_unlock(&lock);
         struct timespec pause={0,3000000};nanosleep(&pause,NULL);
     }
+    trace_end(error);
     if(skipped)pscloud_log("INFO","Relocation skipped %llu KiB of unreadable game memory",skipped/1024);
     unsigned found_rules=0;
     for(unsigned k=0;!error&&k<locator_count;k++) {

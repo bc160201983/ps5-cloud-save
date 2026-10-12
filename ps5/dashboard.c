@@ -2928,7 +2928,9 @@ int main(int argc,char **argv) {
 #endif
     snprintf(googlepath,sizeof googlepath,"%s/google.conf",root);pscloud_google_load(googlepath,&google);
     game_settings_load();schedule_load();console_id_load();cloud_keep_load();full_check_load();encryption_load();
-    pscloud_log_open(logpath);load_preferences();signal(SIGPIPE,SIG_IGN);signal(SIGTERM,stop_server);signal(SIGINT,stop_server);
+    pscloud_log_open(logpath);load_preferences();
+    {char trace[1400];snprintf(trace,sizeof trace,"%s/live-trace.txt",root);pscloud_live_set_trace(trace);}
+    signal(SIGPIPE,SIG_IGN);signal(SIGTERM,stop_server);signal(SIGINT,stop_server);
     if(curl_global_init(CURL_GLOBAL_DEFAULT))return 2;
     curl_share_setup();
     int server=socket(AF_INET,SOCK_STREAM,0);if(server<0)return 2;
