@@ -3,6 +3,14 @@
 Every release, newest first, with what was verified on a console and what was not.
 The current overview is in [README.md](README.md).
 
+## Version 0.34.15 — PC save format check removed
+
+- The file-format check added in 0.34.14 is removed at the owner's request. Use a PC save
+  again matches files by name only, as in 0.34.13, and offers Continue whenever names match,
+  even if a PC file is JSON text and the PS5 file is binary (as with MARVEL Cosmic Invasion).
+  The size warning and the DSSS refusal remain, and Receive a shared save still checks a copy
+  first and keeps a rollback copy.
+
 ## Version 0.34.14 — PC saves in a different format are stopped
 
 Testing Use a PC save with MARVEL Cosmic Invasion (PPSA29629) found that the PC version

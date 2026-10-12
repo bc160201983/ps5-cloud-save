@@ -161,13 +161,6 @@ const SaveImport=(()=>{
  * goes through Receive a shared save, which checks a copy first and keeps a rollback copy. */
 const pcSave={files:null,ps5:null,plan:null};
 const pcBase=p=>p.split('/').pop().toLowerCase();
-/* 'json', 'xml', 'text' or 'binary', from the first bytes: the same game can store the same
- * file as JSON on PC and as binary on PS5 (for example MARVEL Cosmic Invasion). */
-function pcSaveKind(data){const head=data.subarray(0,512);let i=0;if(head[0]===0xEF&&head[1]===0xBB&&head[2]===0xBF)i=3;
- while(i<head.length&&[9,10,13,32].includes(head[i]))i++;
- let printable=0;for(const c of head)if(c===9||c===10||c===13||(c>=32&&c<127)||c>=128)printable++;
- const text=head.length>0&&printable/head.length>0.95&&!head.includes(0);
- if(text&&(head[i]===0x7B||head[i]===0x5B))return 'json';if(text&&head[i]===0x3C)return 'xml';return text?'text':'binary';}
 /* Pure: which PC file replaces which PS5 file in the best-matching slot. */
 function pcSavePlan(slots,pcFiles){
  const td=new TextDecoder();
@@ -176,10 +169,9 @@ function pcSavePlan(slots,pcFiles){
    const lower=x.path.toLowerCase(),same=pcFiles.filter(f=>!used.has(f)&&(f.path.toLowerCase().endsWith('/'+lower)||f.path.toLowerCase()===lower));
    const byName=same.length?same:pcFiles.filter(f=>!used.has(f)&&pcBase(f.path)===pcBase(x.path));
    const pc=byName.length===1?byName[0]:null;if(pc)used.add(pc);
-   const ratio=pc&&x.data.length?pc.data.length/x.data.length:1,kinds=pc?[pcSaveKind(pc.data),pcSaveKind(x.data)]:null;
-   const mismatch=kinds&&kinds[0]!==kinds[1]?'Different format: '+kinds[0]+' on PC, '+kinds[1]+' on PS5':'';
-   return {path:x.path,ps5:x.data,pc,mismatch,warn:mismatch||(pc&&(ratio>2||ratio<0.5)?'Size differs a lot':'')};});
-  return {slot:s.slot,sys:s.sys,rows,matched:rows.filter(r=>r.pc).length,mismatched:rows.filter(r=>r.mismatch).length,unused:pcFiles.filter(f=>!used.has(f))};});
+   const ratio=pc&&x.data.length?pc.data.length/x.data.length:1;
+   return {path:x.path,ps5:x.data,pc,warn:pc&&(ratio>2||ratio<0.5)?'Size differs a lot':''};});
+  return {slot:s.slot,sys:s.sys,rows,matched:rows.filter(r=>r.pc).length,unused:pcFiles.filter(f=>!used.has(f))};});
  const best=plans.sort((a,b)=>b.matched-a.matched)[0];
  if(!best||!best.matched)throw Error('None of these file names match the save on this PS5, so this game probably stores its PC save in a different format. Nothing was changed.');
  return best;}
@@ -205,9 +197,7 @@ async function pcSaveCompare(){const g=selected;if(!g)return;const box=$('pcSave
  list.append(el('p','subtitle','Slot '+p.slot+': '+p.matched+' of '+p.rows.length+' files come from your PC; the rest stay as they are on this PS5.'));
  for(const row of p.rows){const line=el('p','subtitle',(row.pc?'Replace ':'Keep ')+row.path+' ('+row.ps5.length+' bytes'+(row.pc?' → '+row.pc.data.length+' bytes from '+row.pc.path:'')+')'+(row.warn?' · '+row.warn:''));list.append(line);}
  for(const f of p.unused)list.append(el('p','subtitle','Not used: '+f.path+' (no file with this name on the PS5)'));
- box.append(list);
- if(p.mismatched){box.append(el('p','subtitle','This game stores '+(p.mismatched===1?'this file':'these files')+' in a different format on PC and PS5, so the PC save cannot be copied as it is. Nothing was changed.'));return;}
- $('pcSaveUse').classList.remove('hidden');}
+ box.append(list);$('pcSaveUse').classList.remove('hidden');}
 function pcSaveCard(){const card=el('div','sharecard');card.id='pcSave';
  card.innerHTML='<h4>Use a PC save</h4><p class="subtitle">Copy this game\'s save files from your PC (choose the files, their folder, or a ZIP). PSCloud compares them with the save on this PS5 first. This only works for games that use the same save format on PC and PS5; encrypted saves are refused.</p>'
   +'<div class="usbactions"><input id="pcSaveFiles" type="file" multiple aria-label="PC save files"><input id="pcSaveFolder" type="file" webkitdirectory class="hidden"><button id="pcSaveFolderPick" class="ghost" type="button">Choose folder</button><button id="pcSaveCompare" class="primary" type="button">Compare with this PS5 save</button></div>'

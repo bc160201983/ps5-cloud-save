@@ -156,9 +156,6 @@ assert.equal(files[2].data[0],'P'.charCodeAt(0));assert.equal(files[3].data[0],'
 assert.equal(ctx.pcSavePlan(slots,[{path:'Slot1.sav',data:b('P',20)}]).rows[0].warn,'Size differs a lot');
 assert.throws(()=>ctx.pcSavePlan(slots,[{path:'Slot1.sav',data:new TextEncoder().encode('DSSS....')}]),/encrypted/);
 assert.throws(()=>ctx.pcSavePlan(slots,[{path:'profile.bin',data:b('x',4)}]),/None of these file names match/);
-const binary=[{slot:'save',files:[{path:'Settings.cfg',data:new Uint8Array([5,0,0,0,0x33,0x33,0x33,0x3f,0,0,0x80,0x3f])}],sys:[]}];
-const json=ctx.pcSavePlan(binary,[{path:'Settings.cfg',data:new TextEncoder().encode('{ "Version": 5, "MasterVolume": 1.0 }')}]);
-assert.equal(json.mismatched,1);assert.equal(json.rows[0].warn,'Different format: json on PC, binary on PS5');
 console.log('PC save plan replaces matching files and keeps the rest');
 """
         subprocess.run([node,'-e',script],cwd=ROOT,check=True,timeout=15)
