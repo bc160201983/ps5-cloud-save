@@ -471,7 +471,10 @@ const SaveLab=(()=>{
     int32:o+4<=f.size?[new DataView(a.bytes.buffer,a.bytes.byteOffset).getInt32(fa.start+o,true),new DataView(b.bytes.buffer,b.bytes.byteOffset).getInt32(f.start+o,true)]:null,name:nearName(b,{slot:s.slot,file:f.name,abs:f.start+i})});i=j;}}}
   return out;}
  /* Game formats whose own checksum PSCloud knows how to fix. */
- const FORMATS=[{name:'Remedy (Alan Wake 2) CRC32',detect:(b,s,n)=>n>16&&b[s]===4&&b[s+1]===0&&b[s+4]===4&&b[s+5]===0&&new DataView(b.buffer,b.byteOffset).getUint32(s+8,true)===crc32(b,s+12,s+n),
+ /* Ghost of Tsushima: header 0x14e | used size | byte sum of [16,size) + size + 383 | 0x31. */
+ const gotSum=(b,s,n)=>{const v=new DataView(b.buffer,b.byteOffset);const used=v.getUint32(s+4,true);if(used<16||used>n)return -1;let t=used+383;for(let i=s+16;i<s+used;i++)t+=b[i];return t>>>0;};
+ const FORMATS=[{name:'Ghost of Tsushima checksum',detect:(b,s,n)=>n>16&&new DataView(b.buffer,b.byteOffset).getUint32(s,true)===0x14e&&new DataView(b.buffer,b.byteOffset).getUint32(s+8,true)===gotSum(b,s,n),
+  fix:(b,s,n)=>new DataView(b.buffer,b.byteOffset).setUint32(s+8,gotSum(b,s,n),true)},{name:'Remedy (Alan Wake 2) CRC32',detect:(b,s,n)=>n>16&&b[s]===4&&b[s+1]===0&&b[s+4]===4&&b[s+5]===0&&new DataView(b.buffer,b.byteOffset).getUint32(s+8,true)===crc32(b,s+12,s+n),
   fix:(b,s,n)=>new DataView(b.buffer,b.byteOffset).setUint32(s+8,crc32(b,s+12,s+n),true)}];
  function formatOf(pkg,slot,file){const s=pkg.slots.find(x=>x.slot===slot),f=s.files.find(x=>x.name===file);return FORMATS.find(x=>x.detect(pkg.bytes,f.start,f.size))||null;}
  /* New package bytes with the edits applied and every checksum and hash updated. */
