@@ -20,9 +20,12 @@ The current overview is in [README.md](README.md).
   for Live workers to finish when stopping.
 - Batch changes to already-frozen places update their held targets too. Results
   from a different numeric type cannot overwrite overlapping saved places.
+- Live displays the actual running title and stays available when the game's
+  save title differs from its application title.
 - Host fixtures cover batches, bounds, saved groups across searches, freeze,
-  adjustments, unfreeze, invalid addresses and session expiry. Browser syntax
-  and request fixtures pass locally. Linux host and payload validation run in CI.
+  adjustments, unfreeze, invalid addresses, decimal values and session expiry.
+  Browser syntax and request fixtures pass locally. Linux host tests and all
+  PS5 payload builds passed in GitHub Actions.
 
 **Console status:** this extension has not been tested on a PS5 or in-game.
 Live addresses can move within a game session; verified search results do not

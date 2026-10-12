@@ -18,7 +18,7 @@ const nodes=new Map(),writes=[],selected=[{dataset:{address:'0x10000100'}},{data
 function element(){return {children:[],dataset:{},style:{},classList:{toggle(){},add(){},contains(){return false;}},append(...n){this.children.push(...n);},replaceChildren(){this.children=[];},remove(){},setAttribute(){},addEventListener(event,fn){this[event]=fn;},querySelectorAll(){return selected;}};}
 function $(id){if(!nodes.has(id))nodes.set(id,element());return nodes.get(id);}
 let group={id:7,name:'Money',count:2,type:'int32',value:250,target:250,frozen:false,error:''};
-const ctx={$ ,selected:{title:'PPSA02433'},activeView:'detail',document:{querySelector(){return element();}},el:()=>element(),notify(){},confirm:()=>true,setTimeout(){},clearTimeout(){},api:async(path,body)=>{
+const ctx={$ ,selected:{title:'PPSA02225'},activeView:'detail',document:{querySelector(){return element();}},el:()=>element(),notify(){},confirm:()=>true,setTimeout(){},clearTimeout(){},api:async(path,body)=>{
  if(body){writes.push({path,body});if(body.id){if(body.action==='add')group.target+=Number(body.value);if(body.action==='freeze')group.frozen=true;if(body.action==='unfreeze')group.frozen=false;}return {message:'done'};}
  if(path==='/api/live/state')return {running:true,title:'PPSA02433',busy:false,has:true,same_game:true,count:2};
  if(path==='/api/live/pins')return {groups:[group]};
@@ -26,7 +26,7 @@ const ctx={$ ,selected:{title:'PPSA02433'},activeView:'detail',document:{querySe
 }};
 vm.runInNewContext(html.slice(html.indexOf('const live={'),html.indexOf('function detailHeader')),ctx);
 (async()=>{
- await ctx.liveState();$('liveSet').value='500';await $('liveApply').click();
+ await ctx.liveState();assert.equal($('liveScan').disabled,false);$('liveSet').value='500';await $('liveApply').click();
  assert.equal(writes.length,1);assert.equal(writes[0].path,'/api/live/edit');assert.equal(writes[0].body.addresses,'0x10000100,0x10000400');assert.equal(writes[0].body.action,'set');
  $('liveName').value='Money';await $('livePin').click();assert.equal(writes[1].path,'/api/live/pin');
  const actions=$('liveSaved').children[0].children[2].children;

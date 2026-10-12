@@ -537,8 +537,8 @@ $('labMake').addEventListener('click',async()=>{const g=selected;if(!g||!lab.loa
 const live={timer:null,rows:new Map(),wasBusy:false,allowed:false};
 function liveVisible(){const pane=document.querySelector('#detail .tabpanel[data-tab="edit"]');return activeView==='detail'&&pane&&!pane.classList.contains('hidden');}
 async function liveState(){let r;try{r=await api('/api/live/state');}catch(e){return null;}
- const matches=r.running&&selected&&r.title===selected.title;live.allowed=!!matches;
- $('liveStatus').textContent=!r.running?'No game is running. Start the game, then search.':!matches?'Running game: '+r.title+'. Open that game in PSCloud to use Live.':r.busy?'Searching… '+(r.total?Math.round(100*r.done/r.total)+'%':''):'Game running: '+r.title+'. Saved values last for this game session.';
+ const matches=!!r.running;live.allowed=matches;
+ $('liveStatus').textContent=!r.running?'No game is running. Start the game, then search.':r.busy?'Searching… '+(r.total?Math.round(100*r.done/r.total)+'%':''):'Live affects the running game: '+r.title+'. Saved values last for this game session.';
  $('liveScan').disabled=!matches||r.busy;$('liveNext').disabled=!matches||r.busy||!r.has;
  $('liveApply').disabled=!matches||r.busy||!r.has;$('livePin').disabled=!matches||r.busy||!r.has;
  if(r.error)$('liveFound').textContent=r.error;
@@ -558,7 +558,7 @@ async function livePins(resetId){let r;try{r=await api('/api/live/pins');}catch(
    value.type=delta.type='number';value.step=delta.step='any';value.value=g.target;delta.value='100';value.style.maxWidth=delta.style.maxWidth='130px';value.setAttribute('aria-label','New value for '+g.name);delta.setAttribute('aria-label','Amount to increase or decrease '+g.name);
    const set=el('button','primary','Set'),increase=el('button','ghost','Increase +'),decrease=el('button','ghost','Decrease −'),remove=el('button','ghost','Remove');
    actions.append(value,set,delta,increase,decrease,freeze,remove);card.append(name,current,actions,error);box.append(card);row={card,current,value,delta,freeze,error,buttons:[set,increase,decrease,freeze,remove],frozen:g.frozen,busy:false};live.rows.set(g.id,row);
-   const act=async(action,amount)=>{if(amount!==undefined&&(amount===''||!Number.isFinite(Number(amount)))){notify('Type a finite number.',true);return;}if(!live.allowed){notify('Open the running game in PSCloud first.',true);return;}row.busy=true;row.buttons.forEach(b=>b.disabled=true);
+   const act=async(action,amount)=>{if(amount!==undefined&&(amount===''||!Number.isFinite(Number(amount)))){notify('Type a finite number.',true);return;}if(!live.allowed){notify('Start the game first.',true);return;}row.busy=true;row.buttons.forEach(b=>b.disabled=true);
     try{const r=await api('/api/live/edit',{id:g.id,action,...(amount===undefined?{}:{value:amount})});notify(r.message);}catch(e){notify(e.message,true);}finally{row.busy=false;await livePins(g.id);}};
    set.onclick=()=>act('set',value.value);increase.onclick=()=>act('add',Math.abs(Number(delta.value)));decrease.onclick=()=>act('add',-Math.abs(Number(delta.value)));
    freeze.onclick=()=>act(row.frozen?'unfreeze':'freeze',row.frozen?undefined:value.value);remove.onclick=()=>act('remove');
