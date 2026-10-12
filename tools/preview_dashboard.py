@@ -88,7 +88,7 @@ class Handler(BaseHTTPRequestHandler):
         if path=='/api/games':
             slots=[('slot-1','Chapter 4 · The Sunken Gate','12h 40m'),('slot-2','Chapter 2 · Into the Wilds','5h 12m'),('settings','Settings','')]
             self.send({'games':[{'user':'00000001','title':t,'slot':sl,'name':n,'supported':True,'installed':i!=7,'label':lab,'sub':'','detail':det,'icon':'/api/icon?title='+t}
-                                for i,(t,n,_) in enumerate(DEMO_GAMES) for sl,lab,det in (slots if i==0 else slots[:1])]});return True
+                                for i,(t,n,_) in enumerate(DEMO_GAMES) for sl,lab,det in (slots if i==0 else [('replay%d'%k,'Replay %d'%k,'Ranked match') for k in range(1,41)] if i==2 else slots[:1])]});return True
         if path=='/api/running':self.send({'known':True,'running':True,'title':'PPSA90002','name':'Neon Drift','icon':'/api/icon?title=PPSA90002','backup_on_close':True});return True
         if path=='/api/sync-status':self.send({'state':'cloud_newer','local_time':1791700000,'base':0,'cloud':{'file':'x','user':'00000009','name':'Alex','created':1791720000,'sha256':'','source':'network','peer':'192.168.0.198:8082','firmware':'7.00'},'links':1,'other_found':True,'peers':1,'has_cloud':True});return True
         if path=='/api/queue':self.send({'items':[{'file':'portable-PPSA90001-'+'a'*32+'.zip','name':'Starfall Odyssey','user':'00000001','title':'PPSA90001','slot':'WholeGame','created':1791716400,'valid':True}],'count':1,'truncated':False});return True

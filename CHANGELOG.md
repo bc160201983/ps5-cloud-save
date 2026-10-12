@@ -3,6 +3,13 @@
 Every release, newest first, with what was verified on a console and what was not.
 The current overview is in [README.md](README.md).
 
+## Version 0.30.2 — compact list of save slots
+
+**Saves on this PS5** can show a compact list: one thin row per slot with its picture, name
+and ID. A **Cards / List** switch beside the heading shows the slot count. PSCloud remembers
+your choice, and games with more than 8 slots open as a list. Long lists show the first 24
+rows (12 cards) and a **Show all N slots** button.
+
 ## Version 0.30.1 — getting the newer save finishes where you clicked
 
 Fixes from the first console tests of 0.30.0:
