@@ -3,6 +3,20 @@
 Every release, newest first, with what was verified on a console and what was not.
 The current overview is in [README.md](README.md).
 
+## Version 0.34.6 — Stop search, and searches that cannot run forever
+
+A Live search in Ghost of Tsushima on the 11.40 console left the dashboard, and then the
+whole PS5, unresponsive. The cause is still being investigated from the console log.
+
+- **Stop search** appears beside Search while a search, next search or relocation runs.
+  It ends the search within one memory chunk and reports "Search stopped", instead of the
+  misleading "The game session changed".
+- Searches and next searches stop on their own after 3 minutes, with a message saying so.
+- Searches pause briefly after each 1 MiB of memory, as relocation already did, so a large
+  game cannot keep the console busy without a break.
+- Stopped and timed-out searches show a PS5 notification.
+- Host test: Stop search ends a search over 256 MiB of memory. PS5 verification is pending.
+
 ## Version 0.34.5 — faster cloud screens
 
 Measured on the 11.40 console before this change: every dashboard request answered in

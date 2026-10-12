@@ -297,3 +297,14 @@ class LiveMemoryTests(unittest.TestCase):
         result,text=self.locator(self.pin())  # only zeros around both values
         self.assertEqual(result,-1)
         self.assertIn('Too little stable memory',text)
+
+    def test_stop_search_ends_a_running_search(self):
+        with self.memory.open('r+b') as f:
+            f.truncate(256*1024*1024)  # large enough that the search is still running
+        self.stamp.write_text('105')
+        self.call('scan', b'int32', 1234)
+        self.lib.pscloud_live_reset()
+        self.wait_for(lambda: not self.json('state')['busy'])
+        state = self.json('state')
+        self.assertEqual(state['error'], 'Search stopped')
+        self.assertFalse(state['has'])

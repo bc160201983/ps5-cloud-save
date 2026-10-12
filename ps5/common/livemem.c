@@ -218,14 +218,24 @@ static void finish(const char *error) {
     L.busy=0;L.has=!error&&session_ok();pthread_cond_broadcast(&wake);pthread_mutex_unlock(&lock);
 }
 static int search_alive(void) {pthread_mutex_lock(&lock);int ok=!cancel_search&&session_ok();pthread_mutex_unlock(&lock);return ok;}
+/* Searches stop on their own after this long, and pause between memory chunks, so a large game
+ * cannot keep the console busy. Stop search (reset) ends one within a chunk. */
+#define SEARCH_SECONDS 180
+static void search_pause(void) {struct timespec pause={0,3000000};nanosleep(&pause,NULL);}
+static const char *stop_reason(int timed_out) {
+    pthread_mutex_lock(&lock);int cancelled=cancel_search;pthread_mutex_unlock(&lock);
+    return cancelled?"Search stopped":timed_out?"Search stopped after 3 minutes to keep the console responsive. Narrow it down or try again":"The game session changed; search again";
+}
 static void *scan_main(void *arg) {
     (void)arg;struct region *list=NULL;size_t n=0;
     if(regions(L.pid,&list,&n)) {finish("The game's memory map could not be read");return NULL;}
     unsigned long long total=0;for(size_t i=0;i<n;i++)total+=list[i].end-list[i].start;
     pthread_mutex_lock(&lock);L.total=total;pthread_mutex_unlock(&lock);
-    unsigned char *buf=malloc(CHUNK+8);const unsigned size=TYPE_SIZE[L.type];size_t count=0;int overflow=0,alive=1;
+    unsigned char *buf=malloc(CHUNK+8);const unsigned size=TYPE_SIZE[L.type];size_t count=0;int overflow=0,alive=1,timed_out=0;
+    const time_t deadline=time(NULL)+SEARCH_SECONDS;
     for(size_t i=0;buf&&alive&&i<n;i++)for(uint64_t a=list[i].start;a<list[i].end;a+=CHUNK) {
         if(!(alive=search_alive()))break;
+        if(time(NULL)>deadline) {alive=0;timed_out=1;break;}
         size_t len=list[i].end-a<CHUNK?(size_t)(list[i].end-a):CHUNK;
         if(!overflow&&!mem_read(L.pid,a,buf,len))for(size_t o=0;o+size<=len;o+=size) {
             if(!same(L.type,get(L.type,buf+o),L.value))continue;
@@ -233,15 +243,23 @@ static void *scan_main(void *arg) {
             L.addr[count++]=a+o;
         }
         pthread_mutex_lock(&lock);L.done+=len;L.count=count;L.overflow=overflow;pthread_mutex_unlock(&lock);
+        search_pause();
     }
     int ok=buf!=NULL;free(buf);free(list);
     if(ok&&alive)pscloud_notify("Live search in %s: %zu places%s",L.title,count,overflow?" (too many; narrow it down)":"");
-    finish(!ok?"Out of memory":!alive?"The game session changed; search again":NULL);return NULL;
+    if(ok&&!alive)pscloud_notify("Live search in %s: %s",L.title,stop_reason(timed_out));
+    finish(!ok?"Out of memory":!alive?stop_reason(timed_out):NULL);return NULL;
 }
 static void *next_main(void *arg) {
-    (void)arg;unsigned char page[4096];uint64_t loaded=UINT64_MAX;int ok=0,alive=1;size_t kept=0;const unsigned size=TYPE_SIZE[L.type];size_t count=L.count;
+    (void)arg;unsigned char page[4096];uint64_t loaded=UINT64_MAX;int ok=0,alive=1,timed_out=0;size_t kept=0;const unsigned size=TYPE_SIZE[L.type];size_t count=L.count;
+    const time_t deadline=time(NULL)+SEARCH_SECONDS;
     for(size_t i=0;i<count;i++) {
-        if((i&4095)==0) {if(!(alive=search_alive()))break;pthread_mutex_lock(&lock);L.done=i;pthread_mutex_unlock(&lock);}
+        if((i&4095)==0) {
+            if(!(alive=search_alive()))break;
+            if(time(NULL)>deadline) {alive=0;timed_out=1;break;}
+            if(i)search_pause();
+            pthread_mutex_lock(&lock);L.done=i;pthread_mutex_unlock(&lock);
+        }
         uint64_t a=L.addr[i],base=a&~(uint64_t)4095;
         if(base!=loaded) {loaded=base;ok=!mem_read(L.pid,base,page,sizeof page);}
         unsigned char value[8];
@@ -251,7 +269,8 @@ static void *next_main(void *arg) {
     }
     pthread_mutex_lock(&lock);L.count=kept;pthread_mutex_unlock(&lock);
     if(alive)pscloud_notify("Live next search in %s: %zu places left",L.title,kept);
-    finish(alive?NULL:"The game session changed; search again");return NULL;
+    if(!alive)pscloud_notify("Live next search in %s: %s",L.title,stop_reason(timed_out));
+    finish(alive?NULL:stop_reason(timed_out));return NULL;
 }
 static int start(void *(*fn)(void *),const char *phase,char *message,size_t max) {
     if(searcher_started) {pthread_join(searcher,NULL);searcher_started=0;}
@@ -475,7 +494,7 @@ static void *resolve_main(void *arg) {
      * memory that was read. */
     unsigned char bad[(CHUNK+WINDOW)/PAGE+2];unsigned long long skipped=0;
     for(size_t i=0;!error&&i<count;i++)for(uint64_t base=list[i].start;base<list[i].end;base+=CHUNK) {
-        if(!search_alive()) {error="Search stopped or game session changed";break;}
+        if(!search_alive()) {error=stop_reason(0);break;}
         if(time(NULL)>deadline) {error="Relocation exceeded three minutes; nothing was bound";break;}
         size_t remain=(size_t)(list[i].end-base),n=remain<CHUNK+WINDOW-1?remain:CHUNK+WINDOW-1;
         memset(bad,0,sizeof bad);
