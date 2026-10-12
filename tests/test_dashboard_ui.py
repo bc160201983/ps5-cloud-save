@@ -209,3 +209,44 @@ const field=(d,p)=>d.fields.find(f=>f.path===p);
 })().catch(e=>{console.error(e);process.exit(1);});
 """
         subprocess.run([node,'-e',script],cwd=ROOT,check=True,timeout=30)
+
+    def test_unreal_gvas_fields_edit_in_place(self):
+        node=shutil.which('node')
+        if not node:self.skipTest('Node.js is required for the UI fixture')
+        script=r"""
+const fs=require('fs'),vm=require('vm'),assert=require('assert');
+const html=fs.readFileSync('ps5/ui.html','utf8');
+const block=n=>{const s=html.indexOf('const '+n+'=(()=>{');return html.slice(s,html.indexOf('})();',s)+5);};
+const ctx={TextDecoder,TextEncoder,Blob,Response,DecompressionStream,CompressionStream};
+vm.runInNewContext(block('SaveLab')+'\n'+block('SaveImport')+'\n'+block('SaveFields')+';this.F=SaveFields;',ctx);
+// A small UE4 save built from parts: header, then tagged properties.
+const parts=[];const i32=x=>{const b=Buffer.alloc(4);b.writeInt32LE(x);parts.push(b);};const u8=x=>parts.push(Buffer.from([x]));
+const str=t=>{i32(t.length+1);parts.push(Buffer.from(t+'\0','latin1'));};const raw=b=>parts.push(Buffer.from(b));
+const f32=x=>{const b=Buffer.alloc(4);b.writeFloatLE(x);parts.push(b);};
+const tag=(name,type,size)=>{str(name);str(type);i32(size);i32(0);};
+parts.push(Buffer.from('GVAS'));i32(2);i32(522);raw([4,0,27,0,2,0,0,0,0,0]);str('++UE4+Release-4.27');i32(3);i32(0);str('/Script/Game.Save');
+tag('Coins','IntProperty',4);u8(0);i32(347);
+tag('HardMode','BoolProperty',0);u8(1);u8(0);
+const inner=[];{const keep=parts.length;tag('Health','FloatProperty',4);u8(0);f32(75.5);str('None');inner.push(...parts.splice(keep));}
+const innerSize=inner.reduce((n,b)=>n+b.length,0);
+tag('Player','StructProperty',innerSize);str('PlayerData');raw(Buffer.alloc(16));u8(0);parts.push(...inner);
+tag('Levels','ArrayProperty',12);str('IntProperty');u8(0);i32(2);i32(3);i32(9);
+const map=[];{const keep=parts.length;i32(0);i32(2);str('Wood');i32(37);str('Steel');i32(5);map.push(...parts.splice(keep));}
+tag('Items','MapProperty',map.reduce((n,b)=>n+b.length,0));str('NameProperty');str('IntProperty');u8(0);parts.push(...map);
+str('None');i32(0);
+const save=new Uint8Array(Buffer.concat(parts));
+(async()=>{
+ const d=await ctx.F.decode(save);assert.equal(d.kind,'gvas');
+ const v=Object.fromEntries(d.fields.map(f=>[f.path,f.value]));
+ assert.deepEqual(v,{Coins:'347',HardMode:'true','Player.Health':'75.5','Levels[0]':'3','Levels[1]':'9','Items[Wood]':'37','Items[Steel]':'5'});
+ const f=p=>d.fields.find(x=>x.path===p);
+ const out=await ctx.F.encode(d,[{field:f('Coins'),value:'9999'},{field:f('Items[Wood]'),value:'999'},{field:f('HardMode'),value:'false'},{field:f('Player.Health'),value:'100'}]);
+ assert.equal(out.length,save.length);
+ const v2=Object.fromEntries((await ctx.F.decode(out)).fields.map(x=>[x.path,x.value]));
+ assert.deepEqual(v2,{Coins:'9999',HardMode:'false','Player.Health':'100','Levels[0]':'3','Levels[1]':'9','Items[Wood]':'999','Items[Steel]':'5'});
+ assert.throws(()=>ctx.F.checkValue(f('Coins'),'3000000000'),/from -2147483648 to 2147483647/);
+ const broken=save.slice(0,save.length-30);assert.equal((await ctx.F.decode(broken)).kind,'binary');
+ console.log('GVAS: integers, booleans, structs, arrays and maps edit in place');
+})().catch(e=>{console.error(e);process.exit(1);});
+"""
+        subprocess.run([node,'-e',script],cwd=ROOT,check=True,timeout=30)

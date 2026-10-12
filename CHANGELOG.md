@@ -3,6 +3,19 @@
 Every release, newest first, with what was verified on a console and what was not.
 The current overview is in [README.md](README.md).
 
+## Version 0.34.20 — Unreal Engine saves in the universal editor
+
+- **Unreal Engine 4 GVAS saves** (`ue4savegame.dpx.sav` and similar) now list their values by
+  name: integers, floats, doubles, booleans and plain bytes, inside structs, arrays and maps
+  (paths like `DataMap_SBActor[PlayerActor].HP`). Values are edited in place, so the file keeps
+  its size. Unknown property types are skipped by their recorded size; a file whose structure
+  does not add up falls back to number search.
+- Checked with the GVAS saves exported from the 11.40 console: Stellar Blade (3,810 fields;
+  player HP 2000 → 9999 changed only that value's bytes), PPSA02100 (154,506 fields) and Crash
+  Bandicoot 4 (which keeps its progress in byte blobs, so number search stays the better tool).
+- Host test: a built GVAS save with an integer, boolean, struct, array and map edits in place
+  and reads back; a cut-off file falls back to binary. No edited save replaced on a console yet.
+
 ## Version 0.34.19 — universal save editor: named fields
 
 The save editor now gives every file of a loaded save the best layer that fits it:

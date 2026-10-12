@@ -662,8 +662,67 @@ const SaveFields=(()=>{
   while((m=re.exec(text))){const key=m[1],raw=m[2],n=(seen.get(key)||0)+1;seen.set(key,n);const start=m.index+m[0].length-raw.length;
    out.push({path:n>1?key+'#'+n:key,kind:/^[tf]/.test(raw)?'bool':'number',integer:/^-?\d+$/.test(raw),value:raw,start,end:start+raw.length});}
   return out;}
+
+ /* Unreal Engine 4 GVAS saves: a list of tagged properties (name, type, size). Numbers and
+  * booleans become fields with their byte position; anything unknown is skipped by its size.
+  * Any structural mismatch returns null, so the file falls back to number search. */
+ const GV_NUM={IntProperty:['int32',4],UInt32Property:['uint32',4],Int64Property:['int64',8],UInt64Property:['uint64',8],FloatProperty:['float',4],DoubleProperty:['double',8],Int16Property:['int16',2],UInt16Property:['uint16',2],Int8Property:['int8',1]};
+ function gvasFields(d){const v=new DataView(d.buffer,d.byteOffset,d.byteLength),out=[];let p=0;
+  const need=n=>{if(n<0||p+n>d.length)throw Error('gvas');};
+  const i32=()=>{need(4);const x=v.getInt32(p,true);p+=4;return x;};
+  const str=()=>{const n=i32();if(n===0)return '';if(n>0){if(n>65536)throw Error('gvas');need(n);const t=new TextDecoder().decode(d.subarray(p,p+n-1));p+=n;return t;}
+   const c=-n;if(c>32768)throw Error('gvas');need(c*2);let t='';for(let k=0;k<c-1;k++)t+=String.fromCharCode(v.getUint16(p+2*k,true));p+=c*2;return t;};
+  const field=(path,type,at)=>{let value;
+   switch(type){case 'int32':value=v.getInt32(at,true);break;case 'uint32':value=v.getUint32(at,true);break;case 'int64':value=v.getBigInt64(at,true);break;case 'uint64':value=v.getBigUint64(at,true);break;
+    case 'float':value=Math.fround(v.getFloat32(at,true));break;case 'double':value=v.getFloat64(at,true);break;case 'int16':value=v.getInt16(at,true);break;case 'uint16':value=v.getUint16(at,true);break;
+    case 'int8':value=v.getInt8(at);break;case 'uint8':value=v.getUint8(at);break;case 'bool':value=v.getUint8(at)?'true':'false';break;}
+   out.push({path,kind:type==='bool'?'bool':'number',integer:type!=='float'&&type!=='double',value:String(value),binary:type,offset:at});};
+  /* Properties until "None"; end is the byte limit of the enclosing value. */
+  function props(prefix,end){for(;;){const name=str();if(name==='None')return;const type=str();const size=i32();i32();/* array index */
+    const path=prefix?prefix+'.'+name:name;
+    if(type==='BoolProperty'){need(2);field(path,'bool',p);p+=1;if(d[p++])p+=16;continue;}
+    let struct='',inner='',enumName='',valueType='';
+    if(type==='StructProperty'){struct=str();need(16);p+=16;}
+    else if(type==='ArrayProperty'||type==='SetProperty')inner=str();
+    else if(type==='MapProperty'){inner=str();valueType=str();}
+    else if(type==='ByteProperty'||type==='EnumProperty')enumName=str();
+    need(1);if(d[p++])p+=16;
+    const start=p,stop=p+size;if(size<0||stop>end)throw Error('gvas');
+    try{
+     if(GV_NUM[type]&&size===GV_NUM[type][1])field(path,GV_NUM[type][0],p);
+     else if(type==='ByteProperty'&&enumName==='None'&&size===1)field(path,'uint8',p);
+     else if(type==='StructProperty'&&!GV_FIXED.has(struct))props(path,stop);
+     else if(type==='ArrayProperty')array(path,inner,stop);
+     else if(type==='MapProperty')map(path,inner,valueType,stop);
+    }catch(e){/* an unreadable value is skipped whole; the tag sizes keep the walk aligned */out.length=out.filter(f=>f.offset<start).length;}
+    p=stop;}}
+  function array(path,inner,stop){const count=i32();if(count<0||count>1e6)throw Error('gvas');
+   if(GV_NUM[inner]){const [t,n]=GV_NUM[inner];for(let k=0;k<count;k++){need(n);field(path+'['+k+']',t,p);p+=n;}return;}
+   if(inner==='BoolProperty'){for(let k=0;k<count;k++){need(1);field(path+'['+k+']','bool',p);p+=1;}return;}
+   if(inner==='ByteProperty'&&stop-p===count){for(let k=0;k<count;k++)field(path+'['+k+']','uint8',p+k);p+=count;return;}
+   if(inner==='StructProperty'){str();str();i32();i32();const sname=str();need(17);p+=16;if(d[p++])p+=16;
+    if(GV_FIXED.has(sname))return;for(let k=0;k<count;k++)props(path+'['+k+']',stop);}}
+  /* Maps: keys that are text, names, enums or whole numbers; values that are numbers,
+   * booleans or structs (property lists). Other key or value types skip the whole map. */
+  function key(type){if(type==='NameProperty'||type==='StrProperty'||type==='EnumProperty')return str();if(type==='IntProperty')return String(i32());throw Error('gvas');}
+  function map(path,keyType,valueType,stop){if(i32()!==0)throw Error('gvas');/* removed keys */const count=i32();if(count<0||count>1e6)throw Error('gvas');
+   for(let k=0;k<count;k++){const at=path+'['+key(keyType)+']';
+    if(GV_NUM[valueType]){const [t,n]=GV_NUM[valueType];need(n);field(at,t,p);p+=n;}
+    else if(valueType==='BoolProperty'){need(1);field(at,'bool',p);p+=1;}
+    else if(valueType==='StructProperty')props(at,stop);
+    else throw Error('gvas');}}
+  if(d.length<20||new TextDecoder().decode(d.subarray(0,4))!=='GVAS')return null;
+  try{p=4;const saveVersion=i32();i32();if(saveVersion>=3)i32();/* UE5 package version */
+   need(10);p+=10;str();/* engine version and branch */
+   const format=i32(),count=i32();if(count<0||count>4096)throw Error('gvas');need(count*20);p+=count*20;if(format<1)throw Error('gvas');
+   str();/* save game class */props('',d.length);
+   if(d.length-p>16)throw Error('gvas');return out;}
+  catch(e){return null;}}
+ const GV_FIXED=new Set(['Vector','Vector2D','Vector4','Rotator','Quat','Guid','DateTime','Timespan','LinearColor','Color','IntPoint','IntVector','Box','Box2D','Transform','SoftObjectPath','SoftClassPath','GameplayTagContainer','UniqueNetIdRepl','FrameNumber']);
  /* One file of a loaded save: its kind and fields, or binary when no text format fits. */
- async function decode(data){const gz=isGzip(data)?'gzip':isZlib(data)?'deflate':'';let plain=data;
+ async function decode(data){
+  if(data.length>4&&data[0]===0x47&&data[1]===0x56&&data[2]===0x41&&data[3]===0x53){const f=gvasFields(data);return f?{kind:'gvas',gzip:'',data,fields:f}:{kind:'binary',gzip:'',fields:[]};}
+  const gz=isGzip(data)?'gzip':isZlib(data)?'deflate':'';let plain=data;
   if(gz){try{plain=await pipe(data,new DecompressionStream(gz));}catch(e){return {kind:'binary',gzip:gz,fields:[]};}}
   const text=textOf(plain);if(text===null)return {kind:'binary',gzip:gz,fields:[],plain};
   const note=/(^|\n)\s*(checksum|crc|hash)\s*=/i.test(text)?'This file stores its own checksum. The game may refuse edited values.':'';
@@ -673,12 +732,24 @@ const SaveFields=(()=>{
   if(first==='{'){const f=pairFields(body,/^[ \t]*([A-Za-z_][\w.]*)[ \t]*=[ \t]*(-?\d+(?:\.\d+)?|true|false)[ \t]*\r?$/gm);if(f.length)return {kind:'sjson',gzip:gz,text,body,pad,note,fields:f};}
   {const f=pairFields(body,/^([A-Za-z_][\w.]*)=(-?\d+(?:\.\d+)?|true|false)\r?$/gm);if(f.length>=2)return {kind:'keyvalue',gzip:gz,text,body,pad,note,fields:f};}
   return {kind:'text',gzip:gz,fields:[]};}
+ const RANGES={int8:[-128,127],uint8:[0,255],int16:[-32768,32767],uint16:[0,65535],int32:[-2147483648,2147483647],uint32:[0,4294967295]};
  function checkValue(field,value){const v=String(value).trim();
   if(field.kind==='bool'){if(v!=='true'&&v!=='false')throw Error(field.path+' must be true or false.');return v;}
+  if(field.binary==='int64'||field.binary==='uint64'){if(!/^-?\d+$/.test(v))throw Error(field.path+' holds a whole number.');const b=BigInt(v);
+   if(field.binary==='uint64'?b<0n||b>18446744073709551615n:b<-9223372036854775808n||b>9223372036854775807n)throw Error(field.path+' is out of range.');return v;}
+  if(RANGES[field.binary]){const n=Number(v);if(!/^-?\d+$/.test(v)||n<RANGES[field.binary][0]||n>RANGES[field.binary][1])throw Error(field.path+' must be a whole number from '+RANGES[field.binary][0]+' to '+RANGES[field.binary][1]+'.');return v;}
+  if(field.binary==='float'&&Math.abs(Number(v))>3.4028234663852886e38)throw Error(field.path+' is too large.');
   if(!/^-?\d+(\.\d+)?$/.test(v)||!Number.isFinite(Number(v)))throw Error(field.path+' must be a number.');
   if(field.integer&&v.includes('.'))throw Error(field.path+' holds a whole number.');return v;}
  /* New file bytes with the edits applied; padded files keep their size. */
- async function encode(decoded,edits){let body=decoded.body;
+ async function encode(decoded,edits){
+  if(decoded.kind==='gvas'){const out=new Uint8Array(decoded.data),v=new DataView(out.buffer);
+   for(const e of edits){const x=checkValue(e.field,e.value),o=e.field.offset;
+    switch(e.field.binary){case 'bool':v.setUint8(o,x==='true'?1:0);break;case 'int8':v.setInt8(o,+x);break;case 'uint8':v.setUint8(o,+x);break;case 'int16':v.setInt16(o,+x,true);break;case 'uint16':v.setUint16(o,+x,true);break;
+     case 'int32':v.setInt32(o,+x,true);break;case 'uint32':v.setUint32(o,+x,true);break;case 'int64':v.setBigInt64(o,BigInt(x),true);break;case 'uint64':v.setBigUint64(o,BigInt(x),true);break;
+     case 'float':v.setFloat32(o,+x,true);break;case 'double':v.setFloat64(o,+x,true);break;}}
+   return out;}
+  let body=decoded.body;
   for(const e of [...edits].sort((a,b)=>b.field.start-a.field.start)){const v=checkValue(e.field,e.value);body=body.slice(0,e.field.start)+v+body.slice(e.field.end);}
   let pad=decoded.pad;if(pad){const grow=te.encode(body).length-te.encode(decoded.body).length;if(grow>pad.length)throw Error('There is no spare room in this file for a longer value. Choose a value with fewer digits.');
    pad=grow>=0?pad.slice(grow):pad+pad[pad.length-1].repeat(-grow);}
@@ -693,7 +764,7 @@ const SaveFields=(()=>{
      data=SaveImport.zip(files);text=text.split('\n').map(l=>l.startsWith('SLOT='+m[1]+':')?l.replace(/[0-9a-f]{64}$/,SaveLab.sha256(data)):l).join('\n');}}
    entries.push({path:f.path,data});}
   return SaveImport.zip([{path:'manifest.txt',data:te.encode(text)},...entries]);}
- return {decode,encode,rebuild,checkValue,jsonFields,xmlFields,pairFields};
+ return {decode,encode,rebuild,checkValue,jsonFields,xmlFields,pairFields,gvasFields};
 })();
 const lab={loads:[],results:null,from:-1,edits:[],game:null};
 function labReset(g){lab.loads=[];lab.results=null;lab.from=-1;lab.edits=[];lab.game=g?g.user+'/'+g.title:null;if($('labLoads'))labRender();}
