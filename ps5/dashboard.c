@@ -2597,6 +2597,13 @@ static void serve(int sock,int *locked) {
         char *json=malloc(32768);if(!json) {message(sock,500,"Out of memory");return;}
         int bad=pscloud_live_frame_probe(json,32768);respond(sock,bad?400:200,"application/json",json,strlen(json));free(json);return;
     }
+    if(!strcmp(method,"GET") && !strcmp(url,"/api/live/fps")) {char json[300];pscloud_live_fps_json(json,sizeof json);respond(sock,200,"application/json",json,strlen(json));return;}
+    if(!strcmp(method,"POST") && !strcmp(url,"/api/live/fps-start")) {
+        pscloud_log("EVENT","Dashboard action: Show FPS");
+        char *json=malloc(32768);if(!json) {message(sock,500,"Out of memory");return;}
+        int bad=pscloud_live_fps_start(json,32768);respond(sock,bad?400:200,"application/json",json,strlen(json));free(json);return;
+    }
+    if(!strcmp(method,"POST") && !strcmp(url,"/api/live/fps-stop")) {pscloud_live_fps_stop();message(sock,200,"FPS readout stopped");return;}
     if(!strcmp(method,"GET") && !strcmp(url,"/api/live/pins")) {char json[20000];pscloud_live_pins_json(json,sizeof json);respond(sock,200,"application/json",json,strlen(json));return;}
     if(!strcmp(method,"GET") && !strcmp(url,"/api/live/state")) {char json[1024];pscloud_live_state_json(json,sizeof json);respond(sock,200,"application/json",json,strlen(json));return;}
     if(!strcmp(method,"GET") && !strcmp(url,"/api/live/list")) {char *json=malloc(65536);if(!json) {message(sock,500,"Out of memory");return;}pscloud_live_list_json(json,65536,200);respond(sock,200,"application/json",json,strlen(json));free(json);return;}

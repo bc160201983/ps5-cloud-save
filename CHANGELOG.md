@@ -3,6 +3,23 @@
 Every release, newest first, with what was verified on a console and what was not.
 The current overview is in [README.md](README.md).
 
+## Version 0.34.18 — live FPS readout
+
+On the 11.40 console the frame probe found, in PPSA03210, a counter held in several places
+whose rate moved together between about 87 and 120 per second as the game ran: the game's
+frame counter.
+
+- **Show FPS** in the Live section runs the probe once (about 2 seconds), picks the biggest
+  group of steady counters that hold the same value (a frame counter copied into several
+  structures), and remembers it.
+- A small badge in the corner then shows the current FPS and the game, updated once a second
+  on every page by reading that one counter. It stops with its × button, or by itself when the
+  game closes or restarts, and comes back after a page reload while it is on.
+- Read only: the game is never written to. A notification shows the chosen counter.
+- Host test: a counter copied three times is chosen over an unrelated timer, the readout
+  matches its rate, and it ends when the game restarts. Not yet confirmed against an
+  on-screen frame rate.
+
 ## Version 0.34.17 — frame probe finds the game's data without module names
 
 - On the 11.40 console the memory map gives no module names, so 0.34.16's frame probe

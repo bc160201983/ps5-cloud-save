@@ -382,3 +382,38 @@ class LiveMemoryTests(unittest.TestCase):
         actual = len(drawn) / drawn[-1]
         self.assertLess(abs(report['candidates'][0]['per_second'] - actual), actual * 0.3, (report, actual))
         self.assertEqual(self.values(), [1234, 1234])  # the probe never writes
+
+    def test_fps_readout_picks_the_copied_frame_counter_and_tracks_its_rate(self):
+        import threading
+        for name in ('pscloud_live_fps_start', 'pscloud_live_fps_json'):
+            getattr(self.lib, name).argtypes = [ctypes.c_void_p, ctypes.c_size_t]
+        os.environ['PSCLOUD_TEST_PROBE_MS'] = '500'
+        stop = threading.Event(); drawn = []
+        def frames():  # frame counter copied in three places, plus an unrelated timer
+            n, tick, started = 5000, 100, time.monotonic()
+            while not stop.is_set():
+                n += 1; tick += 2; drawn.append(time.monotonic() - started)
+                with self.memory.open('r+b') as f:
+                    for offset in (4096, 8192, 12288):
+                        f.seek(offset); f.write(struct.pack('<I', n))
+                    f.seek(20000); f.write(struct.pack('<I', tick))
+                time.sleep(1/60)
+        worker = threading.Thread(target=frames); worker.start()
+        out = ctypes.create_string_buffer(32768)
+        try:
+            time.sleep(0.2)
+            self.assertEqual(self.lib.pscloud_live_fps_start(out, len(out)), 0, out.value)
+            report = json.loads(out.value)
+            self.assertTrue(report['fps_on'], report)
+            self.assertEqual((report['fps_counter'], report['fps_copies']), ('0x10001000', 3))
+            time.sleep(1.0); self.lib.pscloud_live_fps_json(out, len(out))
+            reading = json.loads(out.value)
+            actual = len(drawn) / drawn[-1]
+            self.assertTrue(reading['on'], reading)
+            self.assertLess(abs(reading['fps'] - actual), actual * 0.35, (reading, actual))
+        finally:
+            stop.set(); worker.join(); os.environ.pop('PSCLOUD_TEST_PROBE_MS', None)
+        self.stamp.write_text('106')  # the game restarts
+        self.lib.pscloud_live_fps_json(out, len(out))
+        self.assertFalse(json.loads(out.value)['on'])
+        self.assertEqual(self.values(), [1234, 1234])

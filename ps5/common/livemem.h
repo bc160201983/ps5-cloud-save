@@ -25,4 +25,8 @@ void pscloud_live_set_trace(const char *path);
 void pscloud_live_allow_freeze(int on);
 /* Read-only diagnostic: frame counter candidates in the game's own data, as JSON. */
 int pscloud_live_frame_probe(char *out,size_t max);
+/* FPS readout: start chooses the frame counter with a probe; json reads it (about once a second). */
+int pscloud_live_fps_start(char *out,size_t max);
+void pscloud_live_fps_json(char *out,size_t max);
+void pscloud_live_fps_stop(void);
 #endif

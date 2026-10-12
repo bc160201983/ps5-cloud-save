@@ -622,7 +622,28 @@ static unsigned probe_interval_ms(void) {
 static double now_seconds(void) {struct timespec t;clock_gettime(CLOCK_MONOTONIC,&t);return t.tv_sec+t.tv_nsec/1e9;}
 static void sleep_ms(unsigned ms) {struct timespec t={ms/1000,(long)(ms%1000)*1000000L};nanosleep(&t,NULL);}
 struct probe_hit {uint64_t address;uint32_t v0,v1,v2;};
-int pscloud_live_frame_probe(char *out,size_t max) {
+/* Live FPS readout: the frame counter chosen by a probe, read once per request. */
+static pthread_mutex_t fps_lock=PTHREAD_MUTEX_INITIALIZER;
+static struct {int on,pid;uint64_t session,address;uint32_t last;double last_time,fps;char title[16];} F;
+static int frame_probe(char *out,size_t max,int choose_fps);
+int pscloud_live_frame_probe(char *out,size_t max) {return frame_probe(out,max,0);}
+int pscloud_live_fps_start(char *out,size_t max) {return frame_probe(out,max,1);}
+void pscloud_live_fps_stop(void) {pthread_mutex_lock(&fps_lock);if(F.on)pscloud_log("EVENT","FPS readout stopped for %s",F.title);F.on=0;pthread_mutex_unlock(&fps_lock);}
+void pscloud_live_fps_json(char *out,size_t max) {
+    pthread_mutex_lock(&fps_lock);
+    if(!F.on) {pthread_mutex_unlock(&fps_lock);snprintf(out,max,"{\"on\":false}");return;}
+    char title[16]="";uint64_t stamp=0;int pid=find_game(title,&stamp);
+    if(pid!=F.pid||stamp!=F.session) {F.on=0;pthread_mutex_unlock(&fps_lock);pscloud_log("EVENT","FPS readout ended: the game closed or restarted");snprintf(out,max,"{\"on\":false,\"message\":\"The game closed or restarted. Press Show FPS again.\"}");return;}
+    uint32_t v;double now=now_seconds();
+    if(!mem_read(F.pid,F.address,&v,4)) {
+        double span=now-F.last_time;
+        /* Measure over at least half a second; a counter that jumped back was reset by the game. */
+        if(span>=0.5) {uint32_t d=v-F.last;F.fps=d<=1000?d/span:0;F.last=v;F.last_time=now;}
+    }
+    snprintf(out,max,"{\"on\":true,\"title\":\"%s\",\"fps\":%.0f,\"address\":\"0x%llx\"}",F.title,F.fps,(unsigned long long)F.address);
+    pthread_mutex_unlock(&fps_lock);
+}
+static int frame_probe(char *out,size_t max,int choose_fps) {
     pthread_mutex_lock(&lock);
     if(L.busy||stopping) {pthread_mutex_unlock(&lock);snprintf(out,max,"{\"ok\":false,\"message\":\"Wait for the current search to finish\"}");return -1;}
     char title[16]="";uint64_t stamp=0;int pid=find_game(title,&stamp);
@@ -684,7 +705,16 @@ int pscloud_live_frame_probe(char *out,size_t max) {
     pos+=(size_t)snprintf(out+pos,max-pos,"],\"located\":\"%s\",\"regions_read\":%zu,\"map\":[%s],\"read_kib\":%llu,\"unread_kib\":%llu,\"interval_ms\":%u,\"candidates\":[",how,picked,map,(unsigned long long)(total>>10),(unsigned long long)(unread>>10),probe_interval_ms());
     for(size_t k=0;k<kept&&k<64&&pos+128<max;k++)
         pos+=(size_t)snprintf(out+pos,max-pos,"%s{\"address\":\"0x%llx\",\"value\":%u,\"per_second\":%.1f}",k?",":"",(unsigned long long)hits[k].address,hits[k].v2,(double)(hits[k].v2-hits[k].v1)/span);
-    snprintf(out+pos,max-pos,"],\"total_candidates\":%zu}",kept);
+    /* The frame counter is usually copied into several game structures: the biggest group of
+     * candidates holding the same value (within 3) is chosen for the FPS readout. */
+    size_t best=0,best_size=0;
+    for(size_t k=0;k<kept;k++) {size_t size=0;for(size_t j=0;j<kept;j++) {uint32_t a=hits[k].v2,b=hits[j].v2;if((a>b?a-b:b-a)<=3)size++;}
+        uint32_t rate=hits[k].v2-hits[k].v1;if(size>best_size&&rate>=15&&rate<=250) {best=k;best_size=size;}}
+    if(choose_fps&&best_size) {
+        pthread_mutex_lock(&fps_lock);F.on=1;F.pid=pid;F.session=stamp;F.address=hits[best].address;F.last=hits[best].v2;F.last_time=t2;F.fps=(double)(hits[best].v2-hits[best].v1)/span;snprintf(F.title,sizeof F.title,"%s",title);pthread_mutex_unlock(&fps_lock);
+        pscloud_notify("FPS readout on for %s (counter 0x%llx, %zu copies)",title,(unsigned long long)hits[best].address,best_size);
+    }
+    snprintf(out+pos,max-pos,"],\"total_candidates\":%zu,\"fps_counter\":\"0x%llx\",\"fps_copies\":%zu,\"fps_on\":%s}",kept,best_size?(unsigned long long)hits[best].address:0ULL,best_size,choose_fps&&best_size?"true":"false");
     pscloud_log("EVENT","Frame probe in %s: read %llu KiB of eboot data, %zu steady counters",title,(unsigned long long)(total>>10),kept);
     if(*trace_path) {char path[1200];snprintf(path,sizeof path,"%s",trace_path);char *slash=strrchr(path,'/');
         if(slash) {snprintf(slash+1,sizeof path-(size_t)(slash+1-path),"frame-probe.txt");FILE *f=fopen(path,"w");if(f) {fputs(out,f);fputc('\n',f);fflush(f);fsync(fileno(f));fclose(f);}}}
