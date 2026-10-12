@@ -3,6 +3,12 @@
 Every release, newest first, with what was verified on a console and what was not.
 The current overview is in [README.md](README.md).
 
+## Version 0.34.22 — simpler save editor
+
+- Removed **Named fields** and **Compare two loads** from Or change the save file. They listed
+  little for most PS5 saves (binary formats). Find a value, Find by change, Your changes and the
+  reusable save profiles are unchanged.
+
 ## Version 0.34.21 — your save profiles as named fields
 
 - Binary saves showed nothing in Named fields (for example Ghost of Tsushima). The list now
