@@ -3,6 +3,20 @@
 Every release, newest first, with what was verified on a console and what was not.
 The current overview is in [README.md](README.md).
 
+## Version 0.34.5 — faster cloud screens
+
+Measured on the 11.40 console before this change: every dashboard request answered in
+0.3 s or less except the two that talk to Nextcloud. Linked profiles took 8.1 s and the
+per-game sync check 2.8 s.
+
+- WebDAV metadata requests now share one connection, TLS session and DNS cache, so only
+  the first request pays for the TLS handshake. Before, every request opened a new
+  connection and reloaded the certificate bundle.
+- Opening linked profiles no longer re-uploads this console's profile list each time.
+  The background loop already publishes it 20 seconds after start and hourly; the screen
+  only publishes when that has not happened yet.
+- PS5 timing after the change is pending.
+
 ## Version 0.34.4 — send a new dashboard without restarting the PS5
 
 - Sending `pscloud-dashboard.elf` while PSCloud was already running did nothing visible:

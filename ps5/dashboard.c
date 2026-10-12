@@ -168,8 +168,24 @@ static size_t collect(char *p,size_t a,size_t b,void *ctx) {
     memcpy(r->data+r->size,p,n);r->size+=n;r->data[r->size]=0;return n;
 }
 static _Thread_local int webdav_quiet; /* background sync checks do not fill Activity */
+/* One shared connection, TLS session and DNS cache for WebDAV metadata requests. Without it
+ * every request opened a new connection and repeated the TLS handshake (most of a second on
+ * the PS5), so screens that make several cloud requests in a row took many seconds. */
+static CURLSH *curl_share;
+static pthread_mutex_t share_locks[CURL_LOCK_DATA_LAST];
+static void share_lock(CURL *h,curl_lock_data data,curl_lock_access access,void *user) {(void)h;(void)access;(void)user;pthread_mutex_lock(&share_locks[data]);}
+static void share_unlock(CURL *h,curl_lock_data data,void *user) {(void)h;(void)user;pthread_mutex_unlock(&share_locks[data]);}
+static void curl_share_setup(void) {
+    for(int i=0;i<CURL_LOCK_DATA_LAST;i++)pthread_mutex_init(&share_locks[i],NULL);
+    curl_share=curl_share_init();if(!curl_share)return;
+    curl_share_setopt(curl_share,CURLSHOPT_LOCKFUNC,share_lock);curl_share_setopt(curl_share,CURLSHOPT_UNLOCKFUNC,share_unlock);
+    curl_share_setopt(curl_share,CURLSHOPT_SHARE,CURL_LOCK_DATA_DNS);
+    curl_share_setopt(curl_share,CURLSHOPT_SHARE,CURL_LOCK_DATA_SSL_SESSION);
+    curl_share_setopt(curl_share,CURLSHOPT_SHARE,CURL_LOCK_DATA_CONNECT);
+}
 static long webdav(const struct settings *s,const char *url,const char *method,struct response *r) {
     CURL *c=curl_easy_init();if(!c)return 0;
+    if(curl_share)curl_easy_setopt(c,CURLOPT_SHARE,curl_share);
     curl_easy_setopt(c,CURLOPT_URL,url);curl_easy_setopt(c,CURLOPT_PROTOCOLS_STR,"https");
     curl_easy_setopt(c,CURLOPT_USERAGENT,"PSCloud/" PSCLOUD_VERSION);
     curl_easy_setopt(c,CURLOPT_USERNAME,s->user);curl_easy_setopt(c,CURLOPT_PASSWORD,s->password);
@@ -185,6 +201,7 @@ static long webdav(const struct settings *s,const char *url,const char *method,s
 }
 static long webdav_put(const struct settings *s,const char *url,const char *data,size_t size) {
     CURL *c=curl_easy_init();if(!c)return 0;char sink[256];struct response r={sink,0,sizeof sink-1};
+    if(curl_share)curl_easy_setopt(c,CURLOPT_SHARE,curl_share);
     curl_easy_setopt(c,CURLOPT_URL,url);curl_easy_setopt(c,CURLOPT_PROTOCOLS_STR,"https");
     curl_easy_setopt(c,CURLOPT_USERAGENT,"PSCloud/" PSCLOUD_VERSION);
     curl_easy_setopt(c,CURLOPT_USERNAME,s->user);curl_easy_setopt(c,CURLOPT_PASSWORD,s->password);
@@ -999,8 +1016,9 @@ static int profile_name(const char *user,char *name,size_t max) {
     for(ssize_t i=0;i<n;i++)if((unsigned char)name[i]<32) {name[i]=0;break;}
     return name[0]?0:-1;
 }
+static int registry_published;
 static void registry_publish(void) {
-    struct settings cloud={0};if(pscloud_configure(cloudpath,&cloud)||!*console_id)return;
+    struct settings cloud={0};if(pscloud_configure(cloudpath,&cloud)||!*console_id)return;registry_published=1;
     webdav_quiet=1;char url[4200],text[512];
     char sink[512];struct response ignored={sink,0,sizeof sink-1};
     snprintf(url,sizeof url,"%s/.pscloud-profiles/",cloud.url);webdav(&cloud,url,"MKCOL",&ignored);
@@ -1472,7 +1490,8 @@ static void sync_after_restore(const char *user,const char *title,const char *fi
 }
 static void cloud_profiles_json(int sock) {
     struct settings cloud={0};if(pscloud_configure(cloudpath,&cloud)) {respond(sock,200,"application/json","{\"profiles\":[],\"links\":[]}",28);return;}
-    registry_publish();webdav_quiet=1;
+    if(!registry_published)registry_publish(); /* afterwards the background loop publishes hourly */
+    webdav_quiet=1;
     char url[4200];snprintf(url,sizeof url,"%s/.pscloud-profiles/",cloud.url);char *xml=malloc(256*1024+1);struct response r={xml,0,256*1024};
     long status=xml?webdav(&cloud,url,"PROPFIND",&r):0;
     char json[16384];int pos=snprintf(json,sizeof json,"{\"console\":\"%s\",\"profiles\":[",console_id);unsigned count=0;
@@ -2910,6 +2929,7 @@ int main(int argc,char **argv) {
     game_settings_load();schedule_load();console_id_load();cloud_keep_load();full_check_load();encryption_load();
     pscloud_log_open(logpath);load_preferences();signal(SIGPIPE,SIG_IGN);signal(SIGTERM,stop_server);signal(SIGINT,stop_server);
     if(curl_global_init(CURL_GLOBAL_DEFAULT))return 2;
+    curl_share_setup();
     int server=socket(AF_INET,SOCK_STREAM,0);if(server<0)return 2;
     int yes=1;setsockopt(server,SOL_SOCKET,SO_REUSEADDR,&yes,sizeof yes);
     struct sockaddr_in address={0};address.sin_family=AF_INET;address.sin_port=htons((uint16_t)port);
