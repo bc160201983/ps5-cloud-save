@@ -3,6 +3,22 @@
 Every release, newest first, with what was verified on a console and what was not.
 The current overview is in [README.md](README.md).
 
+## Version 0.34.12 — choose your cloud provider
+
+- **Cloud provider picker** in Cloud settings with ready-made WebDAV settings and short
+  sign-in steps for Koofr, pCloud (US and EU servers), Yandex Disk, Nextcloud and Synology
+  NAS, plus Other WebDAV service. Choosing one fills the backup folder address; addresses
+  with YOUR-… placeholders still need your server or user name. A saved address selects
+  its provider automatically. Uploads, downloads, sync and restore use the same tested
+  WebDAV code as before.
+- **Connect creates the backup folder** when the last folder in the address does not exist
+  yet, instead of asking you to create it in the provider first.
+- **Clearer connection errors:** a wrong username or app password, a server that cannot be
+  reached or has an invalid HTTPS certificate, and a folder that cannot be created now each
+  get their own message instead of "Nextcloud rejected the connection".
+- Provider addresses and sign-in steps follow each provider's own help pages. Only Koofr has
+  been used with PSCloud on a console so far; the others are untested with PSCloud.
+
 ## Version 0.34.11 — Freeze off, and a clear prompt after a game restart
 
 The 11.40 console crashed six times on 2026-10-12. Two crashes happened while a value was

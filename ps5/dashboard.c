@@ -1976,8 +1976,22 @@ static void configure_cloud(int sock,const char *form) {
     strcpy(s.mode,"once");
     if(*previous.ca)strcpy(s.ca,previous.ca);else snprintf(s.ca,sizeof s.ca,"%.900s/ca.pem",root);
     char body[65537];struct response response={body,0,sizeof body-1};long status=webdav(&s,s.url,"PROPFIND",&response);
+    /* A backup folder that does not exist yet is created, so any WebDAV provider works without
+     * preparing the folder by hand. Only the last folder of the URL is created. */
+    if(status==404) {
+        char sink[512];struct response made={sink,0,sizeof sink-1};long created=webdav(&s,s.url,"MKCOL",&made);
+        if(created==201||created==405) {response.size=0;status=webdav(&s,s.url,"PROPFIND",&response);}
+        if(created==201)pscloud_log("EVENT","Created the backup folder on the cloud: %s",s.url);
+    }
     cloud_status=(int)status;
-    if(status!=207 && status!=200) {message(sock,502,"Nextcloud rejected the connection; settings were not saved");return;}
+    if(status!=207 && status!=200) {
+        char why[300];
+        if(!status)snprintf(why,sizeof why,"Could not reach the cloud server. Check the address and that it uses a valid HTTPS certificate; settings were not saved");
+        else if(status==401||status==403)snprintf(why,sizeof why,"The cloud rejected the username or app password (HTTP %ld); settings were not saved",status);
+        else if(status==404||status==409)snprintf(why,sizeof why,"The backup folder was not found and could not be created. Check the address; its parent folder must exist (HTTP %ld)",status);
+        else snprintf(why,sizeof why,"The cloud server answered HTTP %ld instead of a WebDAV folder; settings were not saved",status);
+        message(sock,502,why);return;
+    }
     char config[6144];snprintf(config,sizeof config,"URL=%s\nUSER=%s\nPASSWORD=%s\nCA_BUNDLE=%s\nMODE=once\n",s.url,s.user,s.password,s.ca);
     if(atomic_config(cloudpath,config)) {message(sock,500,"Could not save private cloud settings");return;}
     memset(config,0,sizeof config);memset(s.password,0,sizeof s.password);message(sock,200,"Nextcloud connected and settings saved");

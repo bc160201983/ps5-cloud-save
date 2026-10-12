@@ -1661,3 +1661,12 @@ const found=SaveImport.slots(files);const pkg=SaveImport.pack(found,'7.00');fs.w
         connection=http.client.HTTPConnection('127.0.0.1',port,timeout=10)
         connection.request('GET','/');response=connection.getresponse();self.cookie=response.getheader('Set-Cookie').split(';')[0];response.read();connection.close()
         self.assertEqual(self.request('/api/state')[0],200)
+
+    def test_connect_creates_a_missing_backup_folder_and_explains_failures(self):
+        folder=self.fixture.env['PSCLOUD_URL']+'/PS5Backups'
+        status,data=self.request('/api/connect',dict(url=folder,username='user',password='bad'))
+        self.assertEqual(status,502);self.assertIn('username or app password',data['message'])
+        status,data=self.request('/api/connect',dict(url=folder,username='user',password='pass'))
+        self.assertEqual(status,200,data)
+        self.assertIn('/backups/PS5Backups',self.fixture.collections)
+        self.assertIn('Created the backup folder',(self.root/'pscloud.log').read_text())
