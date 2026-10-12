@@ -141,6 +141,7 @@ static pthread_t searcher;
 static int searcher_started;
 static int freezer_started,stopping,cancel_search;
 static unsigned search_sequence;
+static int candidates; /* the current results came from an ambiguous relocation */
 unsigned pscloud_live_sequence(void) {pthread_mutex_lock(&lock);unsigned n=search_sequence;pthread_mutex_unlock(&lock);return n;}
 static int type_of(const char *name) {for(int i=0;i<5;i++)if(!strcmp(name,TYPE_NAMES[i]))return i;return -1;}
 static double get(int type,const unsigned char *p) {
@@ -311,7 +312,7 @@ int pscloud_live_scan(const char *type_name,double value,char *message,size_t ma
     if(pid<0) {pthread_mutex_unlock(&lock);snprintf(message,max,"Start the game first; no game is running");return -1;}
     if(!L.addr)L.addr=malloc(CAP*sizeof *L.addr);
     if(!L.addr) {pthread_mutex_unlock(&lock);snprintf(message,max,"Out of memory");return -1;}
-    L.pid=pid;L.session=stamp;snprintf(L.title,sizeof L.title,"%s",title);L.type=type;L.value=value;L.count=0;L.overflow=0;L.has=0;L.total=0;
+    L.pid=pid;L.session=stamp;snprintf(L.title,sizeof L.title,"%s",title);L.type=type;L.value=value;L.count=0;L.overflow=0;L.has=0;L.total=0;candidates=0;
     pscloud_log("EVENT","Live search in %s for %g (%s)",title,value,TYPE_NAMES[type]);
     int r=start(scan_main,"scan",message,max);pthread_mutex_unlock(&lock);return r;
 }
@@ -319,13 +320,13 @@ int pscloud_live_next(double value,char *message,size_t max) {
     pthread_mutex_lock(&lock);
     if(L.busy||!session_ok()||!L.has||!fits(L.type,value)) {pthread_mutex_unlock(&lock);snprintf(message,max,"Wait for the search, check the value, or search again for this game session");return -1;}
     pscloud_log("EVENT","Live next search in %s for %g",L.title,value);
-    L.value=value;L.total=L.count;int r=start(next_main,"next",message,max);pthread_mutex_unlock(&lock);return r;
+    L.value=value;L.total=L.count;candidates=0;int r=start(next_main,"next",message,max);pthread_mutex_unlock(&lock);return r;
 }
 void pscloud_live_reset(void) {pthread_mutex_lock(&lock);pscloud_log("EVENT","Live search cleared%s",L.busy?" (stopping the running search)":"");if(L.busy)cancel_search=1;if(!L.busy) {L.count=0;L.has=0;L.overflow=0;L.error[0]=0;}pthread_mutex_unlock(&lock);}
 void pscloud_live_state_json(char *out,size_t max) {
     pthread_mutex_lock(&lock);char title[16]="";uint64_t stamp=0;int pid=find_game(title,&stamp);int same_game=session_ok();
-    snprintf(out,max,"{\"running\":%s,\"title\":\"%s\",\"busy\":%s,\"phase\":\"%s\",\"done\":%llu,\"total\":%llu,\"count\":%zu,\"has\":%s,\"overflow\":%s,\"type\":\"%s\",\"value\":%g,\"error\":\"%s\",\"same_game\":%s,\"pinned\":%u}",
-        pid>=0?"true":"false",title,L.busy?"true":"false",L.phase,L.done,L.total,L.count,L.has?"true":"false",L.overflow?"true":"false",TYPE_NAMES[L.type],L.value,L.error,same_game?"true":"false",pin_count);
+    snprintf(out,max,"{\"running\":%s,\"title\":\"%s\",\"busy\":%s,\"phase\":\"%s\",\"done\":%llu,\"total\":%llu,\"count\":%zu,\"has\":%s,\"overflow\":%s,\"type\":\"%s\",\"value\":%g,\"error\":\"%s\",\"same_game\":%s,\"pinned\":%u,\"candidates\":%s}",
+        pid>=0?"true":"false",title,L.busy?"true":"false",L.phase,L.done,L.total,L.count,L.has?"true":"false",L.overflow?"true":"false",TYPE_NAMES[L.type],L.value,L.error,same_game?"true":"false",pin_count,candidates?"true":"false");
     pthread_mutex_unlock(&lock);
 }
 void pscloud_live_list_json(char *out,size_t max,int limit) {
@@ -432,7 +433,11 @@ void pscloud_live_pins_json(char *out,size_t max) {
 #define OLD_OFFSET 24
 #define PROFILE_RULES 12 /* 256-byte rules for 12 places fit the 8 KiB request limit */
 #define PAGE 4096
-struct locator_rule {unsigned char bytes[WINDOW],mask[WINDOW];unsigned len,offset,matches,first;uint64_t address;};
+/* A fingerprint that matches a few places (games often keep copies of the same item data)
+ * returns those places as search results; Next search with the current number picks one. */
+#define MAX_CANDIDATES 64
+struct locator_rule {unsigned char bytes[WINDOW],mask[WINDOW];unsigned len,offset,matches,first;uint64_t address,found[MAX_CANDIDATES];};
+
 static struct locator_rule locator_rules[TARGETS];static unsigned locator_count;
 static int signature_strength(const unsigned char *b,const unsigned char *mask,unsigned len,unsigned *fixed,unsigned *nonzero) {
     *fixed=0;*nonzero=0;for(unsigned i=0;i<len;i++)if(mask[i]) {(*fixed)++;if(b[i])(*nonzero)++;}
@@ -527,12 +532,12 @@ static void *resolve_main(void *arg) {
             if(mem_read(L.pid,base+k*PAGE,buf+k*PAGE,len)) {bad[k]=1;if(k*PAGE<CHUNK)skipped+=len;}
         }
         for(unsigned k=0;k<locator_count;k++) {
-            struct locator_rule *r=&locator_rules[k];if(r->matches>1)continue;
+            struct locator_rule *r=&locator_rules[k];if(r->matches>MAX_CANDIDATES)continue;
             size_t starts=n>=r->len?n-r->len+1:0;if(starts>CHUNK)starts=CHUNK;
             for(size_t o=0;o<starts;o++) {
                 if((base+o+r->offset)%TYPE_SIZE[L.type]||buf[o+r->first]!=r->bytes[r->first]||bad[o/PAGE]||bad[(o+r->len-1)/PAGE])continue;
                 unsigned j=0;for(;j<r->len;j++)if(r->mask[j]&&buf[o+j]!=r->bytes[j])break;
-                if(j==r->len) {r->address=base+o+r->offset;if(++r->matches>1)break;}
+                if(j==r->len) {r->address=base+o+r->offset;if(r->matches<MAX_CANDIDATES)r->found[r->matches]=r->address;if(++r->matches>MAX_CANDIDATES)break;}
             }
         }
         pthread_mutex_lock(&lock);L.done+=remain<CHUNK?remain:CHUNK;pthread_mutex_unlock(&lock);
@@ -541,16 +546,28 @@ static void *resolve_main(void *arg) {
     trace_end(error);
     if(skipped)pscloud_log("INFO","Relocation skipped %llu KiB of unreadable game memory",skipped/1024);
     unsigned found_rules=0;
+    int ambiguous=0;
     for(unsigned k=0;!error&&k<locator_count;k++) {
-        if(locator_rules[k].matches!=1)error=locator_rules[k].matches?"Signature is ambiguous; profile needs refinement":"Signature not found; profile needs refinement";
-        else for(unsigned j=0;j<k;j++)if(locator_rules[j].address==locator_rules[k].address)error="Profile targets overlap; nothing was bound";
+        if(!locator_rules[k].matches)error="Signature not found; profile needs refinement";
+        else if(locator_rules[k].matches>MAX_CANDIDATES)error="The profile matched more than 64 places; search for the value instead";
+        else if(locator_rules[k].matches>1)ambiguous=1;
     }
+    for(unsigned k=0;!error&&!ambiguous&&k<locator_count;k++)
+        for(unsigned j=0;j<k;j++)if(locator_rules[j].address==locator_rules[k].address)error="Profile targets overlap; nothing was bound";
     pthread_mutex_lock(&lock);
-    if(!error)found_rules=locator_count;
-    if(!error)pscloud_notify("Live profile found %u places in %s. Check the values before changing them",found_rules,L.title);
-    else pscloud_notify("Live profile could not be relocated in %s: %s",L.title,error);
-    if(!error) {for(unsigned k=0;k<locator_count;k++)L.addr[k]=locator_rules[k].address;L.count=locator_count;qsort(L.addr,L.count,sizeof *L.addr,address_order);}
-    else L.count=0;
+    if(!error&&!ambiguous) {
+        found_rules=locator_count;
+        pscloud_notify("Live profile found %u places in %s. Check the values before changing them",found_rules,L.title);
+        for(unsigned k=0;k<locator_count;k++)L.addr[k]=locator_rules[k].address;
+        L.count=locator_count;qsort(L.addr,L.count,sizeof *L.addr,address_order);
+    }
+    else if(!error) {
+        size_t c=0;for(unsigned k=0;k<locator_count;k++)for(unsigned m=0;m<locator_rules[k].matches;m++)L.addr[c++]=locator_rules[k].found[m];
+        qsort(L.addr,c,sizeof *L.addr,address_order);size_t kept=0;for(size_t m=0;m<c;m++)if(!kept||L.addr[kept-1]!=L.addr[m])L.addr[kept++]=L.addr[m];
+        L.count=kept;candidates=1;
+        pscloud_notify("Live profile matched %zu places in %s. Type the current number and use Next search",kept,L.title);
+    }
+    else {L.count=0;pscloud_notify("Live profile could not be relocated in %s: %s",L.title,error);}
     pthread_mutex_unlock(&lock);free(buf);free(list);finish(error);return NULL;
 }
 int pscloud_live_resolve(const char *title,const char *type,const char *patterns,char *message,size_t max) {
@@ -564,7 +581,7 @@ int pscloud_live_resolve(const char *title,const char *type,const char *patterns
         else {
             if(!L.addr)L.addr=malloc(CAP*sizeof *L.addr);
             if(!L.addr)snprintf(message,max,"Not enough memory");
-            else {L.type=t;L.pid=pid;L.session=stamp;strcpy(L.title,running);L.has=0;L.count=0;L.value=0;
+            else {L.type=t;L.pid=pid;L.session=stamp;strcpy(L.title,running);L.has=0;L.count=0;L.value=0;candidates=0;
                 pscloud_log("EVENT","Relocating a Live profile in %s (%u places)",running,locator_count);result=start(resolve_main,"resolve",message,max);}
         }
     }

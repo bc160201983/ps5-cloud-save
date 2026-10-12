@@ -23,6 +23,7 @@ class LiveMemoryTests(unittest.TestCase):
         cls.lib = ctypes.CDLL(str(binary))
         msg = [ctypes.c_void_p, ctypes.c_size_t]
         cls.lib.pscloud_live_scan.argtypes = [ctypes.c_char_p, ctypes.c_double, *msg]
+        cls.lib.pscloud_live_next.argtypes = [ctypes.c_double, *msg]
         cls.lib.pscloud_live_pin.argtypes = [ctypes.c_char_p, ctypes.c_char_p, *msg]
         cls.lib.pscloud_live_edit.argtypes = [ctypes.c_char_p, ctypes.c_uint, ctypes.c_char_p, ctypes.c_double, *msg]
         for name in ('state', 'pins'):
@@ -255,9 +256,17 @@ class LiveMemoryTests(unittest.TestCase):
         self.assertEqual(self.json('state')['type'],'int32')  # failed import cannot change existing search type
         self.call('resolve',b'PPSA02433',b'int32',patterns)
         self.wait_for(lambda: not self.json('state')['busy'])
-        self.assertIn('ambiguous',self.json('state')['error'])
-        self.assertFalse(self.json('state')['has'])
-        self.assertEqual(self.memory.read_bytes(),bytes(data))
+        state=self.json('state')
+        # The copy at 4096 makes one place ambiguous: every match becomes a search result.
+        self.assertEqual((state['error'],state['has'],state['candidates']),('',True,True))
+        self.assertEqual([p['address'] for p in self.json('list')['places']],['0x10000100','0x10000400','0x10001000'])
+        self.assertEqual(self.memory.read_bytes(),bytes(data))  # relocation never writes
+        with self.memory.open('r+b') as f:
+            f.seek(256);f.write(struct.pack('<i',4321))  # the game's real copy changes
+        self.call('next',4321.0)
+        self.wait_for(lambda: not self.json('state')['busy'])
+        self.assertEqual([p['address'] for p in self.json('list')['places']],['0x10000100'])
+        self.assertFalse(self.json('state')['candidates'])
 
     def test_relocation_skips_unreadable_pages(self):
         profile=self.teach_locator()

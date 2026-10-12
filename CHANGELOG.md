@@ -3,6 +3,20 @@
 Every release, newest first, with what was verified on a console and what was not.
 The current overview is in [README.md](README.md).
 
+## Version 0.34.9 — Relocate & bind with several matches
+
+On the 11.40 console, Relocate & bind for LINEN in PPSA03210 read all 11.6 GB in 84 s and
+then stopped with "Signature is ambiguous": the game keeps more than one copy of the same
+item data, so the fingerprint matched several places and nothing was bound.
+
+- When a fingerprint matches 2 to 64 places, those places become the search results
+  instead of an error. The page fills in the value's name and asks for the number the game
+  shows now; Next search narrows the places, then Save keeps it as before.
+- Nothing is written or frozen automatically. More than 64 matches still fails, with a
+  message to search for the value instead.
+- Host test: a duplicated fingerprint returns every match, and Next search with the game's
+  current number leaves the real place.
+
 ## Version 0.34.8 — finding the Live search freeze
 
 The 11.40 console froze twice during a Live search in PPSA03210. During the first freeze a
