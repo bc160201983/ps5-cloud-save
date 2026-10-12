@@ -3,7 +3,7 @@ $(error Set PS5_PAYLOAD_SDK to the installed ps5-payload SDK directory)
 endif
 include $(PS5_PAYLOAD_SDK)/toolchain/prospero.mk
 
-.PHONY: all clean deploy upload recovery backup dashboard share createtest writetest
+.PHONY: all clean deploy upload recovery backup dashboard share createtest writetest memdump
 all: pscloud-probe.elf pscloud-export.elf pscloud-ps.elf
 pscloud-ps.elf: ps-probe.c
 	$(CC) -O2 -Wall -Wextra -Werror -o $@ ps-probe.c -lkernel
@@ -41,6 +41,10 @@ sqlite3.o: $(SQLITE_DIR)/sqlite3.c
 	$(CC) -O2 -w -DSQLITE_THREADSAFE=0 -DSQLITE_OMIT_LOAD_EXTENSION -DSQLITE_OMIT_WAL -c -o $@ $(SQLITE_DIR)/sqlite3.c
 pscloud-write-test.elf: write-test.c sqlite3.o common/mount.c common/mount.h common/log.c
 	$(CC) -O2 -Wall -Wextra -Werror -I$(SQLITE_DIR) -o $@ write-test.c sqlite3.o common/mount.c common/log.c -lkernel -lSceFsInternalForVsh
+# Diagnostic: copies the running game's program image to /data/pscloud/dump (read only).
+memdump: pscloud-memdump.elf
+pscloud-memdump.elf: memdump.c
+	$(CC) -O2 -Wall -Wextra -Werror -o $@ memdump.c -lkernel
 pscloud-backup.elf: backup.c common/mount.c common/mount.h common/restore.c common/zip.c common/log.c common/snapshot.c
 	$(CC) -O2 -Wall -Wextra -Werror $$($(CURL_CONFIG) --cflags) -o $@ backup.c common/mount.c common/restore.c common/zip.c common/log.c common/snapshot.c $$($(CURL_CONFIG) --static-libs) -lkernel -lSceFsInternalForVsh
 pscloud-download.elf: download.c common/cloud.c common/restore.c common/log.c common/restore.h common/cloud.h common/snapshot.c
@@ -50,4 +54,4 @@ pscloud-restore.elf: restore.c common/restore.c common/zip.c common/log.c common
 deploy: pscloud-probe.elf
 	$(PS5_DEPLOY) -h $(PS5_HOST) -p 9021 $<
 clean:
-	rm -f pscloud-probe.elf pscloud-export.elf pscloud-ps.elf pscloud-upload.elf pscloud-download.elf pscloud-restore.elf pscloud-backup.elf pscloud-dashboard.elf pscloud-create-test.elf pscloud-write-test.elf sqlite3.o ui.h
+	rm -f pscloud-probe.elf pscloud-export.elf pscloud-ps.elf pscloud-upload.elf pscloud-download.elf pscloud-restore.elf pscloud-backup.elf pscloud-dashboard.elf pscloud-create-test.elf pscloud-write-test.elf pscloud-memdump.elf sqlite3.o ui.h
