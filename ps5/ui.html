@@ -156,6 +156,59 @@ const SaveImport=(()=>{
   return {bytes:zip(entries),title:titles[0],slots:found.map(s=>s.slot),name:found[0].name||titles[0]};}
  return {unzip,slots,pack,sfoText};
 })();
+/* Use a PC save: the PC files replace the PS5 files with the same names in one slot of this
+ * game; the slot's other files and its system files stay as they are on this PS5. The result
+ * goes through Receive a shared save, which checks a copy first and keeps a rollback copy. */
+const pcSave={files:null,ps5:null,plan:null};
+const pcBase=p=>p.split('/').pop().toLowerCase();
+/* Pure: which PC file replaces which PS5 file in the best-matching slot. */
+function pcSavePlan(slots,pcFiles){
+ const td=new TextDecoder();
+ for(const f of pcFiles)if(f.data.length>=4&&td.decode(f.data.subarray(0,4))==='DSSS')throw Error(f.path+' is encrypted by the game for one account and platform (DSSS). It cannot be used on PS5.');
+ const plans=slots.map(s=>{const used=new Set(),rows=s.files.map(x=>{
+   const lower=x.path.toLowerCase(),same=pcFiles.filter(f=>!used.has(f)&&(f.path.toLowerCase().endsWith('/'+lower)||f.path.toLowerCase()===lower));
+   const byName=same.length?same:pcFiles.filter(f=>!used.has(f)&&pcBase(f.path)===pcBase(x.path));
+   const pc=byName.length===1?byName[0]:null;if(pc)used.add(pc);
+   const ratio=pc&&x.data.length?pc.data.length/x.data.length:1;
+   return {path:x.path,ps5:x.data,pc,warn:pc&&(ratio>2||ratio<0.5)?'Size differs a lot':''};});
+  return {slot:s.slot,sys:s.sys,rows,matched:rows.filter(r=>r.pc).length,unused:pcFiles.filter(f=>!used.has(f))};});
+ const best=plans.sort((a,b)=>b.matched-a.matched)[0];
+ if(!best||!best.matched)throw Error('None of these file names match the save on this PS5, so this game probably stores its PC save in a different format. Nothing was changed.');
+ return best;}
+/* Files in the PS5 save-folder layout for Receive a shared save. */
+function pcSaveLayout(plan){const out=plan.sys.map(f=>({path:plan.slot+'/sce_sys/'+f.path,data:f.data}));
+ for(const r of plan.rows)out.push({path:plan.slot+'/'+r.path,data:r.pc?r.pc.data:r.ps5});return out;}
+async function pcSaveRead(list){const files=[];for(const f of list){const data=new Uint8Array(await f.arrayBuffer());
+  if(/\.zip$/i.test(f.name))files.push(...await SaveImport.unzip(data));else files.push({path:(f.webkitRelativePath||f.name).replace(/\\/g,'/'),data});}
+ return files.filter(f=>!/(^|\/)(desktop\.ini|thumbs\.db|\.ds_store)$/i.test(f.path));}
+async function pcSaveCompare(){const g=selected;if(!g)return;const box=$('pcSaveResult');box.replaceChildren();$('pcSaveUse').classList.add('hidden');pcSave.plan=null;
+ if(!pcSave.files||!pcSave.files.length){notify('Choose the PC save files first.',true);return;}
+ const r=await operation('Reading the save on this PS5; it is only read…',async()=>{
+  const ex=await api('/api/share-export',{user:g.user,title:g.title,slot:'WholeGame',closed:'live'});
+  const response=await fetch('/api/share-download?'+new URLSearchParams({file:ex.file}),{credentials:'same-origin'});if(!response.ok)throw Error('The save on this PS5 could not be read');
+  const outer=await SaveImport.unzip(new Uint8Array(await response.arrayBuffer())),manifest=new TextDecoder().decode(outer.find(f=>f.path==='manifest.txt').data);
+  const slots=[];for(const line of manifest.split('\n')){const m=line.match(/^SLOT=(\d+):([^:]+):/);if(!m)continue;
+   const game=outer.find(f=>f.path==='slot-'+m[1]+'.zip'),sys=outer.find(f=>f.path==='sys-'+m[1]+'.zip');
+   slots.push({slot:m[2],files:game?await SaveImport.unzip(game.data):[],sys:sys?await SaveImport.unzip(sys.data):[]});}
+  return {slots};});
+ if(!r)return;
+ try{pcSave.plan=pcSavePlan(r.slots,pcSave.files);}catch(e){box.append(el('p','subtitle',e.message));return;}
+ const p=pcSave.plan,list=el('div','labresults');
+ list.append(el('p','subtitle','Slot '+p.slot+': '+p.matched+' of '+p.rows.length+' files come from your PC; the rest stay as they are on this PS5.'));
+ for(const row of p.rows){const line=el('p','subtitle',(row.pc?'Replace ':'Keep ')+row.path+' ('+row.ps5.length+' bytes'+(row.pc?' → '+row.pc.data.length+' bytes from '+row.pc.path:'')+')'+(row.warn?' · '+row.warn:''));list.append(line);}
+ for(const f of p.unused)list.append(el('p','subtitle','Not used: '+f.path+' (no file with this name on the PS5)'));
+ box.append(list);$('pcSaveUse').classList.remove('hidden');}
+function pcSaveCard(){const card=el('div','sharecard');card.id='pcSave';
+ card.innerHTML='<h4>Use a PC save</h4><p class="subtitle">Copy this game\'s save files from your PC (choose the files, their folder, or a ZIP). PSCloud compares them with the save on this PS5 first. This only works for games that use the same save format on PC and PS5; encrypted saves are refused.</p>'
+  +'<div class="usbactions"><input id="pcSaveFiles" type="file" multiple aria-label="PC save files"><input id="pcSaveFolder" type="file" webkitdirectory class="hidden"><button id="pcSaveFolderPick" class="ghost" type="button">Choose folder</button><button id="pcSaveCompare" class="primary" type="button">Compare with this PS5 save</button></div>'
+  +'<div id="pcSaveResult"></div><div class="usbactions"><button id="pcSaveUse" class="primary hidden" type="button">Continue: check and replace on this PS5</button></div>';
+ const pick=async list=>{try{pcSave.files=await pcSaveRead(list);$('pcSaveResult').replaceChildren(el('p','subtitle',pcSave.files.length+(pcSave.files.length===1?' file':' files')+' chosen. Press Compare.'));$('pcSaveUse').classList.add('hidden');}catch(e){notify(e.message,true);}};
+ card.querySelector('#pcSaveFiles').addEventListener('change',e=>pick([...e.target.files]));
+ card.querySelector('#pcSaveFolder').addEventListener('change',e=>pick([...e.target.files]));
+ card.querySelector('#pcSaveFolderPick').addEventListener('click',()=>card.querySelector('#pcSaveFolder').click());
+ card.querySelector('#pcSaveCompare').addEventListener('click',pcSaveCompare);
+ card.querySelector('#pcSaveUse').addEventListener('click',async()=>{if(!pcSave.plan)return;await recvConvert(pcSaveLayout(pcSave.plan));view('library');const drop=$('recvDrop');if(drop)drop.scrollIntoView({behavior:'smooth',block:'center'});});
+ return card;}
 /* A PSCloud ZIP is used as is; any other save ZIP or folder is converted to one first. */
 async function recvStart(file){if(recv)clearTimeout(recv.timer);recv=null;if(!file)return;if(file.size>512*1024*1024){notify('Maximum file size is 512 MiB.',true);return;}
  try{let pkg;try{pkg=await readPackageManifest(file);}catch(e){return await recvConvert(await SaveImport.unzip(new Uint8Array(await file.arrayBuffer())));}
@@ -370,7 +423,7 @@ $('usbCopyAll').addEventListener('click',async()=>{const r=await operation('Copy
  const slotHead=el('div','slothead');const slotTitle=el('h3','','Saves on this PS5');slotTitle.id='slotTitle';const slotView=el('div','viewtoggle');slotView.id='slotView';for(const [mode,label] of [['cards','Cards'],['list','List']]){const b=el('button','',label);b.type='button';b.dataset.mode=mode;b.addEventListener('click',()=>{try{localStorage.setItem('slotView',mode);}catch(e){}if(selected)renderSlotCards(selected);});slotView.append(b);}slotHead.append(slotTitle,slotView);const slotCards=el('div','slotcards');slotCards.id='slotCards';const slotMore=el('div','slotmore hidden');slotMore.id='slotMore';
  panels.backup.append(backupIntro,toolbar,gameOptions,slotHead,slotCards,slotMore,pcControls);
  for(const id of ['gameCloseOpt','gameAllOpt','gameSyncOpt','gameApplyOpt'])$(id).addEventListener('change',async()=>{if(!selected)return;if(id==='gameApplyOpt'&&$('gameApplyOpt').checked)$('gameSyncOpt').checked=true;if(id==='gameSyncOpt'&&!$('gameSyncOpt').checked)$('gameApplyOpt').checked=false;try{await api('/api/game-settings',{title:selected.title,close_backup:$('gameCloseOpt').checked?'1':'0',backup_all:$('gameAllOpt').checked?'1':'0',auto_sync:$('gameSyncOpt').checked?'1':'0',auto_apply:$('gameApplyOpt').checked?'1':'0'});notify('Saved for this game.');}catch(e){notify(e.message,true);}});
- panels.share.append(sharePanel);
+ panels.share.append(sharePanel,pcSaveCard());
  const cloudButtons=el('div','usbactions');cloudButtons.append(prune,refresh);cloudHead.append(cloudButtons);panels.cloud.append(cloudHead,$('versions'),d.querySelector('#detail > .info')||el('span'));
  panels.usb.innerHTML='<div class="panelintro"><h3>Keep this game on a USB drive</h3><p class="subtitle">A copy on an exFAT USB drive lets you go back to this save later, or carry it to another PS5. Every copy is checked after writing.</p></div><div id="gameUsbNone" class="empty">No USB drive found. Plug an exFAT USB drive into the PS5, then press Refresh.</div><div id="gameUsbReady" class="hidden"><div class="sharegrid"><div class="sharecard"><strong>Save to USB now</strong><small>Copies this game\'s progress as it is right now. If nothing changed since the last USB copy, nothing new is written. Switch on Game closed first.</small><button id="gameUsbNow" class="primary">Save to USB now</button></div><div class="sharecard"><strong>Also copy older backups</strong><small>Copies every backup PSCloud keeps for this game on the PS5. Saves already on the drive are skipped.</small><button id="gameUsbAll" class="ghost">Copy older backups</button></div></div><h3 style="margin:22px 0 10px">Saves on the USB drive</h3><div id="gameUsbFiles" class="versions"></div></div><button id="gameUsbRefresh" class="ghost" style="margin-top:14px">Refresh ↻</button>';
  panels.edit.innerHTML='<div class="panelintro"><h3>Change values in this save <span class="pill warn">beta</span></h3><p class="subtitle">Find a number you see in the game, like money, skill points or collectibles, and change it. PSCloud works on a copy: your save changes only when you choose Replace my save, and a rollback copy is kept. Do not use this for online or competitive games.</p></div>'

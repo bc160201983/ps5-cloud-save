@@ -3,6 +3,22 @@
 Every release, newest first, with what was verified on a console and what was not.
 The current overview is in [README.md](README.md).
 
+## Version 0.34.13 — use a PC save on PS5
+
+- **Use a PC save** in a game's Share tab: choose the save files from your PC (files, their
+  folder or a ZIP), then Compare with this PS5 save. PSCloud reads the save on this PS5
+  (read only), finds the slot whose file names match best, and lists what will happen:
+  which files are replaced by the PC files, which stay as they are on the PS5, which PC
+  files are not used, and a warning when sizes differ a lot.
+- Continue hands the result to **Receive a shared save**, which checks a copy first and
+  keeps a rollback copy before anything is replaced. The slot keeps this console's own
+  system files (param.sfo, keystone, icon).
+- Files the game encrypts for one account and platform (a DSSS header) are refused, and
+  nothing is changed when no file names match. This only works for games that use the
+  same save format on PC and PS5, such as many Unreal Engine games.
+- Host test: matching by name and folder, kept files, the size warning, the DSSS refusal
+  and the no-match refusal. Not yet tried with a real PC save on a console.
+
 ## Version 0.34.12 — choose your cloud provider
 
 - **Cloud provider picker** in Cloud settings with ready-made WebDAV settings and short

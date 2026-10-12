@@ -135,3 +135,27 @@ ctx.liveResumeRender({running:true,busy:false,pinned:0,title:'PPSA11111'});asser
 console.log('Retained profile prompt shown only for the running game');
 """
         subprocess.run([node,'-e',script],cwd=ROOT,check=True,timeout=15)
+
+    def test_pc_save_replaces_matching_files_and_keeps_the_rest(self):
+        node=shutil.which('node')
+        if not node:self.skipTest('Node.js is required for the UI fixture')
+        script=r"""
+const fs=require('fs'),vm=require('vm'),assert=require('assert');
+const html=fs.readFileSync('ps5/ui.html','utf8');
+const start=html.indexOf('const pcSave='),end=html.indexOf('async function pcSaveRead(',start);
+const ctx={TextDecoder};vm.runInNewContext(html.slice(start,end),ctx);
+const b=(t,n)=>new Uint8Array(n||t.length).fill(t.charCodeAt(0));
+const slots=[{slot:'other',files:[{path:'unrelated.dat',data:b('u',10)}],sys:[]},
+ {slot:'SaveSlot1',files:[{path:'SaveGames/Slot1.sav',data:b('a',100)},{path:'settings.ini',data:b('s',20)}],sys:[{path:'param.sfo',data:b('p',8)},{path:'keystone',data:b('k',96)}]}];
+const pc=[{path:'MyGame/Saved/SaveGames/Slot1.sav',data:b('P',120)},{path:'MyGame/readme.txt',data:b('r',5)}];
+const plan=ctx.pcSavePlan(slots,pc);
+assert.equal(plan.slot,'SaveSlot1');assert.equal(plan.matched,1);assert.equal(plan.unused.length,1);assert.equal(plan.rows[0].warn,'');
+const files=ctx.pcSaveLayout(plan);
+assert.deepEqual(files.map(f=>f.path),['SaveSlot1/sce_sys/param.sfo','SaveSlot1/sce_sys/keystone','SaveSlot1/SaveGames/Slot1.sav','SaveSlot1/settings.ini']);
+assert.equal(files[2].data[0],'P'.charCodeAt(0));assert.equal(files[3].data[0],'s'.charCodeAt(0));
+assert.equal(ctx.pcSavePlan(slots,[{path:'Slot1.sav',data:b('P',20)}]).rows[0].warn,'Size differs a lot');
+assert.throws(()=>ctx.pcSavePlan(slots,[{path:'Slot1.sav',data:new TextEncoder().encode('DSSS....')}]),/encrypted/);
+assert.throws(()=>ctx.pcSavePlan(slots,[{path:'profile.bin',data:b('x',4)}]),/None of these file names match/);
+console.log('PC save plan replaces matching files and keeps the rest');
+"""
+        subprocess.run([node,'-e',script],cwd=ROOT,check=True,timeout=15)
