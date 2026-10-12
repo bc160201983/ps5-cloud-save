@@ -2320,10 +2320,19 @@ static void google_action(int sock,const char *url,const char *body) {
 /* Data-only editor profiles, separate from saves and credentials. Writes require the
  * previous revision so two browser sessions cannot silently overwrite each other. */
 #define EDITOR_PROFILE_LIMIT 65536U
+/* Whether a folder lists a name. Used instead of errno, which did not report ENOENT for a
+ * missing profile library on the PS5 (every Edit tab then failed with HTTP 500). */
+static int name_listed(int dir,const char *name) {
+    int scan=openat(dir,".",O_RDONLY|O_DIRECTORY);if(scan<0)return 1;
+    DIR *d=fdopendir(scan);if(!d) {close(scan);return 1;}
+    struct dirent *e;int found=0;
+    while(!found&&(e=readdir(d)))found=!strcmp(e->d_name,name);
+    closedir(d);return found;
+}
 static char *editor_profile_read(size_t *size) {
     int dir=pscloud_open_directory(root);if(dir<0)return NULL;struct stat st;
     if(fstatat(dir,"editor-profiles.json",&st,AT_SYMLINK_NOFOLLOW)) {
-        int missing=errno==ENOENT;close(dir);if(!missing)return NULL;
+        int missing=!name_listed(dir,"editor-profiles.json");close(dir);if(!missing)return NULL;
         char *empty=strdup("[]");if(empty)*size=2;return empty;
     }
     if(!S_ISREG(st.st_mode)||st.st_nlink!=1||st.st_size<2||st.st_size>EDITOR_PROFILE_LIMIT) {close(dir);return NULL;}

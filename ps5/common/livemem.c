@@ -60,7 +60,12 @@ static int regions(int pid,struct region **out,size_t *n) {
     if(size<=0)return -1;
     *out=malloc(sizeof **out);if(!*out)return -1;(*out)[0].start=FAKE_BASE;(*out)[0].end=FAKE_BASE+(uint64_t)size;*n=1;return 0;
 }
-static int mem_read(int pid,uint64_t a,void *buf,size_t len) {(void)pid;int fd=open(getenv("PSCLOUD_TEST_LIVE"),O_RDONLY);if(fd<0)return -1;ssize_t r=pread(fd,buf,len,(off_t)(a-FAKE_BASE));close(fd);return r==(ssize_t)len?0:-1;}
+/* PSCLOUD_TEST_LIVE_UNREADABLE="start:end" (file offsets) makes reads touching that range fail. */
+static int unreadable(uint64_t a,size_t len) {
+    const char *r=getenv("PSCLOUD_TEST_LIVE_UNREADABLE");unsigned long long s,e;
+    return r&&sscanf(r,"%llu:%llu",&s,&e)==2&&a-FAKE_BASE<e&&s<a-FAKE_BASE+len;
+}
+static int mem_read(int pid,uint64_t a,void *buf,size_t len) {(void)pid;if(unreadable(a,len))return -1;int fd=open(getenv("PSCLOUD_TEST_LIVE"),O_RDONLY);if(fd<0)return -1;ssize_t r=pread(fd,buf,len,(off_t)(a-FAKE_BASE));close(fd);return r==(ssize_t)len?0:-1;}
 static int mem_write(int pid,uint64_t a,const void *buf,size_t len) {(void)pid;int fd=open(getenv("PSCLOUD_TEST_LIVE"),O_WRONLY);if(fd<0)return -1;ssize_t r=pwrite(fd,buf,len,(off_t)(a-FAKE_BASE));close(fd);return r==(ssize_t)len?0:-1;}
 static int mem_read_back(int pid,uint64_t a,void *buf,size_t len) {return mem_read(pid,a,buf,len);}
 #else
@@ -371,6 +376,7 @@ void pscloud_live_pins_json(char *out,size_t max) {
 
 /* Portable Live locators use masked context, never a saved absolute address. */
 #define LOCATOR_BYTES 64
+#define PAGE 4096
 struct locator_rule {unsigned char bytes[LOCATOR_BYTES],mask[LOCATOR_BYTES];unsigned matches,first;uint64_t address;};
 static struct locator_rule locator_rules[TARGETS];static unsigned locator_count;
 static int signature_strength(const unsigned char *b,const unsigned char *mask) {
@@ -430,16 +436,24 @@ static void *resolve_main(void *arg) {
     if(total>16ULL*1024*1024*1024)error="Memory scan exceeds 16 GiB; this profile needs a more specific locator";
     pthread_mutex_lock(&lock);L.total=total;pthread_mutex_unlock(&lock);
     unsigned char *buf=malloc(CHUNK+LOCATOR_BYTES);if(!buf)error="Not enough memory";time_t deadline=time(NULL)+180;
+    /* Like the search, unreadable memory is skipped: a failed chunk is retried page by page and
+     * no signature window touching an unread page can match. Matches stay unique among the
+     * memory that was read. */
+    unsigned char bad[CHUNK/PAGE+2];unsigned long long skipped=0;
     for(size_t i=0;!error&&i<count;i++)for(uint64_t base=list[i].start;base<list[i].end;base+=CHUNK) {
         if(!search_alive()) {error="Search stopped or game session changed";break;}
         if(time(NULL)>deadline) {error="Relocation exceeded three minutes; nothing was bound";break;}
         size_t remain=(size_t)(list[i].end-base),n=remain<CHUNK+LOCATOR_BYTES-1?remain:CHUNK+LOCATOR_BYTES-1;
-        if(mem_read(L.pid,base,buf,n)) {error="Memory could not be read completely; relocation stopped";break;}
+        memset(bad,0,sizeof bad);
+        if(mem_read(L.pid,base,buf,n))for(size_t k=0;k*PAGE<n;k++) {
+            size_t len=n-k*PAGE<PAGE?n-k*PAGE:PAGE;
+            if(mem_read(L.pid,base+k*PAGE,buf+k*PAGE,len)) {bad[k]=1;if(k*PAGE<CHUNK)skipped+=len;}
+        }
         size_t starts=n>=LOCATOR_BYTES?n-LOCATOR_BYTES+1:0;if(starts>CHUNK)starts=CHUNK;
         for(unsigned k=0;k<locator_count;k++) {
             struct locator_rule *r=&locator_rules[k];if(r->matches>1)continue;
             for(size_t o=0;o<starts;o++) {
-                if((base+o+24)%TYPE_SIZE[L.type]||buf[o+r->first]!=r->bytes[r->first])continue;
+                if((base+o+24)%TYPE_SIZE[L.type]||buf[o+r->first]!=r->bytes[r->first]||bad[o/PAGE]||bad[(o+LOCATOR_BYTES-1)/PAGE])continue;
                 unsigned j=0;for(;j<LOCATOR_BYTES;j++)if(r->mask[j]&&buf[o+j]!=r->bytes[j])break;
                 if(j==LOCATOR_BYTES) {r->address=base+o+24;if(++r->matches>1)break;}
             }
@@ -447,6 +461,7 @@ static void *resolve_main(void *arg) {
         pthread_mutex_lock(&lock);L.done+=remain<CHUNK?remain:CHUNK;pthread_mutex_unlock(&lock);
         struct timespec pause={0,3000000};nanosleep(&pause,NULL);
     }
+    if(skipped)pscloud_log("INFO","Relocation skipped %llu KiB of unreadable game memory",skipped/1024);
     for(unsigned k=0;!error&&k<locator_count;k++) {
         if(locator_rules[k].matches!=1)error=locator_rules[k].matches?"Signature is ambiguous; profile needs refinement":"Signature not found; profile needs refinement";
         else for(unsigned j=0;j<k;j++)if(locator_rules[j].address==locator_rules[k].address)error="Profile targets overlap; nothing was bound";

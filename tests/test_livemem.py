@@ -45,7 +45,7 @@ class LiveMemoryTests(unittest.TestCase):
         for offset in (256, 1024):
             struct.pack_into('<i', data, offset, 1234)
         self.memory.write_bytes(data)
-        self.old = {k: os.environ.get(k) for k in ('PSCLOUD_TEST_LIVE', 'PSCLOUD_TEST_LIVE_SESSION')}
+        self.old = {k: os.environ.get(k) for k in ('PSCLOUD_TEST_LIVE', 'PSCLOUD_TEST_LIVE_SESSION', 'PSCLOUD_TEST_LIVE_UNREADABLE')}
         os.environ['PSCLOUD_TEST_LIVE'] = str(self.memory)
         os.environ['PSCLOUD_TEST_LIVE_SESSION'] = str(self.stamp)
         self.json('state')
@@ -258,3 +258,21 @@ class LiveMemoryTests(unittest.TestCase):
         self.assertIn('ambiguous',self.json('state')['error'])
         self.assertFalse(self.json('state')['has'])
         self.assertEqual(self.memory.read_bytes(),bytes(data))
+
+    def test_relocation_skips_unreadable_pages(self):
+        profile=self.teach_locator()
+        old=self.memory.read_bytes()
+        moved=bytearray(65536)
+        for src,dst in ((256,512),(1024,2048)):
+            moved[dst-24:dst+40]=old[src-24:src+40]
+            struct.pack_into('<i',moved,dst,7654)
+        moved[9000-24:9000+40]=moved[512-24:512+40]  # a copy inside memory that cannot be read
+        self.memory.write_bytes(moved)
+        self.stamp.write_text('104')
+        os.environ['PSCLOUD_TEST_LIVE_UNREADABLE']='8192:12288'
+        patterns=','.join(r['pattern'].replace('??','xx') for r in profile['rules']).encode()
+        self.call('resolve',b'PPSA02433',b'int32',patterns)
+        self.wait_for(lambda: not self.json('state')['busy'])
+        self.assertFalse(self.json('state')['error'])
+        self.assertEqual([p['address'] for p in self.json('list')['places']],['0x10000200','0x10000800'])
+        self.assertEqual(self.memory.read_bytes(),bytes(moved))

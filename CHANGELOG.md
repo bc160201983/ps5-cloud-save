@@ -3,6 +3,20 @@
 Every release, newest first, with what was verified on a console and what was not.
 The current overview is in [README.md](README.md).
 
+## Version 0.34.2 — Live profile retention fixes
+
+- **Retain profile works on the console.** Before any profile was saved, the Edit tab
+  failed with "Profiles could not be read" (HTTP 500), because a missing profile library
+  was recognised only by `errno`, which did not report ENOENT on the PS5. Without the
+  library, Retain profile refused every save. A missing file is now detected from the
+  folder listing and treated as an empty library, as host tests always expected.
+- **Relocate & bind skips unreadable memory** like the search does, instead of stopping at
+  the first chunk that could not be read. A failed chunk is retried page by page; signature
+  windows touching an unread page never match, and uniqueness is checked among the memory
+  that was read. Skipped memory is logged. Relocation still never writes.
+- Host test: relocation succeeds with an unreadable page, including a signature copy inside
+  it. PS5 verification is pending.
+
 ## Version 0.34.1 — interrupted save reads no longer block later operations
 
 - When PSCloud stopped while reading a disposable copy of a save (for example an export
