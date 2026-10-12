@@ -3,6 +3,21 @@
 Every release, newest first, with what was verified on a console and what was not.
 The current overview is in [README.md](README.md).
 
+## Version 0.34.11 — Freeze off, and a clear prompt after a game restart
+
+The 11.40 console crashed six times on 2026-10-12. Two crashes happened while a value was
+frozen, one of them with no search running; an Onimusha export later finished in 1.5 s on a
+freshly restarted console, so exports are not the suspected cause.
+
+- **Freeze is turned off** in the dashboard until its role in the crashes is understood.
+  The Freeze button is hidden, the request is refused with a message, and Set, Increase and
+  Decrease still work. Values that were already frozen can still be unfrozen. The engine
+  keeps its Freeze code and host tests, which switch it on explicitly.
+- **Retained Live profiles are offered at the top of Live** when their game is running and
+  no value is saved yet: "LINEN was retained for this game… Relocate & bind LINEN".
+- Host tests: Freeze refused while off with Set still working; the prompt appears only for
+  the running game and before a value is saved.
+
 ## Version 0.34.10 — profile instructions on the page
 
 - **Reusable save profiles** now explains, as numbered steps, how to use a profile on a

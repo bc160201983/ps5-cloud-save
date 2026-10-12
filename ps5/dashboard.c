@@ -2930,6 +2930,9 @@ int main(int argc,char **argv) {
     game_settings_load();schedule_load();console_id_load();cloud_keep_load();full_check_load();encryption_load();
     pscloud_log_open(logpath);load_preferences();
     {char trace[1400];snprintf(trace,sizeof trace,"%s/live-trace.txt",root);pscloud_live_set_trace(trace);}
+#ifdef PSCLOUD_HOST_TEST
+    if(getenv("PSCLOUD_TEST_ALLOW_FREEZE"))pscloud_live_allow_freeze(1);
+#endif
     signal(SIGPIPE,SIG_IGN);signal(SIGTERM,stop_server);signal(SIGINT,stop_server);
     if(curl_global_init(CURL_GLOBAL_DEFAULT))return 2;
     curl_share_setup();

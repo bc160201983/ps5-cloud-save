@@ -21,4 +21,6 @@ int pscloud_live_resolve(const char *title,const char *type,const char *patterns
 unsigned pscloud_live_sequence(void);
 /* File that records each memory region before it is read (empty path: off). */
 void pscloud_live_set_trace(const char *path);
+/* Freeze is refused unless switched on (off in the dashboard; see livemem.c). */
+void pscloud_live_allow_freeze(int on);
 #endif

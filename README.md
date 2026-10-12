@@ -145,7 +145,7 @@ Each release in the [changelog](CHANGELOG.md) lists exactly what was verified on
 
 | Live editor extension | Verification |
 |---|---|
-| Named values, batch edits, increase/decrease and freeze | Implemented with host memory-file and HTTP fixtures; PS5/in-game verification pending |
+| Named values, batch edits, increase/decrease and freeze | Implemented with host memory-file and HTTP fixtures. Freeze is turned off on the console since 0.34.11 after crashes on 11.40 |
 | Portable save profiles, comparison filters and retained Live signatures (0.34.0) | Implemented with synthetic-save, memory-file and HTTP tests; built by GitHub Actions; PS5 in-game verification pending |
 
 To use it, open a game's **Edit (beta)** tab while it runs. Search, narrow down

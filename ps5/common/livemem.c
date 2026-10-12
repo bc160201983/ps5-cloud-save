@@ -142,6 +142,11 @@ static int searcher_started;
 static int freezer_started,stopping,cancel_search;
 static unsigned search_sequence;
 static int candidates; /* the current results came from an ambiguous relocation */
+/* Freeze rewrites game memory every 250 ms. On 2026-10-12 the 11.40 console crashed while a value
+ * was frozen, including once with no search running, so the dashboard keeps Freeze off until the
+ * cause is understood. Host tests switch it on to keep the engine covered. */
+static int freeze_allowed;
+void pscloud_live_allow_freeze(int on) {pthread_mutex_lock(&lock);freeze_allowed=!!on;pthread_mutex_unlock(&lock);}
 unsigned pscloud_live_sequence(void) {pthread_mutex_lock(&lock);unsigned n=search_sequence;pthread_mutex_unlock(&lock);return n;}
 static int type_of(const char *name) {for(int i=0;i<5;i++)if(!strcmp(name,TYPE_NAMES[i]))return i;return -1;}
 static double get(int type,const unsigned char *p) {
@@ -325,8 +330,8 @@ int pscloud_live_next(double value,char *message,size_t max) {
 void pscloud_live_reset(void) {pthread_mutex_lock(&lock);pscloud_log("EVENT","Live search cleared%s",L.busy?" (stopping the running search)":"");if(L.busy)cancel_search=1;if(!L.busy) {L.count=0;L.has=0;L.overflow=0;L.error[0]=0;}pthread_mutex_unlock(&lock);}
 void pscloud_live_state_json(char *out,size_t max) {
     pthread_mutex_lock(&lock);char title[16]="";uint64_t stamp=0;int pid=find_game(title,&stamp);int same_game=session_ok();
-    snprintf(out,max,"{\"running\":%s,\"title\":\"%s\",\"busy\":%s,\"phase\":\"%s\",\"done\":%llu,\"total\":%llu,\"count\":%zu,\"has\":%s,\"overflow\":%s,\"type\":\"%s\",\"value\":%g,\"error\":\"%s\",\"same_game\":%s,\"pinned\":%u,\"candidates\":%s}",
-        pid>=0?"true":"false",title,L.busy?"true":"false",L.phase,L.done,L.total,L.count,L.has?"true":"false",L.overflow?"true":"false",TYPE_NAMES[L.type],L.value,L.error,same_game?"true":"false",pin_count,candidates?"true":"false");
+    snprintf(out,max,"{\"running\":%s,\"title\":\"%s\",\"busy\":%s,\"phase\":\"%s\",\"done\":%llu,\"total\":%llu,\"count\":%zu,\"has\":%s,\"overflow\":%s,\"type\":\"%s\",\"value\":%g,\"error\":\"%s\",\"same_game\":%s,\"pinned\":%u,\"candidates\":%s,\"freeze_allowed\":%s}",
+        pid>=0?"true":"false",title,L.busy?"true":"false",L.phase,L.done,L.total,L.count,L.has?"true":"false",L.overflow?"true":"false",TYPE_NAMES[L.type],L.value,L.error,same_game?"true":"false",pin_count,candidates?"true":"false",freeze_allowed?"true":"false");
     pthread_mutex_unlock(&lock);
 }
 void pscloud_live_list_json(char *out,size_t max,int limit) {
@@ -380,6 +385,7 @@ int pscloud_live_edit(const char *addresses,unsigned id,const char *action,doubl
     if(!strcmp(action,"remove")&&p) {pscloud_log("EVENT","Live: removed saved value %s",p->name);unsigned i=(unsigned)(p-pins);memmove(p,p+1,(pin_count-i-1)*sizeof *p);pin_count--;result=0;snprintf(message,max,"Saved value removed");goto done;}
     if(!strcmp(action,"unfreeze")&&p) {p->frozen=0;p->error[0]=0;result=0;snprintf(message,max,"Value unfrozen");pscloud_notify("Live: %s unfrozen",p->name);goto done;}
     int add=!strcmp(action,"add"),freeze=!strcmp(action,"freeze");
+    if(freeze&&!freeze_allowed) {snprintf(message,max,"Freeze is turned off for now because it was linked to console crashes. Use Set instead");goto done;}
     if((strcmp(action,"set")&&!add&&!freeze)||(freeze&&!p)||!finite(value)) {snprintf(message,max,"Choose Set, Increase/decrease, Freeze or Unfreeze");goto done;}
     if(!p)for(unsigned k=0;k<pin_count;k++)for(unsigned j=0;j<pins[k].n;j++)for(unsigned i=0;i<n;i++) {
         uint64_t a=addr[i],b=pins[k].addr[j];

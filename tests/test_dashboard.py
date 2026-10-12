@@ -775,7 +775,7 @@ const found=SaveImport.slots(files);const pkg=SaveImport.pack(found,'7.00');fs.w
         memory=self.fixture.root/'game-memory.bin';data=bytearray(64*1024)
         for o in (0x100,0x2000,0x3000):data[o:o+4]=struct.pack('<i',1234)
         memory.write_bytes(bytes(data))
-        self.start_server(PSCLOUD_TEST_LIVE=str(memory))
+        self.start_server(PSCLOUD_TEST_LIVE=str(memory),PSCLOUD_TEST_ALLOW_FREEZE='1')
         def wait():
             for _ in range(100):
                 state=self.request('/api/live/state')[1]

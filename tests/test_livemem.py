@@ -31,6 +31,7 @@ class LiveMemoryTests(unittest.TestCase):
         cls.lib.pscloud_live_list_json.argtypes = [*msg, ctypes.c_int]
         cls.lib.pscloud_live_locator.argtypes = [ctypes.c_uint, ctypes.c_char_p, ctypes.c_void_p, ctypes.c_size_t]
         cls.lib.pscloud_live_resolve.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_char_p, *msg]
+        cls.lib.pscloud_live_allow_freeze(1)  # off in the dashboard; the engine stays covered here
 
     @classmethod
     def tearDownClass(cls):
@@ -331,3 +332,16 @@ class LiveMemoryTests(unittest.TestCase):
         self.assertTrue(lines[0].startswith('search in PPSA02433: 1 regions'), lines)
         self.assertTrue(lines[1].startswith('region 1/1 0x10000000-0x10010000 64 KiB'), lines)
         self.assertEqual(lines[-1], 'finished: ok')
+
+    def test_freeze_is_refused_while_turned_off(self):
+        group = self.pin()
+        self.lib.pscloud_live_allow_freeze(0)
+        try:
+            message = self.edit('freeze', 3000, id=group, addresses=[], ok=False)
+            self.assertIn('Freeze is turned off', message)
+            self.assertFalse(self.json('state')['freeze_allowed'])
+            self.assertEqual(self.values(), [1234, 1234])
+            self.edit('set', 2000, id=group, addresses=[])  # Set still works
+            self.assertEqual(self.values(), [2000, 2000])
+        finally:
+            self.lib.pscloud_live_allow_freeze(1)

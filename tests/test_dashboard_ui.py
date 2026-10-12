@@ -114,3 +114,24 @@ vm.runInNewContext(block('SaveLab')+'\n'+block('EditorProfiles')+'\n'+flow,ctx);
 })().catch(e=>{console.error(e);process.exit(1);});
 """
         subprocess.run([node,'-e',script],cwd=ROOT,check=True,timeout=15)
+
+    def test_retained_live_profile_is_offered_for_the_running_game(self):
+        node=shutil.which('node')
+        if not node:self.skipTest('Node.js is required for the UI fixture')
+        script=r"""
+const fs=require('fs'),vm=require('vm'),assert=require('assert');
+const html=fs.readFileSync('ps5/ui.html','utf8');
+const start=html.indexOf('function liveResumeRender('),end=html.indexOf('async function editorProfilesResume(',start);
+function element(tag,cls,text){return {tag,cls,textContent:text||'',children:[],dataset:{},append(...n){this.children.push(...n);},replaceChildren(){this.children=[];}};}
+const box=element('box'),resumed=[];
+const ctx={$:id=>id==='liveResume'?box:null,el:element,editorProfilesResume:p=>resumed.push(p.name),
+ profileBook:{items:[{kind:'live',name:'LINEN',title:'PPSA03210',version:'02.024.000'},{kind:'save',name:'Steel',title:'PPSA03210',version:'02.024.000'},{kind:'live',name:'Gold',title:'PPSA99999',version:'01.000.000'}]}};
+vm.runInNewContext(html.slice(start,end),ctx);
+ctx.liveResumeRender({running:true,busy:false,pinned:0,title:'PPSA03210'});
+assert.equal(box.children.length,1);assert.equal(box.children[0].children[1].textContent,'Relocate & bind LINEN');
+box.children[0].children[1].onclick();assert.deepEqual(resumed,['LINEN']);assert.equal(box.children.length,0);
+ctx.liveResumeRender({running:true,busy:false,pinned:1,title:'PPSA03210'});assert.equal(box.children.length,0);
+ctx.liveResumeRender({running:true,busy:false,pinned:0,title:'PPSA11111'});assert.equal(box.children.length,0);
+console.log('Retained profile prompt shown only for the running game');
+"""
+        subprocess.run([node,'-e',script],cwd=ROOT,check=True,timeout=15)
