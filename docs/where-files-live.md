@@ -14,6 +14,7 @@ dashboard moves them in automatically the first time it starts.) The dashboard's
 | `staging/`, `*-stage-*` | **Working files** used while a backup, check or replace runs. | Removed when the operation finishes. |
 | `upload.conf`, `ca.pem`, `preferences.conf`, `google.conf`, other `*.conf` | **Settings** and cloud sign-in, readable only by PSCloud. | All |
 | `pscloud.log` | **Activity log**, shown on the Activity page. | All |
+| `editor-profiles.json` (0.34.0 local candidate) | Data-only saved edit profiles: names, game versions and masked locator rules for saves or Live memory. No full save archives or session addresses. | Kept until the user deletes a profile; not included in automatic cleanup. |
 
 Your PS5's own saves stay in `/user/home/<profile>/savedata_prospero/`; PSCloud only reads
 them, except when you choose Restore or Replace. When a shared save has a slot this profile

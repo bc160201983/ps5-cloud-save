@@ -15,4 +15,8 @@ int pscloud_live_pin(const char *addresses,const char *name,char *message,size_t
 int pscloud_live_edit(const char *addresses,unsigned id,const char *action,double value,char *message,size_t max);
 void pscloud_live_pins_json(char *out,size_t max);
 void pscloud_live_shutdown(void);
+int pscloud_live_game(char title[16]);
+int pscloud_live_locator(unsigned id,const char *version,char *out,size_t max);
+int pscloud_live_resolve(const char *title,const char *type,const char *patterns,char *message,size_t max);
+unsigned pscloud_live_sequence(void);
 #endif

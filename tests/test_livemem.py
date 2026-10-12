@@ -28,6 +28,8 @@ class LiveMemoryTests(unittest.TestCase):
         for name in ('state', 'pins'):
             getattr(cls.lib, 'pscloud_live_'+name+'_json').argtypes = msg
         cls.lib.pscloud_live_list_json.argtypes = [*msg, ctypes.c_int]
+        cls.lib.pscloud_live_locator.argtypes = [ctypes.c_uint, ctypes.c_char_p, ctypes.c_void_p, ctypes.c_size_t]
+        cls.lib.pscloud_live_resolve.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_char_p, *msg]
 
     @classmethod
     def tearDownClass(cls):
@@ -203,3 +205,56 @@ class LiveMemoryTests(unittest.TestCase):
         self.wait_for(lambda: values() == [25.25, 25.25])
         self.edit('add', 0.25, id=group)
         self.assertEqual(values(), [25.5, 25.5])
+
+    def teach_locator(self):
+        with self.memory.open('r+b') as f:
+            for index, offset in enumerate((256, 1024)):
+                f.seek(offset-24)
+                context=bytearray(('PlayerMoneyContext%02dXXXX' % index).encode())
+                self.assertEqual(len(context),24)
+                f.write(context)
+                f.seek(offset+4)
+                f.write(b'PersistentMoneyFieldContextXXXXXX')
+        group=self.pin()
+        out=ctypes.create_string_buffer(14000)
+        self.assertEqual(self.lib.pscloud_live_locator(group,b'01.000.000',out,len(out)),0)
+        return json.loads(out.value)
+
+    def test_locator_relocates_after_restart_without_reusing_old_addresses(self):
+        profile=self.teach_locator()
+        old=self.memory.read_bytes()
+        moved=bytearray(65536)
+        for src,dst in ((256,512),(1024,2048)):
+            moved[dst-24:dst+40]=old[src-24:src+40]
+            struct.pack_into('<i',moved,dst,7654)
+        self.memory.write_bytes(moved)
+        self.stamp.write_text('103')
+        patterns=','.join(r['pattern'].replace('??','xx') for r in profile['rules']).encode()
+        self.call('resolve',b'PPSA02433',b'int32',patterns)
+        self.wait_for(lambda: not self.json('state')['busy'])
+        self.assertFalse(self.json('state')['error'])
+        places=self.json('list')['places']
+        self.assertEqual([p['address'] for p in places],['0x10000200','0x10000800'])
+        self.assertEqual([p['value'] for p in places],[7654,7654])
+        self.assertEqual(self.memory.read_bytes(),bytes(moved))  # relocation never writes
+        self.addresses=[p['address'] for p in places]
+        group=self.pin()
+        self.edit('set',9999,id=group)
+        data=self.memory.read_bytes()
+        self.assertEqual(struct.unpack_from('<i',data,512)[0],9999)
+        self.assertEqual(struct.unpack_from('<i',data,256)[0],0)
+
+    def test_locator_ambiguity_wrong_title_and_weak_patterns_refused(self):
+        profile=self.teach_locator()
+        data=bytearray(self.memory.read_bytes())
+        data[4096-24:4096+40]=data[256-24:256+40]
+        self.memory.write_bytes(data)
+        patterns=','.join(r['pattern'].replace('??','xx') for r in profile['rules']).encode()
+        self.call('resolve',b'PPSA99999',b'int32',patterns,ok=False)
+        self.call('resolve',b'PPSA02433',b'double',b'xx'*64,ok=False)
+        self.assertEqual(self.json('state')['type'],'int32')  # failed import cannot change existing search type
+        self.call('resolve',b'PPSA02433',b'int32',patterns)
+        self.wait_for(lambda: not self.json('state')['busy'])
+        self.assertIn('ambiguous',self.json('state')['error'])
+        self.assertFalse(self.json('state')['has'])
+        self.assertEqual(self.memory.read_bytes(),bytes(data))

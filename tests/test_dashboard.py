@@ -810,6 +810,68 @@ const found=SaveImport.slots(files);const pkg=SaveImport.pack(found,'7.00');fs.w
         self.assertEqual(self.request('/api/live/edit',{'id':str(group),'action':'remove'})[0],200)
         self.assertEqual(self.request('/api/live/pins')[1]['groups'],[])
 
+    def test_editor_profiles_persist_and_reject_stale_browser_revisions(self):
+        initial=self.request('/api/editor-profiles')[1]
+        self.assertEqual(initial['text'],'[]')
+        self.assertEqual(initial['revision'],hashlib.sha256(b'[]').hexdigest())
+        text=json.dumps([{'format':'PSCLOUD_EDIT_PROFILE_V1','kind':'save','name':'Money',
+                         'title':'PPSA02433','version':'01.000.000','rules':[]}])
+        def store(body,revision,token=True):
+            connection=http.client.HTTPConnection('127.0.0.1',self.port,timeout=10)
+            headers={'Content-Type':'application/json'}
+            if token:headers.update({'Cookie':self.cookie,'X-PSCloud-Request':'1'})
+            connection.request('POST','/api/editor-profiles?revision='+revision,body,headers)
+            response=connection.getresponse();status=response.status;response.read();connection.close();return status
+        self.assertEqual(store(text,initial['revision'],False),401)
+        self.assertEqual(store(text,initial['revision']),200)
+        self.assertEqual(self.request('/api/editor-profiles')[1]['text'],text)
+        self.assertEqual(store('[]',initial['revision']),409)
+        self.process.terminate();self.process.communicate(timeout=5)
+        self.start_server()
+        persisted=self.request('/api/editor-profiles')[1]
+        self.assertEqual(persisted['text'],text)
+        self.assertEqual(store('{}',persisted['revision']),400)
+        self.assertEqual(self.image.read_bytes(),self.original)
+
+    def test_live_profile_export_relocation_version_and_search_generation(self):
+        self.process.terminate();self.process.communicate(timeout=5)
+        memory=self.fixture.root/'profile-memory';stamp=self.fixture.root/'profile-session';stamp.write_text('200')
+        data=bytearray(65536)
+        data[232:256]=b'PlayerMoneyContext00XXXX'
+        struct.pack_into('<i',data,256,1234)
+        data[260:292]=b'PersistentMoneyFieldContextXXXXXX'
+        memory.write_bytes(data)
+        meta=self.root/'appmeta/PPSA02433';meta.mkdir(parents=True)
+        (meta/'param.json').write_text('{"contentVersion":"01.000.000"}')
+        self.start_server(PSCLOUD_TEST_LIVE=str(memory),PSCLOUD_TEST_LIVE_SESSION=str(stamp))
+        def wait():
+            for _ in range(100):
+                r=self.request('/api/live/state')[1]
+                if not r['busy']:return r
+                time.sleep(0.02)
+            self.fail('Profile relocation did not finish')
+        self.assertEqual(self.request('/api/live/scan',{'type':'int32','value':'1234'})[0],200);wait()
+        places=self.request('/api/live/list')[1]['places']
+        self.assertEqual(len(places),1)
+        self.assertEqual(self.request('/api/live/pin',{'addresses':places[0]['address'],'name':'Money'})[0],200)
+        group=self.request('/api/live/pins')[1]['groups'][0]['id']
+        status,p=self.request('/api/live/locator?id='+str(group));self.assertEqual(status,200,p)
+        self.assertEqual((p['kind'],p['version']),('live','01.000.000'))
+        moved=bytearray(65536);moved[488:552]=data[232:296];struct.pack_into('<i',moved,512,4321)
+        memory.write_bytes(moved);stamp.write_text('201')
+        values={'title':p['title'],'version':p['version'],'type':p['rules'][0]['type'],
+                'patterns':','.join(r['pattern'].replace('??','xx') for r in p['rules'])}
+        self.assertEqual(self.request('/api/live/resolve',{**values,'version':'02.000.000'})[0],400)
+        status,r=self.request('/api/live/resolve',values);self.assertEqual(status,200,r);wait()
+        result=self.request('/api/live/list')[1]
+        self.assertEqual(result['places'][0]['address'],'0x10000200')
+        self.assertEqual(memory.read_bytes(),bytes(moved))
+        pin={'addresses':'0x10000200','name':'Money','sequence':str(r['search_sequence'])}
+        self.assertEqual(self.request('/api/live/pin',pin)[0],200)
+        self.assertEqual(self.request('/api/live/scan',{'type':'uint8','value':'17'})[0],200);wait()
+        self.assertEqual(self.request('/api/live/pin',pin)[0],409)
+        self.assertEqual(self.image.read_bytes(),self.original)
+
     def test_sync_with_a_linked_profile_from_another_console(self):
         import test_sharing,test_portable
         self.process.terminate();self.process.communicate(timeout=5)

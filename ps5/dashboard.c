@@ -2317,6 +2317,41 @@ static void google_action(int sock,const char *url,const char *body) {
     }
     message(sock,404,"Unknown Google sign-in endpoint");
 }
+/* Data-only editor profiles, separate from saves and credentials. Writes require the
+ * previous revision so two browser sessions cannot silently overwrite each other. */
+#define EDITOR_PROFILE_LIMIT 65536U
+static char *editor_profile_read(size_t *size) {
+    int dir=pscloud_open_directory(root);if(dir<0)return NULL;struct stat st;
+    if(fstatat(dir,"editor-profiles.json",&st,AT_SYMLINK_NOFOLLOW)) {
+        int missing=errno==ENOENT;close(dir);if(!missing)return NULL;
+        char *empty=strdup("[]");if(empty)*size=2;return empty;
+    }
+    if(!S_ISREG(st.st_mode)||st.st_nlink!=1||st.st_size<2||st.st_size>EDITOR_PROFILE_LIMIT) {close(dir);return NULL;}
+    int fd=openat(dir,"editor-profiles.json",O_RDONLY|O_NOFOLLOW|O_NONBLOCK);close(dir);if(fd<0)return NULL;
+    char *text=malloc((size_t)st.st_size+1);size_t got=0;
+    while(text&&got<(size_t)st.st_size) {ssize_t n=read(fd,text+got,(size_t)st.st_size-got);if(n<0&&errno==EINTR)continue;if(n<=0)break;got+=(size_t)n;}
+    close(fd);if(!text||got!=(size_t)st.st_size||memchr(text,0,got)) {free(text);return NULL;}
+    text[got]=0;*size=got;return text;
+}
+static void editor_profiles_get(int sock) {
+    size_t size=0;char *text=editor_profile_read(&size);if(!text) {message(sock,500,"Profiles could not be read; the existing file was preserved");return;}
+    char hash[65];unsigned char digest[32];unsigned len=0;
+    if(!EVP_Digest(text,size,digest,&len,EVP_sha256(),NULL)||len!=32) {free(text);message(sock,500,"Profile revision failed");return;}
+    for(unsigned i=0;i<32;i++)snprintf(hash+2*i,3,"%02x",digest[i]);
+    size_t cap=size*6+1;char *shown=malloc(cap),*json=malloc(cap+160);
+    if(shown&&json) {escaped(shown,cap,text);int n=snprintf(json,cap+160,"{\"text\":\"%s\",\"revision\":\"%s\"}",shown,hash);respond(sock,200,"application/json",json,(size_t)n);}
+    else message(sock,500,"Not enough memory");
+    free(text);free(shown);free(json);
+}
+static void editor_profiles_store(int sock,const char *query,const char *text,size_t size) {
+    char expected[65];size_t old_size=0;char *old=editor_profile_read(&old_size);
+    if(!old) {message(sock,500,"Existing profiles could not be read; nothing overwritten");return;}
+    int mismatch=parameter(query,"revision",expected,sizeof expected)||strlen(expected)!=64||pscloud_verify_hash((const unsigned char *)old,old_size,expected);free(old);
+    if(mismatch) {message(sock,409,"Profiles changed in another browser. Reload profiles before saving");return;}
+    if(size<2||text[0]!='['||text[size-1]!=']'||memchr(text,0,size)) {message(sock,400,"Profiles must be a JSON data array");return;}
+    char path[1400];snprintf(path,sizeof path,"%s/editor-profiles.json",root);
+    int bad=atomic_config(path,text);message(sock,bad?500:200,bad?"Profile file could not be saved; existing profiles were preserved":"Profiles stored; game saves and memory were not written");
+}
 static void serve(int sock,int *locked) {
     char request[16385];size_t size=0;char *body=NULL;
     while(size<8192) {
@@ -2418,6 +2453,14 @@ static void serve(int sock,int *locked) {
     if(!strcmp(method,"POST")) {
         if(header_value(request,"Content-Length",length,sizeof length)) {message(sock,400,"Content length missing");return;}
         char *end=NULL;unsigned long n=strtoul(length,&end,10);
+        if(!strncmp(url,"/api/editor-profiles?",21)) {
+            if(!*length||*end||n<2||n>EDITOR_PROFILE_LIMIT) {message(sock,400,"Profile storage limit is 64 KiB");return;}
+            char *text=malloc(n+1);if(!text) {message(sock,500,"Not enough memory");return;}
+            size_t have=size-headers;if(have>n)have=n;memcpy(text,body,have);
+            while(have<n) {ssize_t got=recv(sock,text+have,n-have,0);if(got<=0)break;have+=(size_t)got;}
+            text[n]=0;if(have!=n)message(sock,400,"Incomplete profiles upload");else editor_profiles_store(sock,url+21,text,n);
+            free(text);return;
+        }
         if(!strncmp(url,"/api/import?",12)||!strncmp(url,"/api/share-import?",18)) {
             if(!*length || *end || !n || n>PSCLOUD_RESTORE_MAX) {message(sock,400,"ZIP upload limit is 512 MiB");return;}
             unsigned char *data=malloc(n);if(!data) {message(sock,500,"Not enough memory");return;}
@@ -2456,6 +2499,7 @@ static void serve(int sock,int *locked) {
         request[headers+expected]=0;
     }
     char *query=strchr(url,'?');if(query)*query++=0;else query="";
+    if(!strcmp(method,"GET")&&!strcmp(url,"/api/editor-profiles")) {editor_profiles_get(sock);return;}
     if((!strcmp(method,"GET") && !strcmp(url,"/api/google/status")) ||
        (!strcmp(method,"POST") && (!strcmp(url,"/api/google/begin") || !strcmp(url,"/api/google/poll")))) {google_action(sock,url,body);return;}
     if(!strcmp(url,"/api/preferences") && (!strcmp(method,"GET") || !strcmp(method,"POST"))) {preferences(sock,!strcmp(method,"POST")?body:NULL);return;}
@@ -2496,14 +2540,29 @@ static void serve(int sock,int *locked) {
         if(bad)message(sock,404,"Shared package unavailable");else respond(sock,200,"application/zip",(const char *)data,bytes);free(data);return;
     }
     /* Live mode: find and change a number in the running game (Edit tab). */
+    if(!strcmp(method,"GET")&&!strcmp(url,"/api/live/locator")) {
+        char id[16],title[16],version[32],*end=NULL;
+        if(parameter(query,"id",id,sizeof id)) {message(sock,400,"Choose a saved value");return;}
+        unsigned long group=strtoul(id,&end,10);
+        if(!*id||*end||!group||group>0xffffffffUL||pscloud_live_game(title)||pscloud_app_version(appmeta,title,version,sizeof version)) {message(sock,400,"Exact game version could not be identified");return;}
+        char json[14000];if(pscloud_live_locator((unsigned)group,version,json,sizeof json))message(sock,400,"Saved value expired or its context is too weak for a portable signature");else respond(sock,200,"application/json",json,strlen(json));return;
+    }
     if(!strcmp(method,"GET") && !strcmp(url,"/api/live/pins")) {char json[20000];pscloud_live_pins_json(json,sizeof json);respond(sock,200,"application/json",json,strlen(json));return;}
     if(!strcmp(method,"GET") && !strcmp(url,"/api/live/state")) {char json[1024];pscloud_live_state_json(json,sizeof json);respond(sock,200,"application/json",json,strlen(json));return;}
     if(!strcmp(method,"GET") && !strcmp(url,"/api/live/list")) {char *json=malloc(65536);if(!json) {message(sock,500,"Out of memory");return;}pscloud_live_list_json(json,65536,200);respond(sock,200,"application/json",json,strlen(json));free(json);return;}
     if(!strcmp(method,"POST") && !strncmp(url,"/api/live/",10)) {
         char type[16]="",value[64]="",address[32]="",msg[300];int bad=-1;
         parameter(body,"type",type,sizeof type);parameter(body,"value",value,sizeof value);parameter(body,"address",address,sizeof address);
+        if(!strcmp(url,"/api/live/resolve")) {
+            char title[16],version[32],actual[32],patterns[5000];
+            if(parameter(body,"title",title,sizeof title)||!pscloud_title_valid(title)||parameter(body,"version",version,sizeof version)||parameter(body,"patterns",patterns,sizeof patterns)||pscloud_app_version(appmeta,title,actual,sizeof actual)||strcmp(actual,version)) {message(sock,400,"Profile game version differs or cannot be verified");return;}
+            bad=pscloud_live_resolve(title,type,patterns,msg,sizeof msg);
+            if(bad)message(sock,400,msg);else {char json[500],shown[320];escaped(shown,sizeof shown,msg);snprintf(json,sizeof json,"{\"ok\":true,\"message\":\"%s\",\"search_sequence\":%u}",shown,pscloud_live_sequence());respond(sock,200,"application/json",json,strlen(json));}return;
+        }
         if(!strcmp(url,"/api/live/pin")) {
             char addresses[1100],name[49];
+            char sequence[16],*end=NULL;
+            if(strstr(body,"sequence=")) {int invalid=parameter(body,"sequence",sequence,sizeof sequence);unsigned long seq=invalid?0:strtoul(sequence,&end,10);if(invalid||!*sequence||*end||seq!=pscloud_live_sequence()) {message(sock,409,"Search results changed; relocate or search again before binding");return;}}
             if(parameter(body,"addresses",addresses,sizeof addresses)||parameter(body,"name",name,sizeof name)) {message(sock,400,"Select places and name the saved value");return;}
             bad=pscloud_live_pin(addresses,name,msg,sizeof msg);message(sock,bad?400:200,msg);return;
         }

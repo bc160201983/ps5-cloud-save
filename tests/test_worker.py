@@ -88,10 +88,19 @@ class WorkerTest(unittest.TestCase):
                     self.send_response(status)
                 self.end_headers()
             def log_message(self, *args): pass
-        self.server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Handler)
         ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         ctx.load_cert_chain(self.cert, key)
-        self.server.socket = ctx.wrap_socket(self.server.socket, server_side=True)
+        # Wrap accepted sockets, rather than a listening socket. MSYS2's socket
+        # layer reports EAGAIN when Python probes an unconnected TLS listener.
+        class TLSServer(http.server.ThreadingHTTPServer):
+            def get_request(self):
+                connection,address=super().get_request()
+                connection.settimeout(10)
+                try:return ctx.wrap_socket(connection,server_side=True),address
+                except Exception:
+                    connection.close()
+                    raise
+        self.server = TLSServer(('127.0.0.1', 0), Handler)
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
         self.env = dict(os.environ, PSCLOUD_URL=f'https://localhost:{self.server.server_port}/backups',

@@ -73,6 +73,11 @@ PSCloud brings together everything you need to keep your progress safe:
   **Freeze** holds the chosen value until you unfreeze it, remove it, stop PSCloud
   or close the game. Saved places expire when the game restarts. This extension
   has not yet been tested in-game on a PS5.
+- **Retain and share edit profiles** *(local candidate)*. Save verified save-field
+  or Live memory signatures under a name such as Money or Health. Export/import
+  the JSON profile for compatible game versions. Save rules queue changes for review;
+  Live rules can relocate and bind values after a restart, then let you Set, adjust
+  or Freeze them. Missing or ambiguous matches stop instead of guessing.
 - **Change values in a save** *(beta)*. Find a number from the game (money, skill points,
   collectibles) in the save, narrow it down after playing, compare two saves, and change it.
   Checksums are fixed, and the change goes through the usual check and replace with a rollback
@@ -141,12 +146,26 @@ Each release in the [changelog](CHANGELOG.md) lists exactly what was verified on
 | Live editor extension | Verification |
 |---|---|
 | Named values, batch edits, increase/decrease and freeze | Implemented with host memory-file and HTTP fixtures; PS5/in-game verification pending |
+| Portable save profiles, comparison filters and retained Live signatures (0.34.0 local candidate) | Implemented with local synthetic-save, memory-file and HTTP tests; unpublished; PS5 build/in-game verification pending |
 
 To use it, open a game's **Edit (beta)** tab while it runs. Search, narrow down
 the results, tick the places you verified and choose **Save selected places**
 with a name such as Money. Use its **Set**, **Increase +**, **Decrease −** or
 **Freeze** buttons later. Freeze continues with the browser closed. Saved places
 live only for that game session; memory locations may move even before a restart.
+
+The local 0.34.0 candidate adds **Retain profile** beside each verified Live value.
+After restarting the game, use its retained profile's **Relocate & bind** button.
+It looks for unique masked context; it does not write or resume Freeze automatically.
+If context changed or more than one match exists, find and verify the value again,
+then retain it with the same name to refine the profile.
+
+For save profiles, load before/after saves and narrow values with **Find** or
+**Find by change**. Add verified changes, name them and choose **Save edit profile**.
+Later, load the current save and use **Queue Set** or **Queue adjustment**. Review,
+close the game, make and check the changed save, then choose replacement. **Export**
+and **Import a shared profile** exchange the rules. Unknown game checksums and
+encryption can prevent edits; this tool does not promise compatibility with all games.
 
 ---
 

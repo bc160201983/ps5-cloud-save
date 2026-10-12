@@ -3,6 +3,44 @@
 Every release, newest first, with what was verified on a console and what was not.
 The current overview is in [README.md](README.md).
 
+## Version 0.34.0 — candidate: portable edit profiles and Live retention
+
+This candidate is built by GitHub Actions. PS5 in-game validation is still pending.
+
+- Refreshing the dashboard stays on the current page, including the open game and its
+  tab. The page is kept in the URL (`#/settings`, `#/detail/<user>/<title>/<tab>`);
+  unknown pages or games that are no longer listed open My games as before.
+
+- General save discovery adds increased, decreased, changed and unchanged filters
+  across loaded saves, including values whose exact number is not visible in-game.
+- Named save profiles retain masked context signatures rather than ZIP positions.
+  They locate fields again in compatible later saves, queue Set or signed adjustments,
+  and use the existing package-checksum repairs, staged check and rollback restore.
+  Two captures can mask changing context; recapturing a same-name profile refines it.
+- Live's **Retain profile** captures nearby context while excluding the changing
+  value and likely absolute pointers. **Relocate & bind** scans the matching game's
+  writable memory in a later session and requires a unique match for every rule.
+  It only reads memory. Set/Increase/Freeze remain explicit actions after binding.
+- Profiles are game/version-bound, data-only JSON. Import/export shares locator
+  rules, not complete saves or old process addresses. The console library persists
+  in `/data/pscloud/editor-profiles.json` with revision checks against lost updates.
+- Weak, missing, ambiguous or overlapping targets and incompatible game versions
+  are refused. Restarted processes invalidate session addresses as before. A search
+  generation check prevents another browser's results from being bound accidentally.
+- Relocation scans yield between chunks, stop at 16 GiB or three minutes, and can
+  be cancelled with **Start over**. Active profiles never automatically resume freeze.
+- Tests simulate save-layout moves, process restarts, changed numeric values, ambiguous
+  matches, numeric bounds, profile storage persistence and browser revision conflicts.
+  The local TLS fixture now wraps accepted connections for MSYS2 compatibility.
+
+**Limits:** this is a general profile engine, not automatic support for every game.
+Encrypted saves are not decoded; unknown game checksums are not invented. Increasing
+saved money does not make it infinite. Mutable context can make a profile fail after
+a restart, and a unique match is not proof of a field's meaning. Profiles must be
+verified in-game across restarts before being shared as tested. Pointer-chain discovery
+and executable patches are not part of this candidate. PS5 build/in-game validation
+remains pending.
+
 ## Version 0.33.0 — saved Live values, multiple edits and freeze (beta)
 
 - Select up to 32 verified search results and set them in one request. Every

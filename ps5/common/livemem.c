@@ -114,7 +114,9 @@ static pthread_cond_t wake=PTHREAD_COND_INITIALIZER;
 static pthread_t freezer;
 static pthread_t searcher;
 static int searcher_started;
-static int freezer_started,stopping;
+static int freezer_started,stopping,cancel_search;
+static unsigned search_sequence;
+unsigned pscloud_live_sequence(void) {pthread_mutex_lock(&lock);unsigned n=search_sequence;pthread_mutex_unlock(&lock);return n;}
 static int type_of(const char *name) {for(int i=0;i<5;i++)if(!strcmp(name,TYPE_NAMES[i]))return i;return -1;}
 static double get(int type,const unsigned char *p) {
     switch(type) {
@@ -210,7 +212,7 @@ static void finish(const char *error) {
     pthread_mutex_lock(&lock);if(error)snprintf(L.error,sizeof L.error,"%s",error);
     L.busy=0;L.has=!error&&session_ok();pthread_cond_broadcast(&wake);pthread_mutex_unlock(&lock);
 }
-static int search_alive(void) {pthread_mutex_lock(&lock);int ok=session_ok();pthread_mutex_unlock(&lock);return ok;}
+static int search_alive(void) {pthread_mutex_lock(&lock);int ok=!cancel_search&&session_ok();pthread_mutex_unlock(&lock);return ok;}
 static void *scan_main(void *arg) {
     (void)arg;struct region *list=NULL;size_t n=0;
     if(regions(L.pid,&list,&n)) {finish("The game's memory map could not be read");return NULL;}
@@ -245,7 +247,7 @@ static void *next_main(void *arg) {
 static int start(void *(*fn)(void *),const char *phase,char *message,size_t max) {
     if(searcher_started) {pthread_join(searcher,NULL);searcher_started=0;}
     pthread_attr_t attr;pthread_attr_init(&attr);pthread_attr_setstacksize(&attr,256U*1024);
-    snprintf(L.phase,sizeof L.phase,"%s",phase);L.busy=1;L.done=0;L.error[0]=0;
+    cancel_search=0;search_sequence++;snprintf(L.phase,sizeof L.phase,"%s",phase);L.busy=1;L.done=0;L.error[0]=0;
     int bad=pthread_create(&searcher,&attr,fn,NULL);pthread_attr_destroy(&attr);
     if(bad) {L.busy=0;snprintf(message,max,"Could not start the search");return -1;}
     searcher_started=1;snprintf(message,max,"Searching the running game…");return 0;
@@ -266,7 +268,7 @@ int pscloud_live_next(double value,char *message,size_t max) {
     if(L.busy||!session_ok()||!L.has||!fits(L.type,value)) {pthread_mutex_unlock(&lock);snprintf(message,max,"Wait for the search, check the value, or search again for this game session");return -1;}
     L.value=value;L.total=L.count;int r=start(next_main,"next",message,max);pthread_mutex_unlock(&lock);return r;
 }
-void pscloud_live_reset(void) {pthread_mutex_lock(&lock);if(!L.busy) {L.count=0;L.has=0;L.overflow=0;L.error[0]=0;}pthread_mutex_unlock(&lock);}
+void pscloud_live_reset(void) {pthread_mutex_lock(&lock);if(L.busy)cancel_search=1;if(!L.busy) {L.count=0;L.has=0;L.overflow=0;L.error[0]=0;}pthread_mutex_unlock(&lock);}
 void pscloud_live_state_json(char *out,size_t max) {
     pthread_mutex_lock(&lock);char title[16]="";uint64_t stamp=0;int pid=find_game(title,&stamp);int same_game=session_ok();
     snprintf(out,max,"{\"running\":%s,\"title\":\"%s\",\"busy\":%s,\"phase\":\"%s\",\"done\":%llu,\"total\":%llu,\"count\":%zu,\"has\":%s,\"overflow\":%s,\"type\":\"%s\",\"value\":%g,\"error\":\"%s\",\"same_game\":%s,\"pinned\":%u}",
@@ -279,7 +281,7 @@ void pscloud_live_list_json(char *out,size_t max,int limit) {
         double now;int bad=read_value(L.type,L.addr[i],&now);char number[48]="null";if(!bad)snprintf(number,sizeof number,"%.17g",now);
         pos+=(size_t)snprintf(out+pos,max-pos,"%s{\"address\":\"0x%llx\",\"value\":%s}",i?",":"",(unsigned long long)L.addr[i],number);
     }
-    snprintf(out+pos,max-pos,"],\"count\":%zu,\"type\":\"%s\"}",L.count,TYPE_NAMES[L.type]);pthread_mutex_unlock(&lock);
+    snprintf(out+pos,max-pos,"],\"count\":%zu,\"type\":\"%s\",\"search_sequence\":%u}",L.count,TYPE_NAMES[L.type],search_sequence);pthread_mutex_unlock(&lock);
 }
 static int selected(const char *text,uint64_t addresses[TARGETS],unsigned *n) {
     *n=0;if(!text||!*text||L.busy||!L.has)return -1;
@@ -365,4 +367,108 @@ void pscloud_live_pins_json(char *out,size_t max) {
         at+=(size_t)snprintf(out+at,max-at,"%s{\"id\":%u,\"name\":\"%s\",\"count\":%u,\"type\":\"%s\",\"value\":%s,\"target\":%.17g,\"frozen\":%s,\"error\":\"%s\"}",i?",":"",p->id,name,p->n,TYPE_NAMES[p->type],number,p->target[0],p->frozen?"true":"false",p->error);
     }
     snprintf(out+at,max-at,"]}");pthread_mutex_unlock(&lock);
+}
+
+/* Portable Live locators use masked context, never a saved absolute address. */
+#define LOCATOR_BYTES 64
+struct locator_rule {unsigned char bytes[LOCATOR_BYTES],mask[LOCATOR_BYTES];unsigned matches,first;uint64_t address;};
+static struct locator_rule locator_rules[TARGETS];static unsigned locator_count;
+static int signature_strength(const unsigned char *b,const unsigned char *mask) {
+    unsigned fixed=0,nonzero=0;for(unsigned i=0;i<LOCATOR_BYTES;i++)if(mask[i]) {fixed++;if(b[i])nonzero++;}
+    return fixed>=16&&nonzero>=8;
+}
+int pscloud_live_locator(unsigned id,const char *version,char *out,size_t max) {
+    pthread_mutex_lock(&lock);int bad=0;struct pin *p=NULL;
+    if(!session_ok())bad=1;
+    for(unsigned i=0;i<pin_count;i++)if(pins[i].id==id)p=&pins[i];
+    if(!p||strlen(version)>31||!*version)bad=1;
+    for(const char *v=version;*v;v++)if((*v<'0'||*v>'9')&&*v!='.')bad=1;
+    size_t pos=0;char name[100];
+    if(!bad) {escape_name(name,p->name);pos=(size_t)snprintf(out,max,"{\"format\":\"PSCLOUD_EDIT_PROFILE_V1\",\"kind\":\"live\",\"name\":\"%s\",\"title\":\"%s\",\"version\":\"%s\",\"rules\":[",name,L.title,version);}
+    for(unsigned j=0;!bad&&j<p->n;j++) {
+        unsigned char b[LOCATOR_BYTES],mask[LOCATOR_BYTES];memset(mask,1,sizeof mask);
+        if(p->addr[j]<24||mem_read_back(L.pid,p->addr[j]-24,b,sizeof b)) {bad=1;break;}
+        memset(mask+24,0,TYPE_SIZE[p->type]);
+        /* Mask likely pointers: their absolute values change with allocation and ASLR. */
+        for(unsigned i=0;i+8<=LOCATOR_BYTES;i++)if(!((p->addr[j]-24+i)&7U)) {
+            uint64_t v=0;memcpy(&v,b+i,8);
+            if(v>=0x100000ULL&&v<0x800000000000ULL)memset(mask+i,0,8);
+        }
+        if(!signature_strength(b,mask)||pos+256>=max) {bad=1;break;}
+        char pattern[129];for(unsigned i=0;i<LOCATOR_BYTES;i++) {if(mask[i])snprintf(pattern+2*i,3,"%02x",b[i]);else memcpy(pattern+2*i,"??",2);}pattern[128]=0;
+        pos+=(size_t)snprintf(out+pos,max-pos,"%s{\"type\":\"%s\",\"offset\":24,\"pattern\":\"%s\"}",j?",":"",TYPE_NAMES[p->type],pattern);
+    }
+    if(!bad&&session_ok())snprintf(out+pos,max-pos,"]}");else bad=1;
+    pthread_mutex_unlock(&lock);return bad?-1:0;
+}
+int pscloud_live_game(char title[16]) {
+    pthread_mutex_lock(&lock);uint64_t stamp=0;int pid=find_game(title,&stamp);pthread_mutex_unlock(&lock);return pid<0?-1:0;
+}
+static int hex_digit(char c) {return c>='0'&&c<='9'?c-'0':c>='a'&&c<='f'?c-'a'+10:-1;}
+static int locator_parse(const char *patterns,int type) {
+    locator_count=0;
+    for(const char *p=patterns;*p;) {
+        if(locator_count==TARGETS||strlen(p)<128)return -1;
+        struct locator_rule *r=&locator_rules[locator_count];memset(r,0,sizeof *r);
+        for(unsigned i=0;i<LOCATOR_BYTES;i++) {
+            if((p[2*i]=='x'&&p[2*i+1]=='x')||(p[2*i]=='?'&&p[2*i+1]=='?'))continue;
+            int a=hex_digit(p[2*i]),b=hex_digit(p[2*i+1]);if(a<0||b<0)return -1;
+            r->mask[i]=1;r->bytes[i]=(unsigned char)(a*16+b);
+        }
+        for(unsigned i=24;i<24+TYPE_SIZE[type];i++)if(r->mask[i])return -1;
+        if(!signature_strength(r->bytes,r->mask))return -1;
+        for(unsigned i=0;i<LOCATOR_BYTES;i++)if(r->mask[i]) {r->first=i;break;}
+        locator_count++;p+=128;if(!*p)break;if(*p++!=','||!*p)return -1;
+    }
+    return locator_count?0:-1;
+}
+static int address_order(const void *a,const void *b) {uint64_t x=*(const uint64_t *)a,y=*(const uint64_t *)b;return x<y?-1:x>y;}
+static void *resolve_main(void *arg) {
+    (void)arg;struct region *list=NULL;size_t count=0;const char *error=NULL;
+    if(regions(L.pid,&list,&count)) {finish("The memory map could not be read");return NULL;}
+    unsigned long long total=0;for(size_t i=0;i<count;i++) {if(list[i].end<list[i].start) {error="Invalid memory map";break;}total+=list[i].end-list[i].start;}
+    if(total>16ULL*1024*1024*1024)error="Memory scan exceeds 16 GiB; this profile needs a more specific locator";
+    pthread_mutex_lock(&lock);L.total=total;pthread_mutex_unlock(&lock);
+    unsigned char *buf=malloc(CHUNK+LOCATOR_BYTES);if(!buf)error="Not enough memory";time_t deadline=time(NULL)+180;
+    for(size_t i=0;!error&&i<count;i++)for(uint64_t base=list[i].start;base<list[i].end;base+=CHUNK) {
+        if(!search_alive()) {error="Search stopped or game session changed";break;}
+        if(time(NULL)>deadline) {error="Relocation exceeded three minutes; nothing was bound";break;}
+        size_t remain=(size_t)(list[i].end-base),n=remain<CHUNK+LOCATOR_BYTES-1?remain:CHUNK+LOCATOR_BYTES-1;
+        if(mem_read(L.pid,base,buf,n)) {error="Memory could not be read completely; relocation stopped";break;}
+        size_t starts=n>=LOCATOR_BYTES?n-LOCATOR_BYTES+1:0;if(starts>CHUNK)starts=CHUNK;
+        for(unsigned k=0;k<locator_count;k++) {
+            struct locator_rule *r=&locator_rules[k];if(r->matches>1)continue;
+            for(size_t o=0;o<starts;o++) {
+                if((base+o+24)%TYPE_SIZE[L.type]||buf[o+r->first]!=r->bytes[r->first])continue;
+                unsigned j=0;for(;j<LOCATOR_BYTES;j++)if(r->mask[j]&&buf[o+j]!=r->bytes[j])break;
+                if(j==LOCATOR_BYTES) {r->address=base+o+24;if(++r->matches>1)break;}
+            }
+        }
+        pthread_mutex_lock(&lock);L.done+=remain<CHUNK?remain:CHUNK;pthread_mutex_unlock(&lock);
+        struct timespec pause={0,3000000};nanosleep(&pause,NULL);
+    }
+    for(unsigned k=0;!error&&k<locator_count;k++) {
+        if(locator_rules[k].matches!=1)error=locator_rules[k].matches?"Signature is ambiguous; profile needs refinement":"Signature not found; profile needs refinement";
+        else for(unsigned j=0;j<k;j++)if(locator_rules[j].address==locator_rules[k].address)error="Profile targets overlap; nothing was bound";
+    }
+    pthread_mutex_lock(&lock);
+    if(!error) {for(unsigned k=0;k<locator_count;k++)L.addr[k]=locator_rules[k].address;L.count=locator_count;qsort(L.addr,L.count,sizeof *L.addr,address_order);}
+    else L.count=0;
+    pthread_mutex_unlock(&lock);free(buf);free(list);finish(error);return NULL;
+}
+int pscloud_live_resolve(const char *title,const char *type,const char *patterns,char *message,size_t max) {
+    pthread_mutex_lock(&lock);int result=-1;char running[16]="";uint64_t stamp=0;int pid=find_game(running,&stamp),t=type_of(type);
+    if(L.busy||stopping)snprintf(message,max,"Wait for the current search or stop it first");
+    else if(pid<0||strcmp(title,running))snprintf(message,max,"Start the exact game this profile belongs to");
+    else if(t<0)snprintf(message,max,"Unsupported numeric type");
+    else {
+        (void)session_ok();
+        if(locator_parse(patterns,t))snprintf(message,max,"Invalid or weak memory signature");
+        else {
+            if(!L.addr)L.addr=malloc(CAP*sizeof *L.addr);
+            if(!L.addr)snprintf(message,max,"Not enough memory");
+            else {L.type=t;L.pid=pid;L.session=stamp;strcpy(L.title,running);L.has=0;L.count=0;L.value=0;result=start(resolve_main,"resolve",message,max);}
+        }
+    }
+    pthread_mutex_unlock(&lock);return result;
 }
