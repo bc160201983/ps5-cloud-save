@@ -3,6 +3,18 @@
 Every release, newest first, with what was verified on a console and what was not.
 The current overview is in [README.md](README.md).
 
+## Version 0.34.23 — fast relocation with pointer paths
+
+- **Retain profile** now first looks for fixed pointer paths to the value, as cheat tables use:
+  from a place in the game's own data, through up to 4 pointers (offsets below 4 KiB), to the
+  value. It runs once in the background (up to 5 minutes, with progress and Stop search) and
+  keeps up to 3 paths per place in the profile. Profiles with paths show "fast relocation".
+- **Relocate & bind** follows the saved paths first and accepts a place only when the bytes
+  around it still match the profile's signature. When every place is found this way, nothing
+  is scanned; otherwise the usual memory search runs. Nothing is written to the game.
+- Verified with host tests only (a value two pointers deep, moved after a restart with a decoy
+  copy, and a broken path falling back to the search). Not yet verified in a PS5 game.
+
 ## Version 0.34.22 — simpler save editor
 
 - Removed **Named fields** and **Compare two loads** from Or change the save file. They listed

@@ -287,6 +287,65 @@ class LiveMemoryTests(unittest.TestCase):
         self.assertEqual([p['address'] for p in self.json('list')['places']],['0x10000200','0x10000800'])
         self.assertEqual(self.memory.read_bytes(),bytes(moved))
 
+    def pointer_world(self, obj, holder, value, decoy=None):
+        """Program data in the first 4 KiB; at 0x800 a fixed pointer to holder, whose +0x38 points
+        to obj, whose +0x1c4 holds the value. decoy: a copy of obj's bytes elsewhere."""
+        data = bytearray(65536)
+        struct.pack_into('<Q', data, 0x800, 0x10000000+holder)
+        struct.pack_into('<Q', data, holder+0x38, 0x10000000+obj)
+        data[obj+0x150:obj+0x1c4] = bytes((b'HealthComponentData' * 7)[:0x74])
+        struct.pack_into('<i', data, obj+0x1c4, value)
+        data[obj+0x1c8:obj+0x200] = bytes((b'ArmorAndStaminaFields' * 3)[:0x38])
+        if decoy:
+            data[decoy:decoy+0x300] = data[obj:obj+0x300]
+        self.memory.write_bytes(data)
+        return data
+
+    def test_pointer_paths_relocate_without_a_memory_search(self):
+        self.lib.pscloud_live_chains.argtypes = [ctypes.c_uint, ctypes.c_void_p, ctypes.c_size_t]
+        self.lib.pscloud_live_use_chains.argtypes = [ctypes.c_char_p]
+        os.environ['PSCLOUD_TEST_HEAP'] = '0x1000'
+        self.addCleanup(os.environ.pop, 'PSCLOUD_TEST_HEAP', None)
+        self.pointer_world(0x3000, 0x5000, 777777)
+        self.stamp.write_text('110')
+        self.call('scan', b'int32', 777777)
+        self.wait_for(lambda: not self.json('state')['busy'])
+        self.addresses = [p['address'] for p in self.json('list')['places']]
+        self.assertEqual(self.addresses, ['0x100031c4'])
+        group = self.pin(b'Health')
+        self.call('chains', group)
+        self.wait_for(lambda: not self.json('state')['busy'])
+        self.assertFalse(self.json('state')['error'])
+        result, text = self.locator(group)
+        self.assertEqual(result, 0, text)
+        rule = json.loads(text)['rules'][0]
+        self.assertEqual(rule['chains'], ['800/38/1c4'])
+        patterns = rule['pattern'].replace('??', 'xx').encode()
+        # Restart: both objects moved, and a copy of the object makes the signature ambiguous.
+        moved = self.pointer_world(0x9000, 0x7000, 4242, decoy=0xb000)
+        self.stamp.write_text('111')
+        self.assertEqual(self.lib.pscloud_live_use_chains(b'800/38/1c4'), 0)
+        self.call('resolve', b'PPSA02433', b'int32', patterns)
+        self.wait_for(lambda: not self.json('state')['busy'])
+        state = self.json('state')
+        self.assertEqual((state['error'], state['candidates']), ('', False))
+        places = self.json('list')['places']
+        self.assertEqual([(p['address'], p['value']) for p in places], [('0x100091c4', 4242)])
+        self.assertEqual(self.memory.read_bytes(), bytes(moved))  # relocation never writes
+        # A path that no longer leads to the signature falls back to the search (both copies).
+        broken = bytearray(moved)
+        struct.pack_into('<Q', broken, 0x800, 0)
+        self.memory.write_bytes(broken)
+        self.stamp.write_text('112')
+        self.assertEqual(self.lib.pscloud_live_use_chains(b'800/38/1c4'), 0)
+        self.call('resolve', b'PPSA02433', b'int32', patterns)
+        self.wait_for(lambda: not self.json('state')['busy'])
+        self.assertTrue(self.json('state')['candidates'])
+        self.assertEqual([p['address'] for p in self.json('list')['places']], ['0x100091c4', '0x1000b1c4'])
+        # Malformed paths are refused.
+        for bad in (b'xyz', b'800//1c4', b'1/2/3/4/5/6', b'800/12345'):
+            self.assertEqual(self.lib.pscloud_live_use_chains(bad), -1, bad)
+
     def locator(self, group):
         out=ctypes.create_string_buffer(16000)
         result=self.lib.pscloud_live_locator(group,b'01.000.000',out,len(out))

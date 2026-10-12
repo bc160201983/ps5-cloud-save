@@ -78,6 +78,15 @@ static int find_game(char title[16],uint64_t *session) {
 static int regions_all(int pid,struct region **out,size_t *n,int writable_only) {
     (void)pid;int fd=open(getenv("PSCLOUD_TEST_LIVE"),O_RDONLY);off_t size=fd<0?0:lseek(fd,0,SEEK_END);if(fd>=0)close(fd);
     if(size<=0)return -1;
+    const char *heap=getenv("PSCLOUD_TEST_HEAP");
+    if(heap) {
+        /* The program's data first (named eboot.bin), then heap memory with no name. */
+        uint64_t split=strtoull(heap,NULL,0);if(!split||split>=(uint64_t)size)return -1;
+        *out=calloc(2,sizeof **out);if(!*out)return -1;
+        (*out)[0].start=FAKE_BASE;(*out)[0].end=FAKE_BASE+split;(*out)[0].prot=3;snprintf((*out)[0].name,sizeof (*out)[0].name,"eboot.bin");
+        (*out)[1].start=FAKE_BASE+split;(*out)[1].end=FAKE_BASE+(uint64_t)size;(*out)[1].prot=3;
+        *n=2;return 0;
+    }
     if(!writable_only&&getenv("PSCLOUD_TEST_UNNAMED")) {
         /* As on the 11.40 console: no names; code (r-x) first, then the program's data (rw). */
         *out=calloc(3,sizeof **out);if(!*out)return -1;
@@ -454,12 +463,184 @@ void pscloud_live_pins_json(char *out,size_t max) {
 /* A fingerprint that matches a few places (games often keep copies of the same item data)
  * returns those places as search results; Next search with the current number picks one. */
 #define MAX_CANDIDATES 64
-struct locator_rule {unsigned char bytes[WINDOW],mask[WINDOW];unsigned len,offset,matches,first;uint64_t address,found[MAX_CANDIDATES];};
+struct locator_rule {unsigned char bytes[WINDOW],mask[WINDOW];unsigned len,offset,matches,first;int chained;uint64_t address,found[MAX_CANDIDATES];};
 
 static struct locator_rule locator_rules[TARGETS];static unsigned locator_count;
 static int signature_strength(const unsigned char *b,const unsigned char *mask,unsigned len,unsigned *fixed,unsigned *nonzero) {
     *fixed=0;*nonzero=0;for(unsigned i=0;i<len;i++)if(mask[i]) {(*fixed)++;if(b[i])(*nonzero)++;}
     return *fixed>=16&&*nonzero>=8;
+}
+static int hex_value(char c) {return c>='0'&&c<='9'?c-'0':c>='a'&&c<='f'?c-'a'+10:-1;}
+
+/* ---------- pointer chains ----------
+ * A value in moving memory (the heap) is usually reached from a fixed place in the game's own
+ * data through a few pointers: [[base+0x4f0010]+0x38]+0x1c4. Retain finds such paths once, and
+ * Relocate follows them in a moment instead of scanning all memory. A path is written as hex
+ * numbers joined by "/": the first is the place relative to the start of the game's program,
+ * each later one is added after reading a pointer there. A path is only trusted when the bytes
+ * around its end still match the profile's signature; otherwise the normal search runs. */
+#define CHAIN_DEPTH 4       /* pointers to follow at most */
+#define CHAIN_KEEP 3        /* paths kept per place */
+#define CHAIN_REACH 0x1000  /* largest offset from a pointer to the field it leads to */
+#define CHAIN_LEVEL 50000   /* candidate places kept per step */
+#define CHAIN_SECONDS 300
+#define CHAIN_TEXT 64
+#define MODULE_REGIONS 64
+struct chain_node {uint64_t addr;uint32_t parent;uint16_t offset;uint8_t place,level;};
+struct chain_target {uint64_t addr;uint32_t index;};
+/* Results of the last path search; ready is set (under the lock) once the search finished. */
+static struct {int ready;unsigned id,places;uint64_t session;unsigned n[TARGETS];char text[TARGETS][CHAIN_KEEP][CHAIN_TEXT];uint64_t addr[TARGETS];} CR;
+/* Paths sent with the next relocation, one list per profile rule. */
+static char chain_use[TARGETS][CHAIN_KEEP][CHAIN_TEXT];static unsigned chain_use_n[TARGETS];
+static char chain_now[TARGETS][CHAIN_KEEP][CHAIN_TEXT];static unsigned chain_now_n[TARGETS];
+/* The game's program: its start (base) and its own writable data. By name, or when names are
+ * missing (11.40) by position, as the frame probe does. Returns the number of data regions. */
+static size_t module_layout(const struct region *list,size_t n,uint64_t *base,struct region *data,size_t max) {
+    size_t picked=0;*base=0;
+    for(size_t i=0;i<n;i++)if(strstr(list[i].name,"eboot")) {
+        if(!*base)*base=list[i].start;
+        if((list[i].prot&3)==3&&picked<max)data[picked++]=list[i];
+    }
+    if(*base)return picked;
+    size_t i=0;while(i<n&&!(list[i].prot&4))i++;
+    if(i==n)return 0;
+    *base=list[i].start;int seen=0;
+    for(i++;i<n&&picked<max;i++) {
+        if(list[i].prot&4) {if(seen)break;continue;}
+        if((list[i].prot&3)!=3)continue;
+        data[picked++]=list[i];seen=1;
+    }
+    return picked;
+}
+static int module_static(uint64_t a,uint64_t base,const struct region *data,size_t n) {
+    if(a<base)return 0;
+    for(size_t i=0;i<n;i++)if(a>=data[i].start&&a<data[i].end)return 1;
+    return 0;
+}
+static int chain_parse(const char *text,uint64_t parts[CHAIN_DEPTH+1],unsigned *count) {
+    *count=0;
+    for(const char *p=text;;) {
+        if(*count>CHAIN_DEPTH)return -1;
+        size_t len=strspn(p,"0123456789abcdef");if(!len||len>(*count?4:12))return -1;
+        uint64_t v=0;for(size_t i=0;i<len;i++)v=v*16+(uint64_t)hex_value(p[i]);
+        parts[(*count)++]=v;p+=len;
+        if(!*p)return 0;
+        if(*p!='/')return -1;
+        p++;
+    }
+}
+static int chain_follow(const char *text,uint64_t base,uint64_t *out) {
+    uint64_t parts[CHAIN_DEPTH+1];unsigned n;
+    if(chain_parse(text,parts,&n))return -1;
+    uint64_t a=base+parts[0];
+    for(unsigned i=1;i<n;i++) {uint64_t v;if(mem_read(L.pid,a,&v,8)||!v)return -1;a=v+parts[i];}
+    *out=a;return 0;
+}
+static void chain_record(const struct chain_node *nodes,uint32_t k,uint64_t base) {
+    char t[CHAIN_TEXT];size_t n=(size_t)snprintf(t,sizeof t,"%llx",(unsigned long long)(nodes[k].addr-base));
+    for(uint32_t j=k;nodes[j].level>0&&n<sizeof t;j=nodes[j].parent)n+=(size_t)snprintf(t+n,sizeof t-n,"/%x",nodes[j].offset);
+    unsigned p=nodes[k].place;
+    if(n>=sizeof t||CR.n[p]>=CHAIN_KEEP)return;
+    for(unsigned i=0;i<CR.n[p];i++)if(!strcmp(CR.text[p][i],t))return;
+    memcpy(CR.text[p][CR.n[p]++],t,n+1);
+}
+static unsigned chain_places_found(void) {unsigned f=0;for(unsigned j=0;j<CR.places;j++)if(CR.n[j])f++;return f;}
+static int target_order(const void *a,const void *b) {uint64_t x=((const struct chain_target *)a)->addr,y=((const struct chain_target *)b)->addr;return x<y?-1:x>y;}
+static void *chains_main(void *arg) {
+    (void)arg;struct region *all=NULL,*list=NULL,data[MODULE_REGIONS];size_t na=0,n=0,nd=0;uint64_t base=0;const char *error=NULL;
+    if(regions_all(L.pid,&all,&na,0)||regions(L.pid,&list,&n))error="The game's memory map could not be read";
+    else if(!(nd=module_layout(all,na,&base,data,MODULE_REGIONS)))error="The game's own data could not be located";
+    struct chain_node *nodes=malloc(sizeof *nodes*(TARGETS+CHAIN_DEPTH*(size_t)CHAIN_LEVEL+1));
+    struct chain_target *t=malloc(sizeof *t*CHAIN_LEVEL);unsigned char *buf=malloc(CHUNK);
+    if(!error&&(!nodes||!t||!buf))error="Not enough memory";
+    unsigned long long total=0;for(size_t i=0;!error&&i<n;i++)total+=list[i].end-list[i].start;
+    uint32_t count=0,level_start=0;int timed_out=0;
+    if(!error) {
+        pthread_mutex_lock(&lock);L.total=total*CHAIN_DEPTH;pthread_mutex_unlock(&lock);
+        for(unsigned j=0;j<CR.places;j++) {
+            nodes[count]=(struct chain_node){CR.addr[j],0,0,(uint8_t)j,0};
+            if(module_static(CR.addr[j],base,data,nd))chain_record(nodes,count,base);
+            count++;
+        }
+        trace_begin("pointer paths",n,total);
+    }
+    const time_t deadline=time(NULL)+CHAIN_SECONDS;
+    for(unsigned level=1;!error&&!timed_out&&level<=CHAIN_DEPTH&&chain_places_found()<CR.places;level++) {
+        /* Places to reach in this step: the last step's places outside the program's data. */
+        uint32_t nt=0;
+        for(uint32_t k=level_start;k<count&&nt<CHAIN_LEVEL;k++)if(!module_static(nodes[k].addr,base,data,nd)) {t[nt].addr=nodes[k].addr;t[nt].index=k;nt++;}
+        if(!nt)break;
+        qsort(t,nt,sizeof *t,target_order);
+        const uint64_t lo=t[0].addr>CHAIN_REACH?t[0].addr-(CHAIN_REACH-1):1,hi=t[nt-1].addr;
+        uint32_t next=count;const uint32_t limit=count+CHAIN_LEVEL;
+        for(size_t i=0;!error&&!timed_out&&i<n;i++)for(uint64_t a=list[i].start;a<list[i].end;a+=CHUNK) {
+            if(!search_alive()) {error=stop_reason(0);break;}
+            if(time(NULL)>deadline) {timed_out=1;break;}
+            if(a==list[i].start)trace_region(i,n,&list[i]);
+            size_t len=list[i].end-a<CHUNK?(size_t)(list[i].end-a):CHUNK;
+            /* Unreadable pages read as zero, which is never a pointer here. */
+            if(mem_read(L.pid,a,buf,len))for(size_t k=0;k<len;k+=PAGE) {size_t l=len-k<PAGE?len-k:PAGE;if(mem_read(L.pid,a+k,buf+k,l))memset(buf+k,0,l);}
+            for(size_t o=0;o+8<=len;o+=8) {
+                uint64_t v;memcpy(&v,buf+o,8);
+                if(v<lo||v>hi)continue;
+                size_t low=0,high=nt;
+                while(low<high) {size_t m=(low+high)/2;if(t[m].addr<v)low=m+1;else high=m;}
+                for(size_t m=low;m<nt&&t[m].addr-v<CHAIN_REACH;m++) {
+                    const uint32_t parent=t[m].index;
+                    nodes[next]=(struct chain_node){a+o,parent,(uint16_t)(t[m].addr-v),nodes[parent].place,(uint8_t)level};
+                    if(module_static(a+o,base,data,nd))chain_record(nodes,next,base);
+                    else if(next<limit)next++;
+                }
+            }
+            pthread_mutex_lock(&lock);L.done+=len;pthread_mutex_unlock(&lock);
+            search_pause();
+        }
+        level_start=count;count=next;
+    }
+    trace_end(error?error:timed_out?"time limit":NULL);
+    pthread_mutex_lock(&lock);
+    const unsigned found=chain_places_found();
+    if(!error) {
+        CR.ready=1;
+        pscloud_log("EVENT","Live: pointer paths for %u of %u places in %s%s",found,CR.places,L.title,timed_out?" (stopped at the time limit)":"");
+        pscloud_notify("Live: fast relocation ready for %u of %u places",found,CR.places);
+    }
+    else {snprintf(L.error,sizeof L.error,"%s",error);pscloud_log("WARN","Live: pointer path search ended: %s",error);}
+    L.busy=0;pthread_cond_broadcast(&wake);pthread_mutex_unlock(&lock);
+    free(nodes);free(t);free(buf);free(all);free(list);return NULL;
+}
+int pscloud_live_chains(unsigned id,char *message,size_t max) {
+    pthread_mutex_lock(&lock);int result=-1;struct pin *p=NULL;
+    if(L.busy||stopping)snprintf(message,max,"Wait for the current search or stop it first");
+    else if(!session_ok())snprintf(message,max,"The game restarted, so this saved value expired. Search for it again");
+    else {
+        for(unsigned i=0;i<pin_count;i++)if(pins[i].id==id)p=&pins[i];
+        if(!p)snprintf(message,max,"This saved value expired. Search for it again");
+        else {
+            CR.ready=0;CR.id=id;CR.session=L.session;CR.places=p->n;memset(CR.n,0,sizeof CR.n);memcpy(CR.addr,p->addr,sizeof CR.addr);
+            pscloud_log("EVENT","Live: finding pointer paths to %s in %s (%u places)",p->name,L.title,p->n);
+            result=start(chains_main,"chains",message,max);
+            if(!result)snprintf(message,max,"Finding fixed paths to %s. This runs once and takes up to 5 minutes",p->name);
+        }
+    }
+    pthread_mutex_unlock(&lock);return result;
+}
+/* Paths for the next relocation: rules separated by ",", a rule's paths by ";". */
+int pscloud_live_use_chains(const char *text) {
+    char parsed[TARGETS][CHAIN_KEEP][CHAIN_TEXT];unsigned count[TARGETS];memset(count,0,sizeof count);unsigned rule=0;
+    for(const char *p=text;*p;) {
+        size_t len=strcspn(p,",;");uint64_t parts[CHAIN_DEPTH+1];unsigned n;char one[CHAIN_TEXT];
+        if(len) {
+            if(len>=sizeof one||count[rule]>=CHAIN_KEEP)return -1;
+            memcpy(one,p,len);one[len]=0;if(chain_parse(one,parts,&n))return -1;
+            memcpy(parsed[rule][count[rule]++],one,len+1);
+        }
+        p+=len;if(!*p)break;
+        if(*p==','&&++rule>=TARGETS)return -1;
+        p++;
+    }
+    pthread_mutex_lock(&lock);memcpy(chain_use,parsed,sizeof parsed);memcpy(chain_use_n,count,sizeof count);pthread_mutex_unlock(&lock);
+    return 0;
 }
 /* Writes the profile JSON to out, or on failure the reason (plain text) and returns -1. */
 int pscloud_live_locator(unsigned id,const char *version,char *out,size_t max) {
@@ -495,9 +676,15 @@ int pscloud_live_locator(unsigned id,const char *version,char *out,size_t max) {
         }
         unsigned fixed,nonzero;
         if(!signature_strength(b,mask,WINDOW,&fixed,&nonzero)) {snprintf(why,sizeof why,"Too little stable memory around this value (%u fixed bytes, %u nonzero; 16 and 8 are needed). Retain another place of the same value",fixed,nonzero);break;}
-        if(pos+2*WINDOW+128>=max) {snprintf(why,sizeof why,"The profile is too large");break;}
+        if(pos+2*WINDOW+128+CHAIN_KEEP*(CHAIN_TEXT+3)>=max) {snprintf(why,sizeof why,"The profile is too large");break;}
         char pattern[2*WINDOW+1];for(unsigned i=0;i<WINDOW;i++) {if(mask[i])snprintf(pattern+2*i,3,"%02x",b[i]);else memcpy(pattern+2*i,"??",2);}pattern[2*WINDOW]=0;
-        pos+=(size_t)snprintf(out+pos,max-pos,"%s{\"type\":\"%s\",\"offset\":%d,\"pattern\":\"%s\"}",j?",":"",TYPE_NAMES[p->type],WINDOW_OFFSET,pattern);
+        pos+=(size_t)snprintf(out+pos,max-pos,"%s{\"type\":\"%s\",\"offset\":%d,\"pattern\":\"%s\"",j?",":"",TYPE_NAMES[p->type],WINDOW_OFFSET,pattern);
+        if(CR.ready&&CR.id==id&&CR.session==L.session&&CR.places==p->n&&CR.n[j]) {
+            pos+=(size_t)snprintf(out+pos,max-pos,",\"chains\":[");
+            for(unsigned c=0;c<CR.n[j];c++)pos+=(size_t)snprintf(out+pos,max-pos,"%s\"%s\"",c?",":"",CR.text[j][c]);
+            pos+=(size_t)snprintf(out+pos,max-pos,"]");
+        }
+        pos+=(size_t)snprintf(out+pos,max-pos,"}");
     }
     if(!*why&&!session_ok())snprintf(why,sizeof why,"The game restarted, so this saved value expired. Search for it again");
     if(!*why) {snprintf(out+pos,max-pos,"]}");pscloud_log("EVENT","Live: profile %s built for %s %s; the dashboard page stores it",p->name,L.title,version);}
@@ -528,18 +715,41 @@ static int locator_parse(const char *patterns,int type) {
     return locator_count?0:-1;
 }
 static int address_order(const void *a,const void *b) {uint64_t x=*(const uint64_t *)a,y=*(const uint64_t *)b;return x<y?-1:x>y;}
+/* Relocation by saved pointer paths: a rule is placed when one of its paths ends where the
+ * bytes still match its signature. Returns how many rules were placed. */
+static int signature_at(const struct locator_rule *r,uint64_t a) {
+    unsigned char b[WINDOW];
+    if(a<r->offset||a%TYPE_SIZE[L.type]||mem_read(L.pid,a-r->offset,b,r->len))return 0;
+    for(unsigned j=0;j<r->len;j++)if(r->mask[j]&&b[j]!=r->bytes[j])return 0;
+    return 1;
+}
+static unsigned chains_place(void) {
+    unsigned any=0,placed=0;for(unsigned k=0;k<locator_count;k++)any+=chain_now_n[k];
+    if(!any)return 0;
+    struct region *all=NULL,data[MODULE_REGIONS];size_t na=0;uint64_t base=0;
+    if(regions_all(L.pid,&all,&na,0)||!module_layout(all,na,&base,data,MODULE_REGIONS)) {free(all);return 0;}
+    free(all);
+    for(unsigned k=0;k<locator_count;k++)for(unsigned c=0;c<chain_now_n[k];c++) {
+        uint64_t a;struct locator_rule *r=&locator_rules[k];
+        if(chain_follow(chain_now[k][c],base,&a)||!signature_at(r,a))continue;
+        r->address=a;r->found[0]=a;r->matches=1;r->chained=1;placed++;break;
+    }
+    pscloud_log("EVENT","Live: pointer paths placed %u of %u places",placed,locator_count);
+    return placed;
+}
 static void *resolve_main(void *arg) {
     (void)arg;struct region *list=NULL;size_t count=0;const char *error=NULL;
+    const int by_paths=chains_place()==locator_count;
     if(regions(L.pid,&list,&count)) {finish("The memory map could not be read");return NULL;}
     unsigned long long total=0;for(size_t i=0;i<count;i++) {if(list[i].end<list[i].start) {error="Invalid memory map";break;}total+=list[i].end-list[i].start;}
-    if(total>16ULL*1024*1024*1024)error="Memory scan exceeds 16 GiB; this profile needs a more specific locator";
+    if(!by_paths&&total>16ULL*1024*1024*1024)error="Memory scan exceeds 16 GiB; this profile needs a more specific locator";
     pthread_mutex_lock(&lock);L.total=total;pthread_mutex_unlock(&lock);
     unsigned char *buf=malloc(CHUNK+WINDOW);if(!buf)error="Not enough memory";time_t deadline=time(NULL)+180;
     /* Like the search, unreadable memory is skipped: a failed chunk is retried page by page and
      * no signature window touching an unread page can match. Matches stay unique among the
      * memory that was read. */
     unsigned char bad[(CHUNK+WINDOW)/PAGE+2];unsigned long long skipped=0;trace_begin("relocation",count,total);
-    for(size_t i=0;!error&&i<count;i++)for(uint64_t base=list[i].start;base<list[i].end;base+=CHUNK) {
+    for(size_t i=0;!error&&!by_paths&&i<count;i++)for(uint64_t base=list[i].start;base<list[i].end;base+=CHUNK) {
         if(!search_alive()) {error=stop_reason(0);break;}
         if(base==list[i].start)trace_region(i,count,&list[i]);
         if(time(NULL)>deadline) {error="Relocation exceeded three minutes; nothing was bound";break;}
@@ -550,7 +760,7 @@ static void *resolve_main(void *arg) {
             if(mem_read(L.pid,base+k*PAGE,buf+k*PAGE,len)) {bad[k]=1;if(k*PAGE<CHUNK)skipped+=len;}
         }
         for(unsigned k=0;k<locator_count;k++) {
-            struct locator_rule *r=&locator_rules[k];if(r->matches>MAX_CANDIDATES)continue;
+            struct locator_rule *r=&locator_rules[k];if(r->chained||r->matches>MAX_CANDIDATES)continue;
             size_t starts=n>=r->len?n-r->len+1:0;if(starts>CHUNK)starts=CHUNK;
             for(size_t o=0;o<starts;o++) {
                 if((base+o+r->offset)%TYPE_SIZE[L.type]||buf[o+r->first]!=r->bytes[r->first]||bad[o/PAGE]||bad[(o+r->len-1)/PAGE])continue;
@@ -575,7 +785,7 @@ static void *resolve_main(void *arg) {
     pthread_mutex_lock(&lock);
     if(!error&&!ambiguous) {
         found_rules=locator_count;
-        pscloud_notify("Live profile found %u places in %s. Check the values before changing them",found_rules,L.title);
+        pscloud_notify("Live profile found %u places in %s%s. Check the values before changing them",found_rules,L.title,by_paths?" instantly by pointer paths":"");
         for(unsigned k=0;k<locator_count;k++)L.addr[k]=locator_rules[k].address;
         L.count=locator_count;qsort(L.addr,L.count,sizeof *L.addr,address_order);
     }
@@ -600,6 +810,7 @@ int pscloud_live_resolve(const char *title,const char *type,const char *patterns
             if(!L.addr)L.addr=malloc(CAP*sizeof *L.addr);
             if(!L.addr)snprintf(message,max,"Not enough memory");
             else {L.type=t;L.pid=pid;L.session=stamp;strcpy(L.title,running);L.has=0;L.count=0;L.value=0;candidates=0;
+                memcpy(chain_now,chain_use,sizeof chain_now);memcpy(chain_now_n,chain_use_n,sizeof chain_now_n);memset(chain_use_n,0,sizeof chain_use_n);
                 pscloud_log("EVENT","Relocating a Live profile in %s (%u places)",running,locator_count);result=start(resolve_main,"resolve",message,max);}
         }
     }

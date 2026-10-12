@@ -858,11 +858,19 @@ const found=SaveImport.slots(files);const pkg=SaveImport.pack(found,'7.00');fs.w
         group=self.request('/api/live/pins')[1]['groups'][0]['id']
         status,p=self.request('/api/live/locator?id='+str(group));self.assertEqual(status,200,p)
         self.assertEqual((p['kind'],p['version']),('live','01.000.000'))
+        # Pointer paths: the value sits in the program's own data, so its path is just its offset.
+        self.assertEqual(self.request('/api/live/chains',{'id':'0'})[0],400)
+        self.assertEqual(self.request('/api/live/chains',{'id':str(group)})[0],200);wait()
+        status,p=self.request('/api/live/locator?id='+str(group));self.assertEqual(status,200,p)
+        self.assertEqual(p['rules'][0]['chains'],['100'])
+        self.assertEqual(self.request('/api/live/chains-use',{'chains':'100/zz'})[0],400)
         moved=bytearray(65536);moved[488:552]=data[232:296];struct.pack_into('<i',moved,512,4321)
         memory.write_bytes(moved);stamp.write_text('201')
         values={'title':p['title'],'version':p['version'],'type':p['rules'][0]['type'],
                 'patterns':','.join(r['pattern'].replace('??','xx') for r in p['rules'])}
         self.assertEqual(self.request('/api/live/resolve',{**values,'version':'02.000.000'})[0],400)
+        # The old path no longer leads to the signature, so relocation searches as before.
+        self.assertEqual(self.request('/api/live/chains-use',{'chains':'100'})[0],200)
         status,r=self.request('/api/live/resolve',values);self.assertEqual(status,200,r);wait()
         result=self.request('/api/live/list')[1]
         self.assertEqual(result['places'][0]['address'],'0x10000200')

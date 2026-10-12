@@ -160,6 +160,11 @@ It looks for unique masked context; it does not write or resume Freeze automatic
 If context changed or more than one match exists, find and verify the value again,
 then retain it with the same name to refine the profile.
 
+Since 0.34.23, Retain profile first looks once (up to 5 minutes) for fixed pointer paths
+from the game's own data to the value, the way cheat tables do. With a path, Relocate & bind
+finds the value in a moment after a restart; the bytes around the value must still match,
+otherwise it searches memory as before.
+
 For save profiles, load before/after saves and narrow values with **Find** or
 **Find by change**. Add verified changes, name them and choose **Save edit profile**.
 Later, load the current save and use **Queue Set** or **Queue adjustment**. Review,

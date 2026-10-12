@@ -18,6 +18,10 @@ void pscloud_live_shutdown(void);
 int pscloud_live_game(char title[16]);
 int pscloud_live_locator(unsigned id,const char *version,char *out,size_t max);
 int pscloud_live_resolve(const char *title,const char *type,const char *patterns,char *message,size_t max);
+/* Pointer paths: find them for a saved value (background, phase "chains"; Retain then includes
+ * them), and hand saved paths to the next relocation ("a/b/c;d/e,f": rules by comma). */
+int pscloud_live_chains(unsigned id,char *message,size_t max);
+int pscloud_live_use_chains(const char *text);
 unsigned pscloud_live_sequence(void);
 /* File that records each memory region before it is read (empty path: off). */
 void pscloud_live_set_trace(const char *path);
