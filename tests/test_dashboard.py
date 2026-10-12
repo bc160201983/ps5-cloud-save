@@ -702,9 +702,10 @@ class DashboardTests(unittest.TestCase):
         remedy=struct.pack('<II',4,4)+struct.pack('<I',zlib.crc32(tail))+tail
         package=test_sharing.portable(inner=test_sharing.zip_bytes([('persistent',remedy)]),slots=(slot,),title='PPSA02433')
         script=open(ROOT/'ps5/ui.html',encoding='utf-8').read()
-        start=script.index('const SaveLab=(()=>{');end=script.index('})();',start)+5
+        def block(name):
+            start=script.index('const '+name+'=(()=>{');return script[start:script.index('})();',start)+5]
         with tf.TemporaryDirectory() as tmp:
-            Path(tmp,'lab.js').write_text(script[start:end]+"""
+            Path(tmp,'lab.js').write_text(block('SaveLab')+'\n'+block('EditorProfiles')+"""
 const fs=require('fs');const pkg=SaveLab.parse(new Uint8Array(fs.readFileSync(process.argv[2])));
 const hits=SaveLab.find(pkg,1250,['int32']);if(hits.length!==1)throw Error('hits '+hits.length);
 const out=SaveLab.write(pkg,[{...hits[0],value:99999}]);fs.writeFileSync(process.argv[3],Buffer.from(out.bytes));console.log(out.formats.join(','));
