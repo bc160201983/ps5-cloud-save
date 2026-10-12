@@ -16,6 +16,13 @@ A new **Edit (beta)** tab on each game:
   checksum: the game's own where known, the archive checksums and the package SHA-256. It then
   uses the normal check and **Replace my save** path, with a rollback copy.
 
+**Receive any decrypted save.** **Receive a shared save** now also takes any decrypted PS5
+save ZIP or save folder, the kind save tools and other consoles export: a folder holding
+`sce_sys/param.sfo` and the game files. A ZIP or folder can be dropped too. PSCloud reads the
+game and slot names from `param.sfo`, converts the save in the page and writes it as usual.
+Missing slots are created, the game does not need to be installed, and existing slots keep
+this console's identity.
+
 Research behind it: decrypted PS5 saves from 7 games on 11.40 were surveyed.
 - Ghost of Tsushima, Alan Wake 2 and Marvel's Wolverine store progress in plain data with
   readable field names.
