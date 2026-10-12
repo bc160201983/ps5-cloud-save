@@ -454,7 +454,7 @@ int pscloud_live_locator(unsigned id,const char *version,char *out,size_t max) {
         pos+=(size_t)snprintf(out+pos,max-pos,"%s{\"type\":\"%s\",\"offset\":%d,\"pattern\":\"%s\"}",j?",":"",TYPE_NAMES[p->type],WINDOW_OFFSET,pattern);
     }
     if(!*why&&!session_ok())snprintf(why,sizeof why,"The game restarted, so this saved value expired. Search for it again");
-    if(!*why) {snprintf(out+pos,max-pos,"]}");pscloud_notify("Live: retained profile %s for %s %s",p->name,L.title,version);}
+    if(!*why) {snprintf(out+pos,max-pos,"]}");pscloud_log("EVENT","Live: profile %s built for %s %s; the dashboard page stores it",p->name,L.title,version);}
     else {snprintf(out,max,"%s",why);pscloud_log("WARN","Live profile not retained: %s",why);}
     pthread_mutex_unlock(&lock);return *why?-1:0;
 }

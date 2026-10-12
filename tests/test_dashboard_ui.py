@@ -84,3 +84,33 @@ const source=html.slice(html.indexOf('async function api('),html.indexOf('\nfunc
             path=Path(tmp)/'ui.js';path.write_text(script,encoding='utf-8')
             result=subprocess.run([node,'--check',str(path)],capture_output=True,text=True)
         self.assertEqual(result.returncode,0,result.stderr)
+
+
+class ProfileLibraryTest(unittest.TestCase):
+    def test_failed_library_load_is_retried_before_retain_saves(self):
+        """A library load that failed once (for example against an older dashboard) must not
+        block every later Retain profile; the save retries the load first."""
+        node=shutil.which('node')
+        if not node:self.skipTest('Node.js is required for the UI fixture')
+        script=r"""
+const fs=require('fs'),vm=require('vm'),assert=require('assert');
+const html=fs.readFileSync('ps5/ui.html','utf8');
+const block=n=>{const s=html.indexOf('const '+n+'=(()=>{');return html.slice(s,html.indexOf('})();',s)+5);};
+const flow=html.slice(html.indexOf('const profileBook='),html.indexOf('function editorProfilesDownload'));
+let gets=0;const posts=[];
+const status={textContent:''};
+const ctx={TextDecoder,TextEncoder,URLSearchParams,JSON,confirm:()=>true,editorProfilesRender(){},$:()=>status,
+ api:async path=>{assert.equal(path,'/api/editor-profiles');gets++;if(gets===1)throw Error('Profiles could not be read');return {text:posts.length?posts.at(-1):'[]',revision:'r'+gets};},
+ fetch:async(url,options)=>{posts.push(options.body);return {ok:true,status:200,json:async()=>({message:'Profiles stored'})};}};
+vm.runInNewContext(block('SaveLab')+'\n'+block('EditorProfiles')+'\n'+flow,ctx);
+(async()=>{
+ await vm.runInContext('editorProfilesLoad()',ctx);
+ assert.equal(vm.runInContext('profileBook.revision',ctx),null);
+ const parts=[];for(let i=0;i<256;i++)parts.push(i>=128&&i<132?'??':(i%3?'00':'4c'));
+ const profile={format:'PSCLOUD_EDIT_PROFILE_V1',kind:'live',name:'LINEN',title:'PPSA03210',version:'02.024.000',rules:[{type:'int32',offset:128,pattern:parts.join('')}]};
+ ctx.profile=profile;await vm.runInContext('editorProfilesRemember(profile)',ctx);
+ assert.equal(posts.length,1);assert.equal(JSON.parse(posts[0])[0].name,'LINEN');
+ console.log('Retain after a failed library load saved the profile');
+})().catch(e=>{console.error(e);process.exit(1);});
+"""
+        subprocess.run([node,'-e',script],cwd=ROOT,check=True,timeout=15)

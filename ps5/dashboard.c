@@ -2379,7 +2379,8 @@ static void editor_profiles_store(int sock,const char *query,const char *text,si
     if(mismatch) {message(sock,409,"Profiles changed in another browser. Reload profiles before saving");return;}
     if(size<2||text[0]!='['||text[size-1]!=']'||memchr(text,0,size)) {message(sock,400,"Profiles must be a JSON data array");return;}
     char path[1400];snprintf(path,sizeof path,"%s/editor-profiles.json",root);
-    int bad=atomic_config(path,text);message(sock,bad?500:200,bad?"Profile file could not be saved; existing profiles were preserved":"Profiles stored; game saves and memory were not written");
+    int bad=atomic_config(path,text);if(!bad)pscloud_notify("Edit profiles saved on this console");
+    message(sock,bad?500:200,bad?"Profile file could not be saved; existing profiles were preserved":"Profiles stored; game saves and memory were not written");
 }
 static void serve(int sock,int *locked) {
     char request[16385];size_t size=0;char *body=NULL;

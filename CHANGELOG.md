@@ -3,6 +3,21 @@
 Every release, newest first, with what was verified on a console and what was not.
 The current overview is in [README.md](README.md).
 
+## Version 0.34.7 — Retain profile actually saves
+
+On the 11.40 console, Retain profile for LINEN in PPSA03210 reported success four times,
+but the profile library stayed empty: no save request reached the console.
+
+- The page loaded the profile library once. When that load failed (the page had been
+  opened while the console ran 0.34.1, whose library read always failed), it was still
+  marked as loaded, so every later save stopped with "Reload profiles before saving".
+  A failed load is no longer remembered; Retain and every save reload the library first,
+  and say clearly when the console's library cannot be read.
+- The PS5 notification "retained profile" came from the console building the profile, not
+  from saving it. The console now notifies "Edit profiles saved on this console" when the
+  library is actually written; building a profile is only logged.
+- Host test: Retain after a failed library load stores the profile.
+
 ## Version 0.34.6 — Stop search, and searches that cannot run forever
 
 A Live search in Ghost of Tsushima on the 11.40 console left the dashboard, and then the
