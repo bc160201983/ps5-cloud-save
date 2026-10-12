@@ -46,7 +46,8 @@ struct region {uint64_t start,end;};
 static int find_game(char title[16]) {if(!getenv("PSCLOUD_TEST_LIVE"))return -1;strcpy(title,"PPSA02433");return 4242;}
 static int regions(int pid,struct region **out,size_t *n) {
     (void)pid;int fd=open(getenv("PSCLOUD_TEST_LIVE"),O_RDONLY);off_t size=fd<0?0:lseek(fd,0,SEEK_END);if(fd>=0)close(fd);
-    if(size<=0)return -1;*out=malloc(sizeof **out);if(!*out)return -1;(*out)[0].start=FAKE_BASE;(*out)[0].end=FAKE_BASE+(uint64_t)size;*n=1;return 0;
+    if(size<=0)return -1;
+    *out=malloc(sizeof **out);if(!*out)return -1;(*out)[0].start=FAKE_BASE;(*out)[0].end=FAKE_BASE+(uint64_t)size;*n=1;return 0;
 }
 static int mem_read(int pid,uint64_t a,void *buf,size_t len) {(void)pid;int fd=open(getenv("PSCLOUD_TEST_LIVE"),O_RDONLY);if(fd<0)return -1;ssize_t r=pread(fd,buf,len,(off_t)(a-FAKE_BASE));close(fd);return r==(ssize_t)len?0:-1;}
 static int mem_write(int pid,uint64_t a,const void *buf,size_t len) {(void)pid;int fd=open(getenv("PSCLOUD_TEST_LIVE"),O_WRONLY);if(fd<0)return -1;ssize_t r=pwrite(fd,buf,len,(off_t)(a-FAKE_BASE));close(fd);return r==(ssize_t)len?0:-1;}
@@ -112,7 +113,8 @@ static double absolute(double x) {return x<0?-x:x;}
 static int finite(double x) {return x==x&&x-x==0;}
 static int same(int type,double a,double x) {
     if(type==T_FLOAT||type==T_DOUBLE) {
-        if(!finite(a))return 0;double tolerance=absolute(x)*1e-6;if(tolerance<0.01)tolerance=0.01;
+        if(!finite(a))return 0;
+        double tolerance=absolute(x)*1e-6;if(tolerance<0.01)tolerance=0.01;
         double rounded=(double)(long long)(a+(a>=0?0.5:-0.5));
         return absolute(a-x)<=tolerance||rounded==x;
     }
