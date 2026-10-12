@@ -44,7 +44,7 @@ jobs:
           unzip -q "$RUNNER_TEMP/sqlite.zip" -d "$RUNNER_TEMP"
           mkdir -p ps5/third_party && mv "$RUNNER_TEMP/sqlite-amalgamation-3460100" ps5/third_party/sqlite
       - name: Build direct uploader
-        run: make -C ps5 upload recovery backup dashboard share createtest writetest memdump
+        run: make -C ps5 upload recovery backup dashboard share createtest writetest memdump vmmap
       - name: Package uploader and trusted CA bundle
         run: |
           mkdir -p upload-package
@@ -100,6 +100,11 @@ jobs:
         with:
           name: pscloud-memdump
           path: ps5/pscloud-memdump.elf
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pscloud-vmmap
+          path: ps5/pscloud-vmmap.elf
           if-no-files-found: error
   host-tests:
     runs-on: ubuntu-24.04
