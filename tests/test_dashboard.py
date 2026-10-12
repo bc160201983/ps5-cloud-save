@@ -760,6 +760,14 @@ const found=SaveImport.slots(files);const pkg=SaveImport.pack(found,'7.00');fs.w
         self.assertEqual((fixture/SLOT/'ue4savegame.dpx.sav').read_bytes(),b'completed everything'*50)
         self.assertIn(b'\x44'*8,(fixture/SLOT/'sce_sys/param.sfo').read_bytes())  # this console's own identity kept for an existing slot
 
+    def test_live_load_is_for_reading_only(self):
+        """The Edit tab may read a save while the game runs (closed=live); checks and replaces may not."""
+        status,data=self.request('/api/share-export',self.selected(slot='WholeGame',closed='live'))
+        self.assertNotIn('Close the selected game',data.get('message',''))
+        for path in ('/api/share-check','/api/share-restore'):
+            status,data=self.request(path,self.selected(slot='WholeGame',closed='live',file='portable-x.zip',sha256='0'*64,confirm='yes'))
+            self.assertEqual(status,400);self.assertIn('Close the selected game',data['message'])
+
     def test_sync_with_a_linked_profile_from_another_console(self):
         import test_sharing,test_portable
         self.process.terminate();self.process.communicate(timeout=5)

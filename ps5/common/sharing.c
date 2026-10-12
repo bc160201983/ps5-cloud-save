@@ -417,7 +417,7 @@ int pscloud_share_game(const char *home,const char *root,const char *appmeta,con
     }
     else {p->fw=fw;strcpy(p->version,version);}
     parent=pscloud_open_directory(root);if(parent<0)goto done;
-    lock=openat(parent,".mount.lock",O_CREAT|O_RDWR|O_NOFOLLOW,0600);if(lock<0||flock(lock,LOCK_EX|LOCK_NB)||pscloud_active_marker(parent)||pscloud_no_foreign_mount()) {refuse("A save is mounted or another save operation is active; close the game and retry");goto done;}
+    lock=openat(parent,".mount.lock",O_CREAT|O_RDWR|O_NOFOLLOW,0600);if(lock<0||flock(lock,LOCK_EX|LOCK_NB)||pscloud_active_marker(parent)||(!(mode==0&&options&&options->live)&&pscloud_no_foreign_mount())) {refuse("A save is mounted or another save operation is active; close the game and retry");goto done;}
     snprintf(path,sizeof path,"%s/%s/savedata_prospero/%s",home,user,title);source=pscloud_open_directory(path);
     if(source<0&&mode==1&&create_missing) {pscloud_log("INFO","No save of this game in this profile yet; all slots will be created when the save is written");result=0;goto done;}
     if(source<0&&mode==2&&create_missing) {
@@ -505,7 +505,7 @@ int pscloud_share_game(const char *home,const char *root,const char *appmeta,con
     }
     for(unsigned i=0;i<p->count;i++) {
         char hash[65],name[80];struct stat current;snprintf(name,sizeof name,"sdimg_%s",p->slots[i]);
-        if(fstatat(source,name,&current,AT_SYMLINK_NOFOLLOW)||current.st_ino!=before[i].st_ino||current.st_dev!=before[i].st_dev||pscloud_file_hash(original[i],hash)||strcmp(hash,baseline[i]))goto done;
+        if(fstatat(source,name,&current,AT_SYMLINK_NOFOLLOW)||current.st_ino!=before[i].st_ino||current.st_dev!=before[i].st_dev||pscloud_file_hash(original[i],hash)||strcmp(hash,baseline[i])) {refuse("The game saved while PSCloud was reading slot %s; try again in a moment",p->slots[i]);goto done;}
     }
     if(!mode) {
         char manifest[30000];int length=snprintf(manifest,sizeof manifest,"FORMAT=PSCLOUD_PORTABLE_GAME_V2\nTITLE=%s\nSOURCE_FIRMWARE=%08x\nGAME_VERSION=%s\nSLOTS=%u\n",title,fw,version,p->count);

@@ -2087,7 +2087,9 @@ static void action(int sock,const char *path,const char *form) {
     }
     if(!strncmp(path,"/api/share-",11)) {
         char file[128]={0},sha[65]={0},confirm[8],expected[65],directory[1400];
-        if(parameter(form,"closed",closed,sizeof closed)||strcmp(closed,"yes")) {message(sock,400,"Close the selected game and confirm before sharing");return;}
+        /* closed=live: export only, while the game runs (reads copies of the save files). */
+        int live=!parameter(form,"closed",closed,sizeof closed)&&!strcmp(closed,"live")&&!strcmp(path,"/api/share-export");
+        if(!live&&(parameter(form,"closed",closed,sizeof closed)||strcmp(closed,"yes"))) {message(sock,400,"Close the selected game and confirm before sharing");return;}
         int exporting=!strcmp(path,"/api/share-export"),checking=!strcmp(path,"/api/share-check"),restoring=!strcmp(path,"/api/share-restore");
         if(!exporting&&!checking&&!restoring) {message(sock,404,"Unknown sharing action");return;}
         unsigned char *data=NULL;size_t size=0;
@@ -2103,7 +2105,7 @@ static void action(int sock,const char *path,const char *form) {
         }
         char published[128],only[1024]={0},flag[8];int has_slots=exporting&&strstr(form,"slots=");
         if(has_slots&&parameter(form,"slots",only,sizeof only)) {free(data);if(dir>=0)close(dir);message(sock,400,"Invalid slot selection");return;}
-        struct pscloud_share_options options={.only=only,.system_root=system_root};
+        struct pscloud_share_options options={.only=only,.system_root=system_root,.live=live};
         if(!exporting) {
             options.allow_version=!parameter(form,"allow_version",flag,sizeof flag)&&!strcmp(flag,"yes");
             options.skip_missing=!parameter(form,"skip_missing",flag,sizeof flag)&&!strcmp(flag,"yes");
