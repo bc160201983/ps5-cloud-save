@@ -146,7 +146,7 @@ Each release in the [changelog](CHANGELOG.md) lists exactly what was verified on
 | Live editor extension | Verification |
 |---|---|
 | Named values, batch edits, increase/decrease and freeze | Implemented with host memory-file and HTTP fixtures; PS5/in-game verification pending |
-| Portable save profiles, comparison filters and retained Live signatures (0.34.0 local candidate) | Implemented with local synthetic-save, memory-file and HTTP tests; unpublished; PS5 build/in-game verification pending |
+| Portable save profiles, comparison filters and retained Live signatures (0.34.0) | Implemented with synthetic-save, memory-file and HTTP tests; built by GitHub Actions; PS5 in-game verification pending |
 
 To use it, open a game's **Edit (beta)** tab while it runs. Search, narrow down
 the results, tick the places you verified and choose **Save selected places**
@@ -154,7 +154,7 @@ with a name such as Money. Use its **Set**, **Increase +**, **Decrease −** or
 **Freeze** buttons later. Freeze continues with the browser closed. Saved places
 live only for that game session; memory locations may move even before a restart.
 
-The local 0.34.0 candidate adds **Retain profile** beside each verified Live value.
+Version 0.34.0 adds **Retain profile** beside each verified Live value.
 After restarting the game, use its retained profile's **Relocate & bind** button.
 It looks for unique masked context; it does not write or resume Freeze automatically.
 If context changed or more than one match exists, find and verify the value again,

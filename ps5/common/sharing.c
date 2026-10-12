@@ -417,7 +417,10 @@ int pscloud_share_game(const char *home,const char *root,const char *appmeta,con
     }
     else {p->fw=fw;strcpy(p->version,version);}
     parent=pscloud_open_directory(root);if(parent<0)goto done;
-    lock=openat(parent,".mount.lock",O_CREAT|O_RDWR|O_NOFOLLOW,0600);if(lock<0||flock(lock,LOCK_EX|LOCK_NB)||pscloud_active_marker(parent)||(!(mode==0&&options&&options->live)&&pscloud_no_foreign_mount())) {refuse("A save is mounted or another save operation is active; close the game and retry");goto done;}
+    (void)pscloud_recover_copy_marker(parent);
+    lock=openat(parent,".mount.lock",O_CREAT|O_RDWR|O_NOFOLLOW,0600);
+    if(lock>=0&&!flock(lock,LOCK_EX|LOCK_NB)&&pscloud_active_marker(parent)) {refuse("An interrupted PSCloud operation is still marked active; restart the PS5, then retry");goto done;}
+    if(lock<0||flock(lock,LOCK_EX|LOCK_NB)||pscloud_active_marker(parent)||(!(mode==0&&options&&options->live)&&pscloud_no_foreign_mount())) {refuse("A save is mounted or another save operation is active; close the game and retry");goto done;}
     snprintf(path,sizeof path,"%s/%s/savedata_prospero/%s",home,user,title);source=pscloud_open_directory(path);
     if(source<0&&mode==1&&create_missing) {pscloud_log("INFO","No save of this game in this profile yet; all slots will be created when the save is written");result=0;goto done;}
     if(source<0&&mode==2&&create_missing) {

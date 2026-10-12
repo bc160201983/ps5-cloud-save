@@ -108,6 +108,38 @@ int pscloud_active_marker(int parent) {
     }
     closedir(d);return found;
 }
+/* A .mount-active naming <root>/portable-stage-<id>/mount-<n> or share-stage-... only ever
+ * covers a mounted disposable copy: sharing journals live replacement in .restore-active.
+ * When PSCloud stopped mid-read and the copy is no longer mounted (for example after a PS5
+ * restart), that marker is cleared so later operations are not blocked. Any other marker is
+ * kept. Returns 0 when no .mount-active remains, 1 otherwise. */
+int pscloud_recover_copy_marker(int parent) {
+    int lock=openat(parent,".mount.lock",O_CREAT|O_RDWR|O_NOFOLLOW,0600),result=1;
+    if(lock<0)return 1;
+    if(flock(lock,LOCK_EX|LOCK_NB)) {close(lock);return 1;}
+    struct stat st,here,named,s,m;char text[1600];
+    if(!fstatat(parent,".restore-active",&st,AT_SYMLINK_NOFOLLOW))goto done;
+    int fd=openat(parent,".mount-active",O_RDONLY|O_NOFOLLOW);
+    if(fd<0) {if(errno==ENOENT)result=0;goto done;}
+    ssize_t n=read(fd,text,sizeof text-1);close(fd);if(n<=0)goto done;text[n]=0;
+    char *mount=strrchr(text,'/');if(!mount||mount==text)goto done;*mount++=0;
+    char *stage=strrchr(text,'/');if(!stage)goto done;*stage++=0;
+    const char *id=!strncmp(stage,"portable-stage-",15)?stage+15:!strncmp(stage,"share-stage-",12)?stage+12:NULL;
+    size_t digits=strlen(mount)>6?strlen(mount+6):0;
+    if(!id||strlen(id)!=32||strspn(id,"0123456789abcdef")!=32||strncmp(mount,"mount-",6)||!digits||digits>2||strspn(mount+6,"0123456789")!=digits)goto done;
+    if(fstat(parent,&here)||stat(*text?text:"/",&named)||here.st_dev!=named.st_dev||here.st_ino!=named.st_ino)goto done;
+    int stagefd=openat(parent,stage,O_RDONLY|O_DIRECTORY|O_NOFOLLOW);
+    if(stagefd<0&&errno!=ENOENT)goto done;
+    if(stagefd>=0) {
+        int mounted=fstat(stagefd,&s)||(!fstatat(stagefd,mount,&m,AT_SYMLINK_NOFOLLOW)&&m.st_dev!=s.st_dev);close(stagefd);
+        if(mounted) {pscloud_log("WARN","An interrupted read left a save copy mounted (%s/%s); restart the PS5 to release it",stage,mount);goto done;}
+    }
+    if(unlinkat(parent,".mount-active",0)||fsync(parent))goto done;
+    pscloud_log("WARN","Cleared the marker of an interrupted read of a save copy (%s/%s); live saves were not being changed",stage,mount);
+    result=0;
+done:
+    close(lock);return result;
+}
 #ifdef PSCLOUD_BACKUP_EMBEDDED
 int pscloud_backup_main(int argc,char **argv) {
 #else

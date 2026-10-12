@@ -1615,3 +1615,25 @@ const found=SaveImport.slots(files);const pkg=SaveImport.pack(found,'7.00');fs.w
         bad=self.selected(closed='yes');bad['user']='../private'
         self.assertEqual(self.request('/api/backup',bad)[0],400)
         self.assertEqual(self.request('/api/connect',dict(url=self.fixture.env['PSCLOUD_URL'],username='user\nURL=https://other',password='pass'))[0],400)
+
+    def restart_with_marker(self,content,restore_journal=False):
+        self.process.terminate();self.process.communicate(timeout=5)
+        (self.root/'.mount-active').write_text(content)
+        if restore_journal:(self.root/'.restore-active').write_text('journal')
+        self.start_server()
+
+    def test_interrupted_copy_read_marker_is_cleared_on_start(self):
+        stage=self.root/('portable-stage-'+'ab'*16);(stage/'mount-0').mkdir(parents=True)
+        self.restart_with_marker(str(stage/'mount-0'))
+        self.assertFalse((self.root/'.mount-active').exists())
+        self.assertIn('Cleared the marker of an interrupted read',(self.root/'pscloud.log').read_text())
+        self.assertEqual(self.image.read_bytes(),self.original)
+
+    def test_marker_kept_when_live_replacement_journal_or_other_path(self):
+        stage=self.root/('share-stage-'+'cd'*16);(stage/'mount-1').mkdir(parents=True)
+        self.restart_with_marker(str(stage/'mount-1'),restore_journal=True)
+        self.assertTrue((self.root/'.mount-active').exists())
+        (self.root/'.restore-active').unlink()
+        for other in [str(self.root/'staging/mount'),str(self.fixture.root/('portable-stage-'+'ab'*16)/'mount-0'),str(stage/'mount-1')+'/../../x/mount-0']:
+            self.restart_with_marker(other)
+            self.assertTrue((self.root/'.mount-active').exists(),other)

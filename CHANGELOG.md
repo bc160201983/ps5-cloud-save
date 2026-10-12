@@ -3,6 +3,20 @@
 Every release, newest first, with what was verified on a console and what was not.
 The current overview is in [README.md](README.md).
 
+## Version 0.34.1 — interrupted save reads no longer block later operations
+
+- When PSCloud stopped while reading a disposable copy of a save (for example an export
+  cut off by a dashboard crash), its `.mount-active` marker stayed behind and every later
+  export, edit, backup and restore was refused until the file was deleted by hand.
+  The dashboard now clears such a marker on start, and sharing clears it before checking,
+  but only when it names a `portable-stage-…` or `share-stage-…` copy that is no longer
+  mounted and no `.restore-active` live-replacement journal exists. Live saves are never
+  written under `.mount-active`, so nothing needs restoring.
+- If that copy is still mounted, the marker is kept and the refusal now says to restart
+  the PS5; the next dashboard start then clears it. Other markers are kept as before.
+- Host tests cover clearing, a live-replacement journal and markers naming other paths.
+  Verified on the host only; PS5 verification is pending.
+
 ## Version 0.34.0 — candidate: portable edit profiles and Live retention
 
 This candidate is built by GitHub Actions. PS5 in-game validation is still pending.

@@ -2888,6 +2888,8 @@ int main(int argc,char **argv) {
      pthread_attr_destroy(&attr);}
     printf("PSCLOUD_DASHBOARD_PORT=%u\nPSCLOUD_DASHBOARD_READY=1\n",ntohs(address.sin_port));fflush(stdout);
     pscloud_notify("PSCloud dashboard ready on port %u - open in your browser",ntohs(address.sin_port));
+    /* After a crash or PS5 restart, a marker left by an interrupted read of a save copy is cleared. */
+    {int parent=pscloud_open_directory(root);if(parent>=0) {(void)pscloud_recover_copy_marker(parent);close(parent);}}
     if(!firmware_tested()) {pscloud_log_open(logpath);pscloud_log("WARN","Firmware %x.%02x has not been tested with PSCloud yet; every replace still runs the staged check first and keeps a rollback copy",firmware_id>>24,(firmware_id>>16)&255);}
     {
         pthread_t watcher;pthread_attr_t attr;pthread_attr_init(&attr);pthread_attr_setstacksize(&attr,4U*1024*1024);
