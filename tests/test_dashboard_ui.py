@@ -159,3 +159,53 @@ assert.throws(()=>ctx.pcSavePlan(slots,[{path:'profile.bin',data:b('x',4)}]),/No
 console.log('PC save plan replaces matching files and keeps the rest');
 """
         subprocess.run([node,'-e',script],cwd=ROOT,check=True,timeout=15)
+
+
+class NamedFieldsTest(unittest.TestCase):
+    def test_text_formats_edit_and_rebuild_without_touching_other_files(self):
+        node=shutil.which('node')
+        if not node:self.skipTest('Node.js is required for the UI fixture')
+        script=r"""
+const fs=require('fs'),vm=require('vm'),assert=require('assert'),zlib=require('zlib'),crypto=require('crypto');
+const html=fs.readFileSync('ps5/ui.html','utf8');
+const block=n=>{const s=html.indexOf('const '+n+'=(()=>{');return html.slice(s,html.indexOf('})();',s)+5);};
+const ctx={TextDecoder,TextEncoder,Blob,Response,DecompressionStream,CompressionStream};
+vm.runInNewContext(block('SaveLab')+'\n'+block('SaveImport')+'\n'+block('SaveFields')+';this.L=SaveLab;this.I=SaveImport;this.F=SaveFields;',ctx);
+const te=new TextEncoder(),td=new TextDecoder();
+const field=(d,p)=>d.fields.find(f=>f.path===p);
+(async()=>{
+ // JSON with nested paths
+ let d=await ctx.F.decode(te.encode('{"Player":{"Money":250,"Hard":false,"Items":[3,7]}}'));
+ assert.equal(d.kind,'json');assert.deepEqual(d.fields.map(f=>f.path),['Player.Money','Player.Hard','Player.Items[0]','Player.Items[1]']);
+ assert.equal(td.decode(await ctx.F.encode(d,[{field:field(d,'Player.Money'),value:'99999'},{field:field(d,'Player.Hard'),value:'true'}])),'{"Player":{"Money":99999,"Hard":true,"Items":[3,7]}}');
+ assert.throws(()=>ctx.F.checkValue(field(d,'Player.Money'),'1.5'),/whole number/);
+ // XML padded with NULs keeps its size; a value too long for the padding is refused
+ const xml='<Save><Coins NumCoin="347"/><Level>4</Level></Save>'+'\0'.repeat(3);
+ d=await ctx.F.decode(te.encode(xml));assert.equal(d.kind,'xml');
+ let out=await ctx.F.encode(d,[{field:field(d,'Coins@NumCoin'),value:'9999'}]);
+ assert.equal(out.length,te.encode(xml).length);assert.ok(td.decode(out).startsWith('<Save><Coins NumCoin="9999"/>'));
+ await assert.rejects(ctx.F.encode(d,[{field:field(d,'Coins@NumCoin'),value:'1234567'}]),/no spare room/);
+ assert.equal(field(d,'Level').value,'4');
+ // SJSON and key=value text
+ d=await ctx.F.decode(te.encode('{\n  EasyMode = true\n  Speed = 1.000000\n}\n'));assert.equal(d.kind,'sjson');assert.equal(field(d,'Speed').value,'1.000000');
+ d=await ctx.F.decode(te.encode('checksum=1\ndifficulty=1\nname=x\n'));assert.equal(d.kind,'keyvalue');assert.ok(d.note);
+ // gzip and zlib are unpacked, edited and packed again
+ for(const [pack,unpack] of [[zlib.gzipSync,zlib.gunzipSync],[zlib.deflateSync,zlib.inflateSync]]){
+  d=await ctx.F.decode(new Uint8Array(pack(Buffer.from('{"Gold":5}'))));assert.equal(d.kind,'json');assert.ok(d.gzip);
+  out=await ctx.F.encode(d,[{field:field(d,'Gold'),value:'500'}]);assert.equal(unpack(Buffer.from(out)).toString(),'{"Gold":500}');}
+ // Rebuild: the changed slot gets a new hash; the other slot and system files stay identical
+ const sfo=new Uint8Array(32);
+ const pkg=ctx.I.pack([{slot:'one',title:'PPSA00001',game:[{path:'save.json',data:te.encode('{"Gold":5}')}],sys:[{path:'param.sfo',data:sfo}]},
+  {slot:'two',title:'PPSA00001',game:[{path:'other.bin',data:new Uint8Array([1,2,3])}],sys:[{path:'param.sfo',data:sfo}]}],'11.40').bytes;
+ d=await ctx.F.decode(te.encode('{"Gold":5}'));
+ const rebuilt=await ctx.F.rebuild(pkg,[{slot:'one',file:'save.json',data:await ctx.F.encode(d,[{field:field(d,'Gold'),value:'77'}])}]);
+ const before=await ctx.I.unzip(pkg),after=await ctx.I.unzip(rebuilt),manifest=td.decode(after.find(f=>f.path==='manifest.txt').data);
+ for(const line of manifest.split('\n').filter(l=>l.startsWith('SLOT='))){const i=line.slice(5).split(':')[0];
+  assert.equal(crypto.createHash('sha256').update(after.find(f=>f.path==='slot-'+i+'.zip').data).digest('hex'),line.split(':').pop());}
+ for(const p of ['slot-1.zip','sys-0.zip','sys-1.zip'])assert.ok(Buffer.from(before.find(f=>f.path===p).data).equals(Buffer.from(after.find(f=>f.path===p).data)),p);
+ const edited=await ctx.I.unzip(after.find(f=>f.path==='slot-0.zip').data);assert.equal(td.decode(edited[0].data),'{"Gold":77}');
+ ctx.L.parse(rebuilt);
+ console.log('Named fields: JSON, XML, SJSON, key=value, gzip, zlib and rebuild passed');
+})().catch(e=>{console.error(e);process.exit(1);});
+"""
+        subprocess.run([node,'-e',script],cwd=ROOT,check=True,timeout=30)

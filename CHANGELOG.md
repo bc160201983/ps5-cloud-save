@@ -3,6 +3,28 @@
 Every release, newest first, with what was verified on a console and what was not.
 The current overview is in [README.md](README.md).
 
+## Version 0.34.19 — universal save editor: named fields
+
+The save editor now gives every file of a loaded save the best layer that fits it:
+
+- **Named fields** for saves stored as JSON, XML, SJSON or key=value text, also when the file
+  is gzip- or zlib-compressed. Each value is listed by its name (for example
+  `Player.Inventory[3].Count`, `Coins@NumCoin`), can be searched, and changed in place. Files
+  padded with NULs or spaces keep their exact size; a value too long for the padding is
+  refused. Files that store their own checksum line show a warning.
+- **Number search and compare** for every other file, as before, and the known game checksum
+  repairs.
+- A changed file is written into a rebuilt package that keeps the manifest's game version,
+  firmware and slot sizes; only the changed slot gets a new ZIP and hash, and system files
+  and other slots stay byte-identical. The existing staged check and rollback replace follow.
+- Measured on the 26 saves exported from the 11.40 console: Astro Bot (XML, 2,468 fields,
+  NumCoin 347 → 9999 with the 2 MB size kept), Hades (SJSON), DOOM: The Dark Ages
+  (key=value, with checksum warning) and two JSON files decode; HITMAN 3 unpacks from zlib to
+  binary. Encrypted saves (for example DSSS) are not decoded. Unreal GVAS is the next
+  decoder. No edited save has been replaced on a console with this version yet.
+- Host test: JSON paths, padded XML, SJSON, key=value, gzip and zlib round trips, the
+  no-room refusal, and a rebuild that leaves other slots and system files identical.
+
 ## Version 0.34.18 — live FPS readout
 
 On the 11.40 console the frame probe found, in PPSA03210, a counter held in several places

@@ -154,7 +154,7 @@ const SaveImport=(()=>{
   found.forEach((s,i)=>{manifest+='SYS='+i+':'+SaveLab.sha256(sysZips[i])+'\n';});
   const entries=[{path:'manifest.txt',data:te.encode(manifest)}];slotZips.forEach((z,i)=>entries.push({path:'slot-'+i+'.zip',data:z}));sysZips.forEach((z,i)=>entries.push({path:'sys-'+i+'.zip',data:z}));
   return {bytes:zip(entries),title:titles[0],slots:found.map(s=>s.slot),name:found[0].name||titles[0]};}
- return {unzip,slots,pack,sfoText};
+ return {unzip,slots,pack,sfoText,zip};
 })();
 /* Use a PC save: the PC files replace the PS5 files with the same names in one slot of this
  * game; the slot's other files and its system files stay as they are on this PS5. The result
@@ -434,6 +434,7 @@ $('usbCopyAll').addEventListener('click',async()=>{const r=await operation('Copy
   +'<div class="sharecard"><h4>2 · Find a value</h4><p class="subtitle">Type a number exactly as the game shows it.</p><div class="usbactions"><input id="labValue" type="number" step="any" placeholder="e.g. 12450" style="max-width:150px"><select id="labType" style="width:auto"><option value="whole">Whole number</option><option value="decimal">Decimal number</option></select></div><div class="usbactions"><button id="labFind" class="primary">Find</button><button id="labNew" class="ghost">New search</button><select id="labChangeMode" aria-label="Value comparison"><option value="changed">Changed</option><option value="increased">Increased</option><option value="decreased">Decreased</option><option value="unchanged">Unchanged</option></select><button id="labChanged" class="ghost">Find by change</button></div><p id="labFound" class="subtitle"></p><p class="subtitle">To narrow it down: Find the number, change it in the game (spend or earn some), let the game save, Load again, type the new number and Find. Repeat until only a few places are left.</p></div></div>'
   +'<div id="labResults" class="labresults"></div><div id="labSetRow" class="usbactions hidden"><span class="subtitle">Set the ticked places to</span><input id="labSet" type="number" step="any" style="max-width:150px"><button id="labAdd" class="ghost">Add change</button></div>'
   +'<details class="labcompare"><summary>Compare two loads</summary><p class="subtitle">Load, change one thing in the game (for example unlock one item), save, load again, then compare. PSCloud lists what changed and the nearest name in the file.</p><div class="usbactions"><select id="labA" style="width:auto"></select><span>→</span><select id="labB" style="width:auto"></select><button id="labCompare" class="ghost">Compare</button></div><div id="labDiff" class="labresults"></div></details>'
+  +'<div class="sharecard" style="margin-top:14px"><h4>Named fields</h4><p class="subtitle">For saves stored as JSON, XML, SJSON or key=value text (also when compressed), every value is listed by name. Other files are listed as binary: use 2 · Find a value for those. Load the save first.</p><div class="usbactions"><select id="fieldFile" style="width:auto" aria-label="File in the save"></select><input id="fieldSearch" placeholder="Search names or values, e.g. Coin" aria-label="Search fields" style="max-width:260px"></div><p id="fieldNote" class="subtitle"></p><div id="fieldList" class="labresults"></div><div id="fieldEdits" class="labresults"></div></div>'
   +'<div class="sharecard" style="margin-top:14px"><h4>3 · Your changes</h4><div id="labEdits" class="labresults"><p class="subtitle">No changes yet.</p></div><div class="usbactions"><button id="labMake" class="primary" disabled>Make the changed save and check it</button></div><p id="labStatus" class="subtitle"></p><div class="usbactions"><input id="saveProfileName" maxlength="100" placeholder="Profile name, e.g. Money" aria-label="Save profile name"><button id="saveProfileCapture" class="ghost">Save edit profile</button></div></div><h3>Reusable save profiles</h3><p class="subtitle">A profile finds the same fields again in any newer save of this game version, even after you keep playing. To use one on your latest save:</p><ol class="subtitle profilesteps"><li>Let the game save, then close it.</li><li>Press <b>1 · Load the save</b> above. Profiles always use the most recently loaded save.</li><li>Type a number on a profile and press <b>Queue Set</b>, or <b>Queue adjustment</b> to add or subtract.</li><li>Press <b>Make the changed save and check it</b>, then replace the save. The previous save is kept for rollback.</li></ol><p class="subtitle">After a game update, profiles stop matching on purpose; teach them again on the new version. Encrypted saves and unknown checksums can prevent edits.</p><div id="saveProfiles"></div><div class="usbactions"><label>Import a shared profile <input id="profileImport" type="file" accept=".json,application/json"></label><button id="profilesReload" class="ghost">Reload profiles</button></div><p id="profilesStatus" class="subtitle"></p>';
  $('gameUsbRefresh').addEventListener('click',loadGameUsb);
  $('gameUsbAll').addEventListener('click',async()=>{const r=await operation('Copying this game\'s older backups to USB…',()=>api('/api/usb-copy-all',{drive:usbDrive(),title:selected.title}));if(r)notify(r.message);await loadGameUsb();});
@@ -624,6 +625,76 @@ const EditorProfiles=(()=>{
  return {validate,capture,resolve,refine,fits};
 })();
 
+/* Named fields for plain save formats: JSON, XML, key=value text and SJSON, optionally gzip- or
+ * zlib-compressed. Each field
+ * keeps its exact character position, so an edit replaces only that value. Files can grow or
+ * shrink; padded files (trailing spaces or NULs) keep their total size. */
+const SaveFields=(()=>{
+ const te=new TextEncoder();
+ const isGzip=d=>d.length>2&&d[0]===0x1f&&d[1]===0x8b;
+ const isZlib=d=>d.length>2&&d[0]===0x78&&[0x01,0x5e,0x9c,0xda].includes(d[1])&&((d[0]<<8)|d[1])%31===0;
+ async function pipe(data,stream){return new Uint8Array(await new Response(new Blob([data]).stream().pipeThrough(stream)).arrayBuffer());}
+ function textOf(data){try{return new TextDecoder('utf-8',{fatal:true,ignoreBOM:true}).decode(data);}catch(e){return null;}}
+ /* Trailing NULs or spaces are padding that keeps the file's size. A backwards scan: a regular
+  * expression here took minutes on Astro Bot's 2 MB save with 900 KB of padding. */
+ function split(text){let e=text.length;while(e>0&&(text.charCodeAt(e-1)===0||text.charCodeAt(e-1)===32))e--;return {body:text.slice(0,e),pad:text.slice(e)};}
+ /* JSON: every number and true/false with its path, e.g. Player.Inventory[3].Count. */
+ function jsonFields(text){const out=[];let i=0;const ws=()=>{while(i<text.length&&' \t\r\n﻿'.includes(text[i]))i++;};
+  function str(){let j=i+1,r='';while(j<text.length&&text[j]!=='"'){if(text[j]==='\\'){r+=text[j+1];j+=2;}else r+=text[j++];}if(j>=text.length)throw Error('bad');i=j+1;return r;}
+  function value(path){ws();const c=text[i];
+   if(c==='{'){i++;ws();if(text[i]==='}'){i++;return;}for(;;){ws();if(text[i]!=='"')throw Error('bad');const k=str();ws();if(text[i++]!==':')throw Error('bad');value(path?path+'.'+k:k);ws();if(text[i]===','){i++;continue;}if(text[i++]!=='}')throw Error('bad');return;}}
+   if(c==='['){i++;ws();if(text[i]===']'){i++;return;}for(let n=0;;n++){value(path+'['+n+']');ws();if(text[i]===','){i++;continue;}if(text[i++]!==']')throw Error('bad');return;}}
+   if(c==='"'){str();return;}
+   const m=/^(-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?|true|false|null)/.exec(text.slice(i,i+64));if(!m)throw Error('bad');
+   if(m[1]!=='null')out.push({path:path||'(value)',kind:/^[tf]/.test(m[1])?'bool':'number',integer:/^-?\d+$/.test(m[1]),value:m[1],start:i,end:i+m[1].length});
+   i+=m[1].length;}
+  value('');ws();while(i<text.length&&text[i]==='\0')i++;if(i<text.length)throw Error('bad');return out;}
+ /* XML: numbers and true/false in attributes and in elements that hold only a value. */
+ function xmlFields(text){const out=[],seen=new Map();const add=(path,raw,start)=>{const n=(seen.get(path)||0)+1;seen.set(path,n);
+   out.push({path:n>1?path+'#'+n:path,kind:/^[tf]/.test(raw)?'bool':'number',integer:/^-?\d+$/.test(raw),value:raw,start,end:start+raw.length});};
+  const tag=/<([A-Za-z_][\w:.-]*)((?:\s+[\w:.-]+\s*=\s*"[^"]*")*)\s*\/?>/g;let m;
+  while((m=tag.exec(text))){const attrs=/([\w:.-]+)\s*=\s*"(-?\d+(?:\.\d+)?|true|false)"/g;let a;
+   while((a=attrs.exec(m[2]))){const start=m.index+1+m[1].length+a.index+a[0].lastIndexOf(a[2]);add(m[1]+'@'+a[1],a[2],start);}
+   if(!m[0].endsWith('/>')){const rest=text.slice(tag.lastIndex),v=/^(\s*)(-?\d+(?:\.\d+)?|true|false)\s*<\//.exec(rest);if(v)add(m[1],v[2],tag.lastIndex+v[1].length);}}
+  return out;}
+ /* name = value pairs: "key=value" lines or SJSON's "Key = value" inside braces. */
+ function pairFields(text,re){const out=[],seen=new Map();let m;
+  while((m=re.exec(text))){const key=m[1],raw=m[2],n=(seen.get(key)||0)+1;seen.set(key,n);const start=m.index+m[0].length-raw.length;
+   out.push({path:n>1?key+'#'+n:key,kind:/^[tf]/.test(raw)?'bool':'number',integer:/^-?\d+$/.test(raw),value:raw,start,end:start+raw.length});}
+  return out;}
+ /* One file of a loaded save: its kind and fields, or binary when no text format fits. */
+ async function decode(data){const gz=isGzip(data)?'gzip':isZlib(data)?'deflate':'';let plain=data;
+  if(gz){try{plain=await pipe(data,new DecompressionStream(gz));}catch(e){return {kind:'binary',gzip:gz,fields:[]};}}
+  const text=textOf(plain);if(text===null)return {kind:'binary',gzip:gz,fields:[],plain};
+  const note=/(^|\n)\s*(checksum|crc|hash)\s*=/i.test(text)?'This file stores its own checksum. The game may refuse edited values.':'';
+  const {body,pad}=split(text),first=body.replace(/^[﻿\s]+/,'')[0];
+  try{if(first==='{'||first==='[')return {kind:'json',gzip:gz,text,body,pad,note,fields:jsonFields(body)};}catch(e){}
+  if(first==='<'){const f=xmlFields(body);if(f.length)return {kind:'xml',gzip:gz,text,body,pad,note,fields:f};}
+  if(first==='{'){const f=pairFields(body,/^[ \t]*([A-Za-z_][\w.]*)[ \t]*=[ \t]*(-?\d+(?:\.\d+)?|true|false)[ \t]*\r?$/gm);if(f.length)return {kind:'sjson',gzip:gz,text,body,pad,note,fields:f};}
+  {const f=pairFields(body,/^([A-Za-z_][\w.]*)=(-?\d+(?:\.\d+)?|true|false)\r?$/gm);if(f.length>=2)return {kind:'keyvalue',gzip:gz,text,body,pad,note,fields:f};}
+  return {kind:'text',gzip:gz,fields:[]};}
+ function checkValue(field,value){const v=String(value).trim();
+  if(field.kind==='bool'){if(v!=='true'&&v!=='false')throw Error(field.path+' must be true or false.');return v;}
+  if(!/^-?\d+(\.\d+)?$/.test(v)||!Number.isFinite(Number(v)))throw Error(field.path+' must be a number.');
+  if(field.integer&&v.includes('.'))throw Error(field.path+' holds a whole number.');return v;}
+ /* New file bytes with the edits applied; padded files keep their size. */
+ async function encode(decoded,edits){let body=decoded.body;
+  for(const e of [...edits].sort((a,b)=>b.field.start-a.field.start)){const v=checkValue(e.field,e.value);body=body.slice(0,e.field.start)+v+body.slice(e.field.end);}
+  let pad=decoded.pad;if(pad){const grow=te.encode(body).length-te.encode(decoded.body).length;if(grow>pad.length)throw Error('There is no spare room in this file for a longer value. Choose a value with fewer digits.');
+   pad=grow>=0?pad.slice(grow):pad+pad[pad.length-1].repeat(-grow);}
+  let data=te.encode(body+pad);if(decoded.gzip)data=await pipe(data,new CompressionStream(decoded.gzip));return data;}
+ /* The loaded package with new contents for some files. The manifest keeps the game version,
+  * firmware and slot sizes; only changed slots get a new ZIP and hash. */
+ async function rebuild(pkgBytes,replacements){const outer=await SaveImport.unzip(pkgBytes),manifest=outer.find(f=>f.path==='manifest.txt');
+  let text=new TextDecoder().decode(manifest.data);const entries=[];
+  for(const f of outer){if(f.path==='manifest.txt')continue;let data=f.data;const m=/^slot-(\d+)\.zip$/.exec(f.path);
+   if(m){const line=text.split('\n').find(l=>l.startsWith('SLOT='+m[1]+':'));const slot=line.split(':')[1],mine=replacements.filter(r=>r.slot===slot);
+    if(mine.length){const files=await SaveImport.unzip(f.data);for(const r of mine){const x=files.find(y=>y.path===r.file);if(!x)throw Error(r.file+' is not in slot '+slot+'.');x.data=r.data;}
+     data=SaveImport.zip(files);text=text.split('\n').map(l=>l.startsWith('SLOT='+m[1]+':')?l.replace(/[0-9a-f]{64}$/,SaveLab.sha256(data)):l).join('\n');}}
+   entries.push({path:f.path,data});}
+  return SaveImport.zip([{path:'manifest.txt',data:te.encode(text)},...entries]);}
+ return {decode,encode,rebuild,checkValue,jsonFields,xmlFields,pairFields};
+})();
 const lab={loads:[],results:null,from:-1,edits:[],game:null};
 function labReset(g){lab.loads=[];lab.results=null;lab.from=-1;lab.edits=[];lab.game=g?g.user+'/'+g.title:null;if($('labLoads'))labRender();}
 function labTypes(){return $('labType').value==='decimal'?['float','double']:['int32','int16','uint8'];}
@@ -637,11 +708,11 @@ function labRender(){const loads=$('labLoads');loads.textContent=lab.loads.lengt
    row.append(box2,el('span','grow',slotName(x.slot)+' · '+x.file),el('code','','@'+x.off+' '+x.type),el('strong','',String(+SaveLab.read(pkg,x).toFixed(4))),el('span','subtitle',SaveLab.nearName(pkg,x)));box.append(row);}}
  const edits=$('labEdits');edits.replaceChildren();if(!lab.edits.length)edits.append(el('p','subtitle','No changes yet.'));
  lab.edits.forEach((e,i)=>{const row=el('div','labrow');const del=el('button','ghost','Remove');del.addEventListener('click',()=>{lab.edits.splice(i,1);labRender();});row.append(el('span','grow',slotName(e.slot)+' · '+e.file+' @'+e.off+' ('+e.type+')'),el('strong','','→ '+e.value),del);edits.append(row);});
- $('labMake').disabled=!lab.edits.length||!lab.loads.length;}
+ $('labMake').disabled=!(lab.edits.length||fields.edits.length)||!lab.loads.length;}
 async function labLoad(){const g=selected;if(!g)return;const r=await operation('Loading this game\'s save; it is only read…',async()=>{const ex=await api('/api/share-export',{user:g.user,title:g.title,slot:'WholeGame',closed:'live'});
   const response=await fetch('/api/share-download?'+new URLSearchParams({file:ex.file}),{credentials:'same-origin'});if(!response.ok)throw Error('The loaded save could not be read');
   const pkg=SaveLab.parse(new Uint8Array(await response.arrayBuffer()));return {pkg,message:'Save loaded: '+pkg.slots.length+(pkg.slots.length===1?' slot.':' slots.')};});
- if(!r)return;if(lab.game!==g.user+'/'+g.title)labReset(g);lab.loads.push({pkg:r.pkg,when:new Date().toLocaleTimeString([],{hour:'2-digit',minute:'2-digit',second:'2-digit'})});if(lab.loads.length>4){lab.loads.shift();lab.from--;}labRender();editorProfilesRender();}
+ if(!r)return;if(lab.game!==g.user+'/'+g.title)labReset(g);lab.loads.push({pkg:r.pkg,when:new Date().toLocaleTimeString([],{hour:'2-digit',minute:'2-digit',second:'2-digit'})});if(lab.loads.length>4){lab.loads.shift();lab.from--;}labRender();editorProfilesRender();fieldsLoad();}
 function labValue(){const v=Number($('labValue').value);if($('labValue').value===''||!isFinite(v))throw Error('Type the number you see in the game.');if($('labType').value==='whole'&&!Number.isInteger(v))throw Error('Choose Decimal number for values with a point.');return v;}
 $('labLoad').addEventListener('click',labLoad);
 function labNewSearch(pkg,last,v){const seen=new Set();lab.results=SaveLab.find(pkg,v,labTypes()).filter(x=>{if(seen.has(x.abs))return false;seen.add(x.abs);return true;});lab.from=last;}
@@ -658,15 +729,37 @@ $('labCompare').addEventListener('click',()=>{const box=$('labDiff');box.replace
  const a=lab.loads[+$('labA').value].pkg,b=lab.loads[+$('labB').value].pkg,d=SaveLab.compare(a,b);if(!d.length){box.append(el('p','subtitle','No differences.'));return;}
  for(const x of d){const row=el('div','labrow');row.append(el('span','grow',slotName(x.slot)+' · '+x.file),el('code','',x.note||('@'+x.off+' · '+x.len+' bytes')),el('strong','',x.int32?x.int32[0]+' → '+x.int32[1]:''),el('span','subtitle',x.name||''));box.append(row);}});
 async function editorClosedCheck(){const r=await api('/api/running');if(!r||!r.known||r.running)throw Error(r&&r.running?'Close the game before checking or replacing its save.':'Game closure cannot be verified. No save replacement will run.');}
-$('labMake').addEventListener('click',async()=>{const g=selected;if(!g||!lab.loads.length||!lab.edits.length)return;const pkg=lab.loads[lab.loads.length-1].pkg;let out;
- try{out=SaveLab.write(pkg,lab.edits);}catch(e){notify(e.message,true);return;}
+/* Named fields: decoded text formats of the loaded save; edits rebuild the changed files. */
+const fields={files:[],edits:[]};
+async function fieldsLoad(){const sel=$('fieldFile');if(!sel)return;sel.onchange=fieldsRender;$('fieldSearch').oninput=fieldsRender;const pkg=lab.loads.at(-1)&&lab.loads.at(-1).pkg;fields.files=[];fields.edits=[];sel.replaceChildren();
+ if(!pkg){fieldsRender();return;}
+ for(const s of pkg.slots)for(const f of s.files){if(f.size>32*1024*1024)continue;const d=await SaveFields.decode(pkg.bytes.slice(f.start,f.start+f.size));
+  fields.files.push({slot:s.slot,file:f.name,decoded:d});const o=document.createElement('option');o.value=String(fields.files.length-1);
+  o.textContent=s.slot+' / '+f.name+' · '+(d.fields.length?d.kind+(d.gzip?' (compressed)':'')+' · '+d.fields.length+' fields':'binary: use Find a value');sel.append(o);}
+ const best=fields.files.findIndex(x=>x.decoded.fields.length);if(best>=0)sel.value=String(best);fieldsRender();}
+function fieldsRender(){const box=$('fieldList'),note=$('fieldNote'),queued=$('fieldEdits');if(!box)return;box.replaceChildren();queued.replaceChildren();
+ const cur=fields.files[+$('fieldFile').value];note.textContent=cur?(cur.decoded.note||''):'';
+ if(cur&&cur.decoded.fields.length){const q=$('fieldSearch').value.trim().toLowerCase();const list=cur.decoded.fields.filter(f=>!q||f.path.toLowerCase().includes(q)||f.value===q);
+  for(const f of list.slice(0,200)){const row=el('div','labrow'),input=el('input');input.value=f.value;input.style.maxWidth='140px';input.setAttribute('aria-label','New value for '+f.path);
+   const add=el('button','ghost','Change');add.onclick=()=>{try{SaveFields.checkValue(f,input.value);}catch(e){notify(e.message,true);return;}
+    fields.edits=fields.edits.filter(x=>x.field!==f);if(input.value.trim()!==f.value)fields.edits.push({slot:cur.slot,file:cur.file,field:f,value:input.value.trim()});fieldsRender();labRender();};
+   row.append(el('span','',f.path+' = '+f.value),input,add);box.append(row);}
+  if(list.length>200)box.append(el('p','subtitle',(list.length-200)+' more; search to narrow the list.'));if(!list.length)box.append(el('p','subtitle','No field matches.'));}
+ for(const e of fields.edits){const row=el('div','labrow'),undo=el('button','ghost','Remove');undo.onclick=()=>{fields.edits=fields.edits.filter(x=>x!==e);fieldsRender();labRender();};
+  row.append(el('span','',e.file+': '+e.field.path+' '+e.field.value+' → '+e.value),undo);queued.append(row);}}
+/* The changed package for the queued named-field edits. */
+async function fieldsBuild(pkg){const replacements=[];
+ for(const cur of fields.files){const mine=fields.edits.filter(e=>e.slot===cur.slot&&e.file===cur.file);if(mine.length)replacements.push({slot:cur.slot,file:cur.file,data:await SaveFields.encode(cur.decoded,mine)});}
+ return {bytes:await SaveFields.rebuild(pkg.bytes,replacements),formats:['named fields']};}
+$('labMake').addEventListener('click',async()=>{const g=selected;if(!g||!lab.loads.length||!(lab.edits.length||fields.edits.length))return;const pkg=lab.loads[lab.loads.length-1].pkg;let out;
+ try{if(lab.edits.length&&fields.edits.length)throw Error('Make the number changes and the named-field changes one at a time.');out=fields.edits.length?await fieldsBuild(pkg):SaveLab.write(pkg,lab.edits);}catch(e){notify(e.message,true);return;}
  const checked=await operation('Checking the changed save on a temporary copy; your save is not changed…',async()=>{await editorClosedCheck();const context={user:g.user,title:g.title,slot:'WholeGame'};
   const response=await fetch('/api/share-import?'+new URLSearchParams(context),{method:'POST',credentials:'same-origin',headers:{'X-PSCloud-Request':'1','Content-Type':'application/zip'},body:new Blob([out.bytes])});const imported=await response.json();if(!response.ok)throw Error(imported.message||'The changed save was refused');
   await api('/api/share-check',{...context,file:imported.file,sha256:imported.sha256,closed:'yes'});return {...imported,message:'Changed save checked. Your save has not been changed yet.'};});
  if(!checked)return;const status=$('labStatus');status.replaceChildren();status.append(el('span','','Checked. Game checksums: '+out.formats.join(', ')+'. '));
  const go=el('button','primary','Replace my save now');go.addEventListener('click',async()=>{if(!confirm('Replace your save of '+g.name+' with the changed one?\n\nA rollback copy of your current save is kept. If the game says the save is damaged, restore the rollback copy from Back up.'))return;
   const done=await operation('Replacing your save. Do not turn off the console…',async()=>{await editorClosedCheck();return api('/api/share-restore',{user:g.user,title:g.title,slot:'WholeGame',file:checked.file,sha256:checked.sha256,closed:'yes',confirm:'yes'});});
-  if(done){status.textContent='Done. Start the game to see the change. A rollback copy of the old save is kept.';lab.edits=[];labRender();}});status.append(go);});
+  if(done){status.textContent='Done. Start the game to see the change. A rollback copy of the old save is kept.';lab.edits=[];fields.edits=[];fieldsRender();labRender();}});status.append(go);});
 /* Live mode: search the running game's memory, narrow down, set a value. */
 const live={timer:null,rows:new Map(),wasBusy:false,allowed:false,pendingProfile:null,freezeAllowed:false};
 function liveVisible(){const pane=document.querySelector('#detail .tabpanel[data-tab="edit"]');return activeView==='detail'&&pane&&!pane.classList.contains('hidden');}
