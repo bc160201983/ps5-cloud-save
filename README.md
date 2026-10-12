@@ -67,6 +67,10 @@ PSCloud brings together everything you need to keep your progress safe:
 - **Write saves this PS5 does not have yet** *(experimental)*. Missing slots are created the
   way the console creates saves, even when the game is not installed or was never played on
   this profile.
+- **Change values in a save** *(beta)*. Find a number from the game (money, skill points,
+  collectibles) in the save, narrow it down after playing, compare two saves, and change it.
+  Checksums are fixed, and the change goes through the usual check and replace with a rollback
+  copy. Works for games that do not encrypt their own saves.
 - **Sync compares real save times.** Each slot is compared by the time the game saved it,
   from the PS5's own save list, not by file dates.
 - **Your own cloud.** Upload to Nextcloud, ownCloud, Koofr, pCloud, Box, Synology/QNAP and
@@ -123,7 +127,7 @@ PS5 to update saves on this PS5**. A rollback copy is still kept.
 |---|---|
 | **Tested on consoles (7.00 and 11.40)** | Backups and uploads; game-close backup; sharing between 7.00 and 11.40 (Marvel's Wolverine loaded in-game); readable save names; storage view; finding the other PS5 on the network |
 | **Tested on consoles, in parts** | Creating a save container and adding a slot to the PS5's save list (test payloads on 7.00 and 11.40); game keystones are identical across consoles |
-| **Tested only by automated tests** | A full sync or send between two consoles; per-slot save-time comparison; creating missing slots and writing saves of games not installed or never played (system menu and in-game loading not yet checked); size-only upload check; encryption against a real cloud; USB drives; nightly backup; behaviour in rest mode |
+| **Tested only by automated tests** | A full sync or send between two consoles; per-slot save-time comparison; creating missing slots and writing saves of games not installed or never played (system menu and in-game loading not yet checked); changing values in a save (Edit tab); size-only upload check; encryption against a real cloud; USB drives; nightly backup; behaviour in rest mode |
 | **Firmware** | Tested on 7.00 and 11.40. Other firmware from 1.00 to 13.60 is supported but not yet tested; the dashboard says so. |
 
 Each release in the [changelog](CHANGELOG.md) lists exactly what was verified on a console.

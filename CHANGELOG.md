@@ -3,6 +3,34 @@
 Every release, newest first, with what was verified on a console and what was not.
 The current overview is in [README.md](README.md).
 
+## Version 0.31.0 — change values in a save (beta)
+
+A new **Edit (beta)** tab on each game:
+- **Load current save** reads the game's save into the page, the same way Share exports it.
+- **Find a value**: type a number the game shows, such as money or skill points, and see every
+  place it is stored. After playing and saving, load again and **Find again** to keep only the
+  places that changed to the new number.
+- **Compare two loads** lists what changed, with the nearest name stored in the file (for
+  example `CASE_MAIN_FIND_TOR`).
+- **Make the changed save and check it**: PSCloud writes the new values and fixes every
+  checksum: the game's own where known, the archive checksums and the package SHA-256. It then
+  uses the normal check and **Replace my save** path, with a rollback copy.
+
+Research behind it: decrypted PS5 saves from 7 games on 11.40 were surveyed.
+- Ghost of Tsushima, Alan Wake 2 and Marvel's Wolverine store progress in plain data with
+  readable field names.
+- One game (`DSSS` header) encrypts its own saves; those cannot be edited.
+- Alan Wake 2's files are `4 | 4 | CRC32 of everything after byte 12 | name | data`, confirmed
+  on every file. PSCloud recomputes that CRC32 after a change.
+
+Verified by tests:
+- The editor runs against the real Alan Wake 2 backup: all checksums are correct and Python's
+  ZIP reader agrees.
+- The page's own code (run with node) changes a value; the dashboard accepts it through check
+  and replace, and the game checksum is right.
+
+Not yet verified in a game.
+
 ## Version 0.30.2 — compact list of save slots
 
 **Saves on this PS5** can show a compact list: one thin row per slot with its picture, name

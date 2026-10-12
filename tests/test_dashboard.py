@@ -684,6 +684,45 @@ class DashboardTests(unittest.TestCase):
         c.request('GET','/api/share-download?'+urllib.parse.urlencode({'file':result['file']}),headers={'Cookie':self.cookie})
         response=c.getresponse();self.assertEqual(response.status,200);self.assertEqual(response.read(),data);c.close()
 
+    def test_save_editor_changes_a_value_and_fixes_the_game_checksum(self):
+        """The dashboard's Edit tab code (run with node) changes a value in an Alan Wake 2 style
+        file; the dashboard accepts the result through the normal check and replace."""
+        import test_sharing,test_portable,zlib,shutil,tempfile as tf
+        node=shutil.which('node')
+        if not node:self.skipTest('node not installed')
+        self.process.terminate();self.process.communicate(timeout=5)
+        fixture=self.fixture.root/'generic';slot='save1'
+        test_portable.PortableTests.sfo(self,fixture/slot,slot,b'\x44'*8)
+        (self.image.parent/('sdimg_'+slot)).write_bytes(self.original)
+        metadata=self.root/'appmeta/PPSA02433';metadata.mkdir(parents=True)
+        (metadata/'param.json').write_text(json.dumps({'contentVersion':'01.000.002'}))
+        self.start_server(PSCLOUD_TEST_GENERIC_PAYLOADS=str(fixture))
+        body=b'persistent'+b'\x01\x02\x03'+struct.pack('<i',1250)+b'\x00'*20
+        tail=struct.pack('<I',len(b'persistent'))+body
+        remedy=struct.pack('<II',4,4)+struct.pack('<I',zlib.crc32(tail))+tail
+        package=test_sharing.portable(inner=test_sharing.zip_bytes([('persistent',remedy)]),slots=(slot,),title='PPSA02433')
+        script=open(ROOT/'ps5/ui.html',encoding='utf-8').read()
+        start=script.index('const SaveLab=(()=>{');end=script.index('})();',start)+5
+        with tf.TemporaryDirectory() as tmp:
+            Path(tmp,'lab.js').write_text(script[start:end]+"""
+const fs=require('fs');const pkg=SaveLab.parse(new Uint8Array(fs.readFileSync(process.argv[2])));
+const hits=SaveLab.find(pkg,1250,['int32']);if(hits.length!==1)throw Error('hits '+hits.length);
+const out=SaveLab.write(pkg,[{...hits[0],value:99999}]);fs.writeFileSync(process.argv[3],Buffer.from(out.bytes));console.log(out.formats.join(','));
+""",encoding='utf-8')
+            Path(tmp,'in.zip').write_bytes(package)
+            run=subprocess.run([node,str(Path(tmp,'lab.js')),str(Path(tmp,'in.zip')),str(Path(tmp,'out.zip'))],capture_output=True,text=True,timeout=60)
+            self.assertEqual(run.returncode,0,run.stderr);self.assertIn('Remedy',run.stdout)
+            edited=Path(tmp,'out.zip').read_bytes()
+        c=http.client.HTTPConnection('127.0.0.1',self.port,timeout=15)
+        c.request('POST','/api/share-import?'+urllib.parse.urlencode(self.selected()),edited,{'Cookie':self.cookie,'X-PSCloud-Request':'1','Content-Type':'application/zip'})
+        response=c.getresponse();result=json.loads(response.read());self.assertEqual(response.status,200,result);c.close()
+        context=self.selected(closed='yes',file=result['file'],sha256=result['sha256'])
+        status,check=self.request('/api/share-check',context);self.assertEqual(status,200,check)
+        status,done=self.request('/api/share-restore',dict(context,confirm='yes'));self.assertEqual(status,200,done)
+        written=(fixture/slot/'persistent').read_bytes()
+        self.assertIn(struct.pack('<i',99999),written)
+        self.assertEqual(struct.unpack('<I',written[8:12])[0],zlib.crc32(written[12:]))  # the game's own checksum is right
+
     def test_sync_with_a_linked_profile_from_another_console(self):
         import test_sharing,test_portable
         self.process.terminate();self.process.communicate(timeout=5)
