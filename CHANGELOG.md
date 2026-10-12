@@ -3,6 +3,19 @@
 Every release, newest first, with what was verified on a console and what was not.
 The current overview is in [README.md](README.md).
 
+## Version 0.34.14 — PC saves in a different format are stopped
+
+Testing Use a PC save with MARVEL Cosmic Invasion (PPSA29629) found that the PC version
+writes Settings.cfg as JSON text while the PS5 version writes the same file as binary, with
+the same file name. 0.34.13 would have offered to copy the JSON file over the binary one.
+
+- Use a PC save now classifies every matched file as JSON, XML, text or binary from its first
+  bytes. When a PC file and its PS5 file differ, the comparison says so ("Different format:
+  json on PC, binary on PS5"), explains that the save cannot be copied as it is, and does not
+  offer Continue. Nothing is changed.
+- Host test: a JSON PC file against a binary PS5 file is reported and blocked. Checked with
+  the real MARVEL Cosmic Invasion files from PC and from the 11.40 console.
+
 ## Version 0.34.13 — use a PC save on PS5
 
 - **Use a PC save** in a game's Share tab: choose the save files from your PC (files, their
