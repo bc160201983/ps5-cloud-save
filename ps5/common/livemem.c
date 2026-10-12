@@ -19,6 +19,7 @@
 #include <sys/sysctl.h>
 #include <sys/user.h>
 #include <ps5/mdbg.h>
+#include <ps5/kernel.h>
 int sceKernelGetAppInfo(pid_t pid,void *info);
 #ifndef KERN_PROC_VMMAP
 #define KERN_PROC_VMMAP 32
@@ -51,6 +52,7 @@ static int regions(int pid,struct region **out,size_t *n) {
 }
 static int mem_read(int pid,uint64_t a,void *buf,size_t len) {(void)pid;int fd=open(getenv("PSCLOUD_TEST_LIVE"),O_RDONLY);if(fd<0)return -1;ssize_t r=pread(fd,buf,len,(off_t)(a-FAKE_BASE));close(fd);return r==(ssize_t)len?0:-1;}
 static int mem_write(int pid,uint64_t a,const void *buf,size_t len) {(void)pid;int fd=open(getenv("PSCLOUD_TEST_LIVE"),O_WRONLY);if(fd<0)return -1;ssize_t r=pwrite(fd,buf,len,(off_t)(a-FAKE_BASE));close(fd);return r==(ssize_t)len?0:-1;}
+static int mem_read_back(int pid,uint64_t a,void *buf,size_t len) {return mem_read(pid,a,buf,len);}
 #else
 static int find_game(char title[16]) {
     int mib[4]={CTL_KERN,KERN_PROC,KERN_PROC_PROC,0};size_t size=0;
@@ -86,7 +88,10 @@ static int regions(int pid,struct region **out,size_t *n) {
     free(buffer);if(!list)return -1;*out=list;*n=count;return 0;
 }
 static int mem_read(int pid,uint64_t a,void *buf,size_t len) {return mdbg_copyout(pid,(intptr_t)a,buf,len);}
-static int mem_write(int pid,uint64_t a,const void *buf,size_t len) {return mdbg_copyin(pid,buf,(intptr_t)a,len);}
+/* Writes: the debug service first; if the game's memory refuses it, the SDK writes to the
+ * resident page behind the address (it checks the page table, so unmapped addresses fail). */
+static int mem_write(int pid,uint64_t a,const void *buf,size_t len) {return kernel_proc_copyin(pid,buf,(intptr_t)a,len);}
+static int mem_read_back(int pid,uint64_t a,void *buf,size_t len) {return kernel_proc_copyout(pid,(intptr_t)a,buf,len);}
 #endif
 
 /* ---------- values ---------- */
@@ -220,7 +225,10 @@ int pscloud_live_set(unsigned long long address,double value,char *message,size_
     else if(!fits(L.type,value))snprintf(message,max,"That number does not fit this place");
     else {
         unsigned char v[8],back[8];put(L.type,v,value);
-        if(mem_write(L.pid,address,v,TYPE_SIZE[L.type])||mem_read(L.pid,address,back,TYPE_SIZE[L.type])||memcmp(v,back,TYPE_SIZE[L.type]))snprintf(message,max,"The game did not accept the change");
+        int w=mem_write(L.pid,address,v,TYPE_SIZE[L.type]);int b=w?0:mem_read_back(L.pid,address,back,TYPE_SIZE[L.type]);
+        if(w) {snprintf(message,max,"This place could not be written (the system refused, code %d)",w);pscloud_log("WARN","Live write refused in %s at 0x%llx (%d)",L.title,address,w);}
+        else if(b)snprintf(message,max,"Written, but it could not be read back to confirm");
+        else if(memcmp(v,back,TYPE_SIZE[L.type]))snprintf(message,max,"Written, but the game changed it straight back; this place is probably a copy. Try the other place");
         else {r=0;snprintf(message,max,"Changed to %g. Check it in the game; it is kept when the game saves",value);pscloud_log("EVENT","Live change in %s at 0x%llx to %g",L.title,address,value);}
     }
     pthread_mutex_unlock(&lock);return r;
