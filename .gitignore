@@ -40,3 +40,4 @@ sharing-host.so
 ps5/third_party/
 ps5/*.o
 build/
+dashboard-host.exe
