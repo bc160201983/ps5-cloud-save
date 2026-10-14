@@ -860,10 +860,12 @@ const found=SaveImport.slots(files);const pkg=SaveImport.pack(found,'7.00');fs.w
         self.assertEqual((p['kind'],p['version']),('live','01.000.000'))
         # Pointer paths: the value sits in the program's own data, so its path is just its offset.
         self.assertEqual(self.request('/api/live/chains',{'id':'0'})[0],400)
+        self.assertEqual(self.request('/api/live/chains',{'id':str(group+1000)})[0],400)  # refused before any search
         self.assertEqual(self.request('/api/live/chains',{'id':str(group)})[0],200);wait()
         status,p=self.request('/api/live/locator?id='+str(group));self.assertEqual(status,200,p)
         self.assertEqual(p['rules'][0]['chains'],['100'])
         self.assertEqual(self.request('/api/live/chains-use',{'chains':'100/zz'})[0],400)
+        self.assertEqual(self.request('/api/live/chains-use',{'chains':'1'*7000})[0],400)
         moved=bytearray(65536);moved[488:552]=data[232:296];struct.pack_into('<i',moved,512,4321)
         memory.write_bytes(moved);stamp.write_text('201')
         values={'title':p['title'],'version':p['version'],'type':p['rules'][0]['type'],

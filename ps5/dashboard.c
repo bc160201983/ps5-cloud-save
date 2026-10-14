@@ -2618,13 +2618,18 @@ static void serve(int sock,int *locked) {
             if(bad)message(sock,400,msg);else {char json[500],shown[320];escaped(shown,sizeof shown,msg);snprintf(json,sizeof json,"{\"ok\":true,\"message\":\"%s\",\"search_sequence\":%u}",shown,pscloud_live_sequence());respond(sock,200,"application/json",json,strlen(json));}return;
         }
         if(!strcmp(url,"/api/live/chains")) {
-            char id[16],*end=NULL;unsigned long group=0;
+            char id[16],*end=NULL,title[16],version[32];unsigned long group=0;
             if(!parameter(body,"id",id,sizeof id))group=strtoul(id,&end,10);
             if(!group||!end||*end||group>0xffffffffUL) {message(sock,400,"Choose a saved value");return;}
+            if(pscloud_live_game(title)||pscloud_app_version(appmeta,title,version,sizeof version)) {message(sock,400,"Exact game version could not be identified");return;}
+            char *profile=malloc(16000);if(!profile) {message(sock,500,"Out of memory");return;}
+            if(pscloud_live_locator((unsigned)group,version,profile,16000)) {message(sock,400,profile);free(profile);return;}
+            free(profile);
             bad=pscloud_live_chains((unsigned)group,msg,sizeof msg);message(sock,bad?400:200,msg);return;
         }
         if(!strcmp(url,"/api/live/chains-use")) {
-            char chains[4096]="";parameter(body,"chains",chains,sizeof chains);
+            char chains[6144]="";
+            if(parameter(body,"chains",chains,sizeof chains)&&strstr(body,"chains=")) {message(sock,400,"Pointer paths are too long");return;}
             if(pscloud_live_use_chains(chains)) {message(sock,400,"Invalid pointer paths in this profile");return;}
             message(sock,200,"Pointer paths ready");return;
         }

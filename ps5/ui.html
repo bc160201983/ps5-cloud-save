@@ -591,7 +591,7 @@ const EditorProfiles=(()=>{
    const parts=r.pattern.match(/../g),n=SaveLab.TYPES[r.type][0];if(!Number.isSafeInteger(r.offset)||r.offset<0||r.offset+n>parts.length||parts.slice(r.offset,r.offset+n).some(x=>x!=='??'))throw Error('The changing value must be excluded from its signature.');
    if(parts.filter(x=>x!=='??').length<16||parts.filter(x=>x!=='??'&&x!=='00').length<8)throw Error('Signature is too weak. Narrow the value or use another nearby field.');
    if(p.kind==='live'&&!(parts.length===64&&r.offset===24||parts.length===256&&r.offset===128))throw Error('Unsupported Live locator.');if(p.kind==='live'&&parts.length===256&&p.rules.length>12)throw Error('A Live profile holds at most 12 places.');
-   if(r.chains!==undefined&&(p.kind!=='live'||!Array.isArray(r.chains)||r.chains.length>3||r.chains.some(c=>typeof c!=='string'||!/^[0-9a-f]{1,12}(\/[0-9a-f]{1,4}){0,4}$/.test(c))))throw Error('Invalid pointer paths in this profile.');
+   if(r.chains!==undefined&&(p.kind!=='live'||!Array.isArray(r.chains)||r.chains.length>8||r.chains.some(c=>typeof c!=='string'||!/^[0-9a-f]{1,12}(\/[0-9a-f]{1,4}){0,4}$/.test(c))))throw Error('Invalid pointer paths in this profile.');
    if(p.kind==='save'&&(!name(r.slot)||!name(r.file)||r.file.split('/').some(x=>x==='..'||x==='sce_sys')||r.file.startsWith('/')||r.file.includes('\\')))throw Error('Invalid save file identity.');
   }
   // Return only known fields; reject script payloads by treating all imports as data.
@@ -613,7 +613,7 @@ const EditorProfiles=(()=>{
   }return edits;
  }
  function refine(a,b){a=validate(a);b=validate(b);if(a.kind!==b.kind||a.title!==b.title||a.version!==b.version||a.rules.length!==b.rules.length)throw Error('Profiles must have matching game, version and rule order.');
-  return validate({...a,rules:a.rules.map((r,i)=>{const s=b.rules[i];if(r.type!==s.type||r.offset!==s.offset||r.pattern.length!==s.pattern.length||r.file!==s.file||r.slot!==s.slot)throw Error('Rule identity differs.');const aa=r.pattern.match(/../g),bb=s.pattern.match(/../g);const chains=[...new Set([...(s.chains||[]),...(r.chains||[])])].slice(0,3);const out={...r,pattern:aa.map((x,j)=>x===bb[j]?x:'??').join('')};if(chains.length)out.chains=chains;else delete out.chains;return out;})});
+  return validate({...a,rules:a.rules.map((r,i)=>{const s=b.rules[i];if(r.type!==s.type||r.offset!==s.offset||r.pattern.length!==s.pattern.length||r.file!==s.file||r.slot!==s.slot)throw Error('Rule identity differs.');const aa=r.pattern.match(/../g),bb=s.pattern.match(/../g);const older=r.chains||[],newer=s.chains||[],chains=[...new Set([...newer.filter(c=>older.includes(c)),...newer,...older])].slice(0,8);const out={...r,pattern:aa.map((x,j)=>x===bb[j]?x:'??').join('')};if(chains.length)out.chains=chains;else delete out.chains;return out;})});
  }
  return {validate,capture,resolve,refine,fits};
 })();
@@ -662,7 +662,7 @@ const live={timer:null,rows:new Map(),wasBusy:false,allowed:false,pendingProfile
  * without them, relocating by signature only, when none were found or the search stopped). */
 async function liveRetainFinish(r){if(!live.pendingRetain||r.busy)return;const id=live.pendingRetain;live.pendingRetain=null;
  try{const p=await api('/api/live/locator?'+new URLSearchParams({id}));await editorProfilesRemember(p);const fast=p.rules.filter(x=>x.chains&&x.chains.length).length;
-  notify(fast?'Retained. '+fast+' of '+p.rules.length+(p.rules.length===1?' place':' places')+' will be found instantly after a restart.':'Retained. No fixed path was found, so Relocate & bind searches memory as before.');}catch(e){notify(e.message,true);}}
+  notify(fast?'Retained. '+fast+' of '+p.rules.length+(p.rules.length===1?' place':' places')+' will be found instantly after a restart.':'Retained without fast paths ('+(r.error||'no fixed path was found')+'). Relocate & bind searches memory as before.');}catch(e){notify(e.message,true);}}
 function liveVisible(){const pane=document.querySelector('#detail .tabpanel[data-tab="edit"]');return activeView==='detail'&&pane&&!pane.classList.contains('hidden');}
 async function liveState(){let r;try{r=await api('/api/live/state');}catch(e){return null;}live.freezeAllowed=!!r.freeze_allowed;liveResumeRender(r);
  const matches=!!r.running;live.allowed=matches;
@@ -745,11 +745,12 @@ function liveResumeRender(r){const box=$('liveResume');if(!box)return;
  if(box.dataset.key===key)return;box.dataset.key=key;box.replaceChildren();
  for(const p of list){const card=el('div','sharecard'),go=el('button','primary','Relocate & bind '+p.name);card.append(el('p','subtitle',p.name+' was retained for this game. Find it again in this session:'),go);go.onclick=()=>{box.dataset.key='';box.replaceChildren();editorProfilesResume(p);};box.append(card);}}
 async function editorProfilesResume(p){try{p=EditorProfiles.validate(p);if(p.rules.some(r=>r.type!==p.rules[0].type))throw Error('A Live profile must use one numeric type.');
- if(p.rules.some(r=>r.chains))await api('/api/live/chains-use',{chains:p.rules.map(r=>(r.chains||[]).join(';')).join(',')});
+ try{await api('/api/live/chains-use',{chains:p.rules.map(r=>(r.chains||[]).join(';')).join(',')});}catch(e){await api('/api/live/chains-use',{chains:''}).catch(()=>{});}
  const r=await api('/api/live/resolve',{title:p.title,version:p.version,type:p.rules[0].type,patterns:p.rules.map(r=>r.pattern.replace(/\?\?/g,'xx')).join(',')});live.pendingProfile={profile:p,sequence:r.search_sequence};live.wasBusy=true;notify(r.message);liveWait();}catch(e){notify(e.message,true);}}
 async function editorProfilesBind(r){if(!live.pendingProfile||r.busy)return;const pending=live.pendingProfile,p=pending.profile;live.pendingProfile=null;if(!r.has||r.error){notify(r.error||'Profile could not be relocated; nothing changed.',true);return;}
  if(r.candidates){$('liveName').value=p.name;$('liveValue').focus();notify(p.name+' matched '+r.count+' places. Type the number the game shows now and press Next search, then save it.');await liveRefresh();return;}
- try{const found=await api('/api/live/list');if(found.places.length!==p.rules.length||found.search_sequence!==pending.sequence)throw Error('Locator results were replaced by another search; nothing bound.');const result=await api('/api/live/pin',{addresses:found.places.map(x=>x.address).join(','),name:p.name,sequence:pending.sequence});notify(result.message+'. Check current values before setting or freezing.');await livePins();}catch(e){notify(e.message,true);}}
+ try{const found=await api('/api/live/list');if(found.places.length!==p.rules.length||found.search_sequence!==pending.sequence)throw Error('Locator results were replaced by another search; nothing bound.');const result=await api('/api/live/pin',{addresses:found.places.map(x=>x.address).join(','),name:p.name,sequence:pending.sequence});
+  notify(result.message+(r.by_paths?' (found instantly by its fast paths)':p.rules.some(x=>x.chains)?'. Its fast paths did not match this time: press Retain profile on it again to refresh them':'')+'. Check current values before setting or freezing.');await livePins();}catch(e){notify(e.message,true);}}
 $('profilesReload').onclick=()=>editorProfilesLoad(true);
 $('profileImport').onchange=async event=>{try{const file=event.target.files[0];if(!file)return;if(file.size>65536)throw Error('Profile files must be at most 64 KiB.');const p=EditorProfiles.validate(JSON.parse(await file.text()));await editorProfilesRemember(p);}catch(e){notify(e.message,true);}finally{event.target.value='';}};
 $('saveProfileCapture').onclick=async()=>{try{if(!lab.loads.length)throw Error('Load the save first.');const label=$('saveProfileName').value.trim();await editorProfilesRemember(EditorProfiles.capture(lab.loads.at(-1).pkg,lab.edits,label,lab.loads.at(-2)?.pkg));}catch(e){notify(e.message,true);}};

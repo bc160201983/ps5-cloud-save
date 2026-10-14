@@ -3,6 +3,23 @@
 Every release, newest first, with what was verified on a console and what was not.
 The current overview is in [README.md](README.md).
 
+## Version 0.34.24 — Retain profile checked again
+
+- Retain profile checks first that the profile can be stored (game version known, at most 12
+  places, enough stable bytes around the value), so a 5-minute path search is never wasted.
+- Up to 8 pointer paths are kept per place, best first: fewest pointers, then the smallest
+  offsets (a field sits near the start of its object; a pointer to a neighbouring object needs a
+  larger offset). Before, the first 3 found were kept, in memory order.
+- Retaining the same value again in a later session puts the paths found in both sessions first:
+  they have survived a restart.
+- Relocate & bind always sends its own paths (none for older profiles), so an earlier profile's
+  paths are never reused, and a path list the console refuses no longer stops the relocation.
+- After binding, the message says when the value was found instantly by its paths, or that the
+  paths did not match and Retain profile refreshes them.
+- The path search no longer changes the search generation, so results found before it can still
+  be bound.
+- Host tests only; not yet verified in a PS5 game.
+
 ## Version 0.34.23 — fast relocation with pointer paths
 
 - **Retain profile** now first looks for fixed pointer paths to the value, as cheat tables use:

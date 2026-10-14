@@ -163,6 +163,7 @@ static int searcher_started;
 static int freezer_started,stopping,cancel_search;
 static unsigned search_sequence;
 static int candidates; /* the current results came from an ambiguous relocation */
+static int relocated_by_paths; /* the last relocation found every place by pointer paths */
 /* Freeze rewrites game memory every 250 ms. On 2026-10-12 the 11.40 console crashed while a value
  * was frozen, including once with no search running, so the dashboard keeps Freeze off until the
  * cause is understood. Host tests switch it on to keep the engine covered. */
@@ -325,7 +326,7 @@ static void *next_main(void *arg) {
 static int start(void *(*fn)(void *),const char *phase,char *message,size_t max) {
     if(searcher_started) {pthread_join(searcher,NULL);searcher_started=0;}
     pthread_attr_t attr;pthread_attr_init(&attr);pthread_attr_setstacksize(&attr,256U*1024);
-    cancel_search=0;search_sequence++;snprintf(L.phase,sizeof L.phase,"%s",phase);L.busy=1;L.done=0;L.error[0]=0;
+    cancel_search=0;if(strcmp(phase,"chains"))search_sequence++;snprintf(L.phase,sizeof L.phase,"%s",phase);L.busy=1;L.done=0;L.error[0]=0;
     int bad=pthread_create(&searcher,&attr,fn,NULL);pthread_attr_destroy(&attr);
     if(bad) {L.busy=0;snprintf(message,max,"Could not start the search");return -1;}
     searcher_started=1;snprintf(message,max,"Searching the running game…");return 0;
@@ -351,8 +352,8 @@ int pscloud_live_next(double value,char *message,size_t max) {
 void pscloud_live_reset(void) {pthread_mutex_lock(&lock);pscloud_log("EVENT","Live search cleared%s",L.busy?" (stopping the running search)":"");if(L.busy)cancel_search=1;if(!L.busy) {L.count=0;L.has=0;L.overflow=0;L.error[0]=0;}pthread_mutex_unlock(&lock);}
 void pscloud_live_state_json(char *out,size_t max) {
     pthread_mutex_lock(&lock);char title[16]="";uint64_t stamp=0;int pid=find_game(title,&stamp);int same_game=session_ok();
-    snprintf(out,max,"{\"running\":%s,\"title\":\"%s\",\"busy\":%s,\"phase\":\"%s\",\"done\":%llu,\"total\":%llu,\"count\":%zu,\"has\":%s,\"overflow\":%s,\"type\":\"%s\",\"value\":%g,\"error\":\"%s\",\"same_game\":%s,\"pinned\":%u,\"candidates\":%s,\"freeze_allowed\":%s}",
-        pid>=0?"true":"false",title,L.busy?"true":"false",L.phase,L.done,L.total,L.count,L.has?"true":"false",L.overflow?"true":"false",TYPE_NAMES[L.type],L.value,L.error,same_game?"true":"false",pin_count,candidates?"true":"false",freeze_allowed?"true":"false");
+    snprintf(out,max,"{\"running\":%s,\"title\":\"%s\",\"busy\":%s,\"phase\":\"%s\",\"done\":%llu,\"total\":%llu,\"count\":%zu,\"has\":%s,\"overflow\":%s,\"type\":\"%s\",\"value\":%g,\"error\":\"%s\",\"same_game\":%s,\"pinned\":%u,\"candidates\":%s,\"by_paths\":%s,\"freeze_allowed\":%s}",
+        pid>=0?"true":"false",title,L.busy?"true":"false",L.phase,L.done,L.total,L.count,L.has?"true":"false",L.overflow?"true":"false",TYPE_NAMES[L.type],L.value,L.error,same_game?"true":"false",pin_count,candidates?"true":"false",relocated_by_paths?"true":"false",freeze_allowed?"true":"false");
     pthread_mutex_unlock(&lock);
 }
 void pscloud_live_list_json(char *out,size_t max,int limit) {
@@ -480,7 +481,7 @@ static int hex_value(char c) {return c>='0'&&c<='9'?c-'0':c>='a'&&c<='f'?c-'a'+1
  * each later one is added after reading a pointer there. A path is only trusted when the bytes
  * around its end still match the profile's signature; otherwise the normal search runs. */
 #define CHAIN_DEPTH 4       /* pointers to follow at most */
-#define CHAIN_KEEP 3        /* paths kept per place */
+#define CHAIN_KEEP 8        /* paths kept per place: the shortest, then the smallest offsets */
 #define CHAIN_REACH 0x1000  /* largest offset from a pointer to the field it leads to */
 #define CHAIN_LEVEL 50000   /* candidate places kept per step */
 #define CHAIN_SECONDS 300
@@ -489,7 +490,7 @@ static int hex_value(char c) {return c>='0'&&c<='9'?c-'0':c>='a'&&c<='f'?c-'a'+1
 struct chain_node {uint64_t addr;uint32_t parent;uint16_t offset;uint8_t place,level;};
 struct chain_target {uint64_t addr;uint32_t index;};
 /* Results of the last path search; ready is set (under the lock) once the search finished. */
-static struct {int ready;unsigned id,places;uint64_t session;unsigned n[TARGETS];char text[TARGETS][CHAIN_KEEP][CHAIN_TEXT];uint64_t addr[TARGETS];} CR;
+static struct {int ready;unsigned id,places;uint64_t session;unsigned n[TARGETS],score[TARGETS][CHAIN_KEEP];char text[TARGETS][CHAIN_KEEP][CHAIN_TEXT];uint64_t addr[TARGETS];} CR;
 /* Paths sent with the next relocation, one list per profile rule. */
 static char chain_use[TARGETS][CHAIN_KEEP][CHAIN_TEXT];static unsigned chain_use_n[TARGETS];
 static char chain_now[TARGETS][CHAIN_KEEP][CHAIN_TEXT];static unsigned chain_now_n[TARGETS];
@@ -536,13 +537,20 @@ static int chain_follow(const char *text,uint64_t base,uint64_t *out) {
     for(unsigned i=1;i<n;i++) {uint64_t v;if(mem_read(L.pid,a,&v,8)||!v)return -1;a=v+parts[i];}
     *out=a;return 0;
 }
+/* Paths are kept in order of preference. A field is usually close to the start of the object a
+ * pointer leads to, while a pointer to a neighbouring object tends to need a larger offset. */
 static void chain_record(const struct chain_node *nodes,uint32_t k,uint64_t base) {
     char t[CHAIN_TEXT];size_t n=(size_t)snprintf(t,sizeof t,"%llx",(unsigned long long)(nodes[k].addr-base));
-    for(uint32_t j=k;nodes[j].level>0&&n<sizeof t;j=nodes[j].parent)n+=(size_t)snprintf(t+n,sizeof t-n,"/%x",nodes[j].offset);
-    unsigned p=nodes[k].place;
-    if(n>=sizeof t||CR.n[p]>=CHAIN_KEEP)return;
+    unsigned score=(unsigned)nodes[k].level<<16;
+    for(uint32_t j=k;nodes[j].level>0&&n<sizeof t;j=nodes[j].parent) {n+=(size_t)snprintf(t+n,sizeof t-n,"/%x",nodes[j].offset);score+=nodes[j].offset;}
+    const unsigned p=nodes[k].place;
+    if(n>=sizeof t)return;
     for(unsigned i=0;i<CR.n[p];i++)if(!strcmp(CR.text[p][i],t))return;
-    memcpy(CR.text[p][CR.n[p]++],t,n+1);
+    unsigned at=CR.n[p];while(at>0&&CR.score[p][at-1]>score)at--;
+    if(at>=CHAIN_KEEP)return;
+    unsigned last=CR.n[p]<CHAIN_KEEP?CR.n[p]:CHAIN_KEEP-1;
+    for(unsigned i=last;i>at;i--) {memcpy(CR.text[p][i],CR.text[p][i-1],CHAIN_TEXT);CR.score[p][i]=CR.score[p][i-1];}
+    memcpy(CR.text[p][at],t,n+1);CR.score[p][at]=score;if(CR.n[p]<CHAIN_KEEP)CR.n[p]++;
 }
 static unsigned chain_places_found(void) {unsigned f=0;for(unsigned j=0;j<CR.places;j++)if(CR.n[j])f++;return f;}
 static int target_order(const void *a,const void *b) {uint64_t x=((const struct chain_target *)a)->addr,y=((const struct chain_target *)b)->addr;return x<y?-1:x>y;}
@@ -616,6 +624,7 @@ int pscloud_live_chains(unsigned id,char *message,size_t max) {
     else {
         for(unsigned i=0;i<pin_count;i++)if(pins[i].id==id)p=&pins[i];
         if(!p)snprintf(message,max,"This saved value expired. Search for it again");
+        else if(p->n>PROFILE_RULES)snprintf(message,max,"Retain at most %d places in one profile",PROFILE_RULES);
         else {
             CR.ready=0;CR.id=id;CR.session=L.session;CR.places=p->n;memset(CR.n,0,sizeof CR.n);memcpy(CR.addr,p->addr,sizeof CR.addr);
             pscloud_log("EVENT","Live: finding pointer paths to %s in %s (%u places)",p->name,L.title,p->n);
@@ -732,7 +741,8 @@ static unsigned chains_place(void) {
     for(unsigned k=0;k<locator_count;k++)for(unsigned c=0;c<chain_now_n[k];c++) {
         uint64_t a;struct locator_rule *r=&locator_rules[k];
         if(chain_follow(chain_now[k][c],base,&a)||!signature_at(r,a))continue;
-        r->address=a;r->found[0]=a;r->matches=1;r->chained=1;placed++;break;
+        r->address=a;r->found[0]=a;r->matches=1;r->chained=1;placed++;
+        pscloud_log("INFO","Live: place %u found by pointer path %s",k+1,chain_now[k][c]);break;
     }
     pscloud_log("EVENT","Live: pointer paths placed %u of %u places",placed,locator_count);
     return placed;
@@ -784,7 +794,7 @@ static void *resolve_main(void *arg) {
         for(unsigned j=0;j<k;j++)if(locator_rules[j].address==locator_rules[k].address)error="Profile targets overlap; nothing was bound";
     pthread_mutex_lock(&lock);
     if(!error&&!ambiguous) {
-        found_rules=locator_count;
+        found_rules=locator_count;relocated_by_paths=by_paths;
         pscloud_notify("Live profile found %u places in %s%s. Check the values before changing them",found_rules,L.title,by_paths?" instantly by pointer paths":"");
         for(unsigned k=0;k<locator_count;k++)L.addr[k]=locator_rules[k].address;
         L.count=locator_count;qsort(L.addr,L.count,sizeof *L.addr,address_order);
@@ -809,7 +819,7 @@ int pscloud_live_resolve(const char *title,const char *type,const char *patterns
         else {
             if(!L.addr)L.addr=malloc(CAP*sizeof *L.addr);
             if(!L.addr)snprintf(message,max,"Not enough memory");
-            else {L.type=t;L.pid=pid;L.session=stamp;strcpy(L.title,running);L.has=0;L.count=0;L.value=0;candidates=0;
+            else {L.type=t;L.pid=pid;L.session=stamp;strcpy(L.title,running);L.has=0;L.count=0;L.value=0;candidates=0;relocated_by_paths=0;
                 memcpy(chain_now,chain_use,sizeof chain_now);memcpy(chain_now_n,chain_use_n,sizeof chain_now_n);memset(chain_use_n,0,sizeof chain_use_n);
                 pscloud_log("EVENT","Relocating a Live profile in %s (%u places)",running,locator_count);result=start(resolve_main,"resolve",message,max);}
         }

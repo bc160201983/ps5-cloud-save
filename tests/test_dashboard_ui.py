@@ -127,9 +127,11 @@ const parts=[];for(let i=0;i<256;i++)parts.push(i>=128&&i<132?'??':(i%3?'00':'4c
 const live=chains=>({format:'PSCLOUD_EDIT_PROFILE_V1',kind:'live',name:'Health',title:'PPSA03210',version:'01.000.000',rules:[{type:'int32',offset:128,pattern:parts.join(''),...(chains?{chains}:{})}]});
 assert.deepEqual(ctx.P.validate(live(['800/38/1c4'])).rules[0].chains,['800/38/1c4']);
 assert.equal(ctx.P.validate(live()).rules[0].chains,undefined);
-for(const bad of [['xyz'],['800//1c4'],['1/2/3/4/5/6'],['a','b','c','d'],'800'])assert.throws(()=>ctx.P.validate(live(bad)),/pointer paths/);
-// Refining keeps new paths first, then older ones, three at most.
-assert.deepEqual(ctx.P.refine(live(['a/1','b/2']),live(['c/3','a/1'])).rules[0].chains,['c/3','a/1','b/2']);
+for(const bad of [['xyz'],['800//1c4'],['1/2/3/4/5/6'],'123456789'.split(''),'800'])assert.throws(()=>ctx.P.validate(live(bad)),/pointer paths/);
+assert.equal(ctx.P.validate(live('abcdef09'.split(''))).rules[0].chains.length,8);
+// Refining: paths found in both sessions first, then the new ones, then the older ones; eight at most.
+assert.deepEqual(ctx.P.refine(live(['a/1','b/2']),live(['c/3','a/1'])).rules[0].chains,['a/1','c/3','b/2']);
+assert.equal(ctx.P.refine(live('abcdef09'.split('')),live('12345678'.split(''))).rules[0].chains.join(''),'12345678');
 assert.deepEqual(ctx.P.refine(live(['a/1']),live()).rules[0].chains,['a/1']);
 console.log('Live profiles keep valid pointer paths');
 """
