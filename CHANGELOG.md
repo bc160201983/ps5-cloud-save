@@ -3,6 +3,21 @@
 Every release, newest first, with what was verified on a console and what was not.
 The current overview is in [README.md](README.md).
 
+## Version 0.34.26 — a wrong-size save container is never added
+
+From issue #3 (Demon's Souls, firmware 13.60): moving a save to a second profile that did not
+have the character slot made PSCloud create that slot. On 13.60 the new save container came
+out smaller than requested, while its details gave the full 6 MiB; the PS5 refused it when the
+game opened it (CE-107112-2).
+- After creating a save container, PSCloud now compares its real size with the size it asked
+  for and logs both. A smaller container is removed and the slot is not added; the import
+  says to start the game in that profile so the game creates the slot, then import again.
+  Automatic sync skips such a slot and continues with the others.
+- Games have not yet been confirmed to accept slots PSCloud creates, on any firmware. After an
+  import that created slots, Activity now says what to do if the game calls one corrupted.
+- Host tests: a console that returns a smaller container (the slot is removed, nothing else
+  changes) and the sizes logged for a normal creation. Not yet run on a console.
+
 ## Version 0.34.25 — project review fixes
 
 A review of the whole project (dashboard server, Live engine, ZIP and save handling, page, CI).

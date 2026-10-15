@@ -950,6 +950,31 @@ const found=SaveImport.slots(files);const pkg=SaveImport.pack(found,'7.00');fs.w
         self.assertEqual((fixture/'save2/folder/progress.bin').read_bytes(),b'shared')
         # A second import finds the slot and just replaces it.
         status,again=self.request('/api/share-check',options);self.assertEqual(status,200,again)
+        log=(self.root/'pscloud.log').read_text()
+        self.assertIn('New save container for save2: 1048576 bytes (1048576 requested)',log)
+        self.assertIn('Slot save2 was created by PSCloud. If the game says this save is corrupted',log)
+
+    def test_a_smaller_created_container_is_never_added(self):
+        """Firmware 13.60 returned a save container smaller than requested; the PS5 then refused the
+        save (CE-107112-2). PSCloud now removes such a container and leaves the profile unchanged."""
+        import test_sharing,test_portable,sqlite3
+        self.process.terminate();self.process.communicate(timeout=5)
+        fixture=self.fixture.root/'generic'
+        test_portable.PortableTests.sfo(self,fixture/SLOT,SLOT,b'\x44'*8)
+        (fixture/SLOT/'sce_sys/keystone').write_bytes(b'K'*96)
+        self.save_db(self.root,'1eb70483',[(SLOT,'2026-10-01T10:00:00.00Z')])
+        self.start_server(PSCLOUD_TEST_GENERIC_PAYLOADS=str(fixture),PSCLOUD_TEST_SHORT_CONTAINER='1')
+        package=test_sharing.portable(slots=(SLOT,'save2'),title='PPSA02433');sha=hashlib.sha256(package).hexdigest()
+        name='portable-PPSA02433-'+'c'*32+'.zip';(self.root/'share').mkdir(exist_ok=True);(self.root/'share'/name).write_bytes(package)
+        options=self.selected(slot='WholeGame',closed='yes',file=name,sha256=sha,not_installed='yes',create_missing='yes')
+        self.assertEqual(self.request('/api/share-check',options)[0],200)
+        before=self.image.read_bytes()
+        status,refused=self.request('/api/share-restore',dict(options,confirm='yes'));self.assertEqual(status,400)
+        self.assertIn('smaller save container than requested',refused['message'])
+        self.assertFalse((self.image.parent/'sdimg_save2').exists());self.assertEqual(self.image.read_bytes(),before)
+        db=sqlite3.connect(str(self.root/'system/system_data/savedata_prospero/1eb70483/db/user/savedata.db'))
+        self.assertIsNone(db.execute("select 1 from savedata where dir_name='save2'").fetchone());db.close()
+        self.assertIn('This console made a smaller save container than requested (983040 of 1048576 bytes)',(self.root/'pscloud.log').read_text())
 
     def test_creating_a_slot_needs_another_slot_of_the_game(self):
         import test_sharing,test_portable

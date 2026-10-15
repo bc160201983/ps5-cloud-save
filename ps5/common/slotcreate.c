@@ -204,7 +204,8 @@ static int new_container(const char *path,size_t capacity,const char *template_i
     /* Host stand-in: an image of the right size with the template's header and key area. */
     unsigned char head[0x860];int in=open(template_image,O_RDONLY|O_NOFOLLOW);int bad=in<0||pread(in,head,sizeof head,0)!=(ssize_t)sizeof head;if(in>=0)close(in);
     int fd=bad?-1:open(path,O_WRONLY|O_CREAT|O_EXCL|O_NOFOLLOW,0600);
-    bad=fd<0||ftruncate(fd,(off_t)capacity)||pwrite(fd,head,sizeof head,0)!=(ssize_t)sizeof head||fsync(fd);if(fd>=0)close(fd);
+    off_t made=(off_t)capacity-(getenv("PSCLOUD_TEST_SHORT_CONTAINER")?65536:0);
+    bad=fd<0||ftruncate(fd,made)||pwrite(fd,head,sizeof head,0)!=(ssize_t)sizeof head||fsync(fd);if(fd>=0)close(fd);
     return bad?-1:0;
 #else
     (void)template_image;
@@ -313,6 +314,15 @@ int pscloud_create_slot(const char *home,const char *system_root,const char *roo
     if(have_source&&*detail_text)(void)sfo_set_text(sys.sfo,sys.sfo_size,"DETAIL",detail_text);
     /* 2. A new container with that identity. */
     if(new_container(image,capacity,template_image)) {*why="This console refused to create a save container";goto done;}
+    /* On 13.60 a created container came out smaller than requested while its metadata gives the
+     * full size, and the PS5 refused it when the game opened it (CE-107112-2). Such a container is
+     * never added. */
+    {struct stat made;
+        if(stat(image,&made)) {*why="The new save container could not be checked";goto done;}
+        pscloud_log("INFO","New save container for %s: %lld bytes (%zu requested)",slot,(long long)made.st_size,capacity);
+        if((unsigned long long)made.st_size<capacity) {
+            pscloud_log("ERROR","This console made a smaller save container than requested (%lld of %zu bytes); slot %s was not added",(long long)made.st_size,capacity,slot);
+            *why="this PS5 made a smaller save container than requested, so PSCloud did not add it. Start the game in this profile and let it save into this slot, then import again";goto done;}}
     struct write_ctx w={&sys};
     if(with_mount(parent,image,mount,slot,write_step,&w)) {*why="The new save container could not be prepared";goto done;}
     /* 3. Into the game's folder, owned like the template's, then listed in the database. */

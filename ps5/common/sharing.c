@@ -534,6 +534,9 @@ int pscloud_share_game(const char *home,const char *root,const char *appmeta,con
     if(mode==2&&commit(parent,source,stage,p,before,baseline,id,stage_path,user,title,checksum)) {refuse("Live replacement stopped; rollback copies are in %s. Check Activity before retrying",stage_path);goto done;}
     if(mode==2&&!marker&&!state.mounted)retain_rollback(parent,stage,stage_name,p,user,title,id,stage_path,sizeof stage_path);
     pscloud_log("EVENT",mode==2?"GENERIC_RESTORE_COMMITTED=yes; rollback=%s":"LIVE_SAVES_UNCHANGED=yes; generic sharing passed; stage=%s",stage_path);result=0;
+    /* Games are not yet confirmed to accept a slot PSCloud created, so say what to do if one is refused. */
+    for(unsigned i=0;mode==2&&i<created_count;i++)
+        pscloud_log("WARN","Slot %s was created by PSCloud. If the game says this save is corrupted, delete it in Settings > Saved Data, start the game once in this profile so the game creates the slot, then import again",created[i]);
     if(mode!=2&&!marker&&!state.mounted&&!state.credentials_saved)discard_completed_stage(parent,stage,stage_name,p->count,!mode);
 done:
     if(state.mounted) {if(pscloud_mount_end(&state,mount))result=-1;else unmounted=1;}
