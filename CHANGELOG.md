@@ -3,6 +3,26 @@
 Every release, newest first, with what was verified on a console and what was not.
 The current overview is in [README.md](README.md).
 
+## Version 0.34.25 — project review fixes
+
+A review of the whole project (dashboard server, Live engine, ZIP and save handling, page, CI).
+- Four lists in the dashboard could write past the end of their buffer: the per-game settings
+  file (more than about 420 games with custom settings), the slot lists used by sync (an entry
+  could be longer than the safety margin), the cloud profile links, and the list of other PS5s
+  (eight replies of up to 8 KiB each did not fit 64 KiB). Each list now stops at an entry that
+  would not fit.
+- A reply from another PS5 is shown only when it is one complete JSON object, so a device on
+  the network can no longer add fields to the dashboard's answer. Tested with a hostile reply,
+  a reply with trailing spaces and eight replies of 8 KiB.
+- GitHub Actions now checks the SHA-256 of the SQLite source and the v0.43 SDK it downloads,
+  like the pinned SDK it already checked.
+- Checked without changes: request size limits, the Host, session and cross-site checks,
+  HTTPS-only cloud transfers with certificate checks and no protocol changes on redirect,
+  passwords kept out of the log, strict ZIP parsing (paths, duplicates, CRC and SHA-256), the
+  page building HTML only from fixed text, and the 12-connection limit with timeouts.
+- Noted, unchanged: other devices on your network can download the shared backup archives
+  (/api/peer/file); sync between your PS5s depends on it.
+
 ## Version 0.34.24 — Retain profile checked again
 
 - Retain profile checks first that the profile can be stored (game version known, at most 12

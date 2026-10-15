@@ -41,6 +41,7 @@ jobs:
       - name: Get SQLite 3.46.1 (same version as the PS5 save database)
         run: |
           curl --fail --location --retry 3 https://www.sqlite.org/2024/sqlite-amalgamation-3460100.zip -o "$RUNNER_TEMP/sqlite.zip"
+          echo "77823cb110929c2bcb0f5d48e4833b5c59a8a6e40cdea3936b99e199dbbe5784  $RUNNER_TEMP/sqlite.zip" | sha256sum --check
           unzip -q "$RUNNER_TEMP/sqlite.zip" -d "$RUNNER_TEMP"
           mkdir -p ps5/third_party && mv "$RUNNER_TEMP/sqlite-amalgamation-3460100" ps5/third_party/sqlite
       - name: Build direct uploader
@@ -125,6 +126,7 @@ jobs:
       - name: Install PS5 payload SDK v0.43
         run: |
           curl --fail --location --retry 3 https://github.com/ps5-payload-dev/sdk/releases/download/v0.43/ps5-payload-sdk.zip -o "$RUNNER_TEMP/sdk.zip"
+          echo "a9cc9929f21b2b2c5d5b309f3bab4997067c45281c0622cf4838b1aecba66fcb  $RUNNER_TEMP/sdk.zip" | sha256sum --check
           unzip -q "$RUNNER_TEMP/sdk.zip" -d "$RUNNER_TEMP/sdk"
           SDK_MAKE=$(find "$RUNNER_TEMP/sdk" -path '*/toolchain/prospero.mk' -print -quit)
           test -n "$SDK_MAKE"

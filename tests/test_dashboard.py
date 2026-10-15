@@ -1113,6 +1113,35 @@ const found=SaveImport.slots(files);const pkg=SaveImport.pack(found,'7.00');fs.w
         for slot,when in rows:db.execute('insert into savedata (title_id,dir_name,main_title,sub_title,detail,tmp_dir_name,is_broken,user_param,blocks,free_blocks,size_kib,mtime,fake_broken,account_id,user_id,faked_owner,cloud_icon_url,cloud_revision,game_title_id,system_blocks,convert_performance,account_id_in_usb_path) values (?,?,?,?,?,?,0,0,48,4,3072,?,0,9138745278763343734,515310723,0,?,0,?,0,0,?)',('PPSA02433',slot,'Label '+slot,'',"x"*3000,'',when,'','PPSA02433','0000000000000000'))
         db.commit();db.close()
 
+    def test_peer_list_stays_valid_json_with_hostile_or_large_replies(self):
+        """Replies from other consoles are copied into /api/peers only when each is one complete
+        JSON object, and eight large replies no longer overrun the response buffer."""
+        import http.server
+        bodies=['{"profiles":[]},"injected":{"a":1}',   # tries to add a field after info
+                '{"profiles":[{"name":"x"}]}'+' '*3,    # valid, trailing spaces
+                '{"pad":"'+'y'*8100+'"}']                # close to the 8 KiB reply limit
+        servers=[]
+        for body in bodies+[bodies[2]]*5:
+            class Peer(http.server.BaseHTTPRequestHandler):
+                reply=body.encode()
+                def do_GET(self):
+                    self.send_response(200);self.send_header('Content-Length',str(len(self.reply)));self.end_headers();self.wfile.write(self.reply)
+                def log_message(self,*args):pass
+            server=http.server.ThreadingHTTPServer(('127.0.0.1',0),Peer);servers.append(server)
+            threading.Thread(target=server.serve_forever,daemon=True).start()
+        try:
+            peers=','.join('127.0.0.1:%d'%x.server_address[1] for x in servers)
+            self.assertEqual(self.request('/api/peers',{'peers':peers})[0],200)
+            status,text=self.request('/api/peers',raw=True);self.assertEqual(status,200)
+            listed=json.loads(text)['peers']  # one valid JSON document
+            self.assertEqual(len(listed),8)
+            self.assertEqual((listed[0]['reachable'],listed[0]['info']),(False,None))
+            self.assertNotIn('injected',text)
+            self.assertEqual(listed[1]['info']['profiles'][0]['name'],'x')
+            self.assertTrue(all(p['reachable'] and len(p['info']['pad'])==8100 for p in listed[2:]))
+        finally:
+            for server in servers:server.shutdown();server.server_close()
+
     def test_sync_compares_when_the_game_saved_each_slot(self):
         import test_portable,socket
         def free_udp():

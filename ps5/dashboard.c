@@ -37,6 +37,7 @@
 #ifndef PSCLOUD_HOST_TEST
 #include <ps5/kernel.h>
 #include <sys/types.h>
+#include <stdarg.h>
 #include <sys/sysctl.h>
 #include <sys/user.h>
 /* Measured on 11.40: the title ID is at byte 0x10 of the app info (e.g. eboot.bin ->
@@ -353,13 +354,34 @@ static int game_setting(const char *title,int which) {
     for(unsigned i=0;i<game_settings_count;i++)if(!strcmp(game_settings[i].title,title))value=which==3?game_settings[i].auto_apply:which==2?game_settings[i].auto_sync:which?game_settings[i].backup_all:game_settings[i].close_backup;
     pthread_mutex_unlock(&settings_mutex);return value;
 }
+/* Appends formatted text at *pos. Text that does not fit leaves the buffer as it was and returns
+ * -1, so a list stops early instead of writing past the end of its buffer. */
+static int append(char *out,size_t cap,size_t *pos,const char *format,...) {
+    if(*pos>=cap)return -1;
+    va_list ap;va_start(ap,format);int n=vsnprintf(out+*pos,cap-*pos,format,ap);va_end(ap);
+    if(n<0||(size_t)n>=cap-*pos) {out[*pos]=0;return -1;}
+    *pos+=(size_t)n;return 0;
+}
+/* A reply from another console is copied into our JSON only when it is one complete JSON
+ * object: balanced brackets outside strings and nothing after the closing brace. */
+static int json_object_only(const char *s) {
+    if(*s!='{')return 0;
+    int depth=0,text=0;
+    for(;*s;s++) {
+        if(text) {if(*s=='\\') {if(!s[1])return 0;s++;}else if(*s=='"')text=0;else if((unsigned char)*s<32)return 0;continue;}
+        if(*s=='"')text=1;
+        else if(*s=='{'||*s=='[') {if(++depth>32)return 0;}
+        else if(*s=='}'||*s==']') {if(--depth<0)return 0;if(!depth)return !s[1]||!s[1+strspn(s+1," \r\n\t")];}
+    }
+    return 0;
+}
 static int game_settings_save(const char *title,int close_backup,int backup_all,int auto_sync,int auto_apply) {
     pthread_mutex_lock(&settings_mutex);unsigned i=0;
     while(i<game_settings_count&&strcmp(game_settings[i].title,title))i++;
     if(i==game_settings_count) {if(i==512) {pthread_mutex_unlock(&settings_mutex);return -1;}snprintf(game_settings[i].title,sizeof game_settings[i].title,"%.9s",title);game_settings_count++;}
     game_settings[i].close_backup=close_backup;game_settings[i].backup_all=backup_all;game_settings[i].auto_sync=auto_sync;game_settings[i].auto_apply=auto_sync&&auto_apply;
-    char *text=malloc(512*32);size_t n=0;
-    for(unsigned k=0;text&&k<game_settings_count;k++)if(!game_settings[k].close_backup||!game_settings[k].backup_all||game_settings[k].auto_sync)n+=(size_t)snprintf(text+n,512*32-n,"%s CLOSE=%d ALL=%d SYNC=%d APPLY=%d\n",game_settings[k].title,game_settings[k].close_backup,game_settings[k].backup_all,game_settings[k].auto_sync,game_settings[k].auto_apply);
+    char *text=malloc(512*48);size_t n=0;
+    for(unsigned k=0;text&&k<game_settings_count;k++)if(!game_settings[k].close_backup||!game_settings[k].backup_all||game_settings[k].auto_sync)(void)append(text,512*48,&n,"%s CLOSE=%d ALL=%d SYNC=%d APPLY=%d\n",game_settings[k].title,game_settings[k].close_backup,game_settings[k].backup_all,game_settings[k].auto_sync,game_settings[k].auto_apply);
     pthread_mutex_unlock(&settings_mutex);
     char path[1400];snprintf(path,sizeof path,"%s/games.conf",root);
     int bad=!text||atomic_config(path,n?text:"");free(text);return bad?-1:0;
@@ -653,7 +675,7 @@ static void storage_json(int sock) {
 }
 static void usb_list(int sock) {
     char json[4096];int pos=snprintf(json,sizeof json,"{\"drives\":[");unsigned count=0;
-    for(unsigned i=0;i<8;i++) {
+    for(unsigned i=0;i<8&&pos<(int)sizeof json-2600;i++) {
         char path[1200];if(usb_mount(i,path,sizeof path))continue;
         struct statvfs fs;unsigned long long free_bytes=0,total=0;
         if(!statvfs(path,&fs)) {free_bytes=(unsigned long long)fs.f_bavail*fs.f_frsize;total=(unsigned long long)fs.f_blocks*fs.f_frsize;}
@@ -1151,8 +1173,8 @@ static int live_slots(const char *user,const char *title,struct live_slot *out,i
 }
 static void live_slots_json(char *json,size_t cap,const struct live_slot *v,int n) {
     size_t pos=(size_t)snprintf(json,cap,"[");
-    for(int i=0;i<n&&pos<cap-1200;i++) {char a[800],b[800];escaped(a,sizeof a,v[i].label);escaped(b,sizeof b,v[i].sub);
-        pos+=(size_t)snprintf(json+pos,cap-pos,"%s{\"slot\":\"%s\",\"mtime\":%lld,\"label\":\"%s\",\"sub\":\"%s\"}",i?",":"",v[i].slot,v[i].mtime,a,b);}
+    for(int i=0;i<n;i++) {char a[800],b[800];escaped(a,sizeof a,v[i].label);escaped(b,sizeof b,v[i].sub);
+        if(append(json,cap-2,&pos,"%s{\"slot\":\"%s\",\"mtime\":%lld,\"label\":\"%s\",\"sub\":\"%s\"}",i?",":"",v[i].slot,v[i].mtime,a,b))break;}
     snprintf(json+pos,cap-pos,"]");
 }
 static void peer_slots_json(int sock,const char *query) {
@@ -1303,14 +1325,16 @@ static void peers_discover_json(int sock) {
 }
 /* Configured peers with what they report. */
 static void peers_json(int sock) {
-    char peers[8][64];int n=peers_list(peers);char *json=malloc(65536);if(!json) {reject(sock,500,"Out of memory");return;}
-    int pos=snprintf(json,65536,"{\"peers\":[");
+    char peers[8][64];int n=peers_list(peers);const size_t cap=8*(8192+256)+64;char *json=malloc(cap);if(!json) {reject(sock,500,"Out of memory");return;}
+    size_t pos=0;(void)append(json,cap,&pos,"{\"peers\":[");
     for(int i=0;i<n;i++) {
         char body[8192];size_t got=0;long status=peer_get(peers[i],"/api/peer/info",body,sizeof body-1,&got,5);
+        if(status==200)body[got<sizeof body?got:sizeof body-1]=0;
         const char *start=status==200?strchr(body,'{'):NULL;
-        pos+=snprintf(json+pos,65536-(size_t)pos,"%s{\"address\":\"%s\",\"reachable\":%s,\"info\":%s}",i?",":"",peers[i],start?"true":"false",start?start:"null");
+        if(start&&!json_object_only(start))start=NULL;
+        if(append(json,cap-3,&pos,"%s{\"address\":\"%s\",\"reachable\":%s,\"info\":%s}",i?",":"",peers[i],start?"true":"false",start?start:"null"))break;
     }
-    snprintf(json+pos,65536-(size_t)pos,"]}");respond(sock,200,"application/json",json,strlen(json));free(json);
+    (void)append(json,cap,&pos,"]}");respond(sock,200,"application/json",json,strlen(json));free(json);
 }
 
 /* Newest WholeGame version in one profile's cloud folder: PROPFIND for the newest identity
@@ -1518,6 +1542,7 @@ static void cloud_profiles_json(int sock) {
     char path[1400],line[256];snprintf(path,sizeof path,"%s/links.conf",root);FILE *f=fopen(path,"r");unsigned links=0;
     while(f&&fgets(line,sizeof line,f)) {char who[32],list[200];if(sscanf(line,"%31s %199s",who,list)!=2||!safe_word(who,16))continue;
         for(char *q=list;*q;q++)if(!strchr("0123456789abcdefABCDEF,",*q))*q=0;
+        if(pos>(int)sizeof json-300)break;
         pos+=snprintf(json+pos,sizeof json-(size_t)pos,"%s\"%s\":\"%s\"",links++?",":"",who,list);}
     if(f)fclose(f);
     snprintf(json+pos,sizeof json-(size_t)pos,"}}");respond(sock,200,"application/json",json,strlen(json));
