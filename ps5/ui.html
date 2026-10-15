@@ -67,10 +67,10 @@ function renderShareInto(){const box=$('shareInto');box.replaceChildren();box.cl
  if(!selected||!sharedCandidate||!sharedCandidate.fileSlots||!sameSharedContext())return;
  const {missing,targets}=shareIntoChoices(sharedCandidate.fileSlots,selected.slots.map(s=>s.slot));if(!missing.length)return;
  box.append(el('p','subtitle','These saves in the file are not on this profile. Choose where each one goes:'));
- for(const from of missing){const row=el('label','labrow'),pick=document.createElement('select');pick.dataset.from=from;pick.setAttribute('aria-label','Where '+from+' goes');
+ for(const from of missing){const row=el('div'),name=el('div','',slotName(from)+' goes into:'),pick=document.createElement('select');row.style.margin='8px 0';name.style.fontWeight='600';name.style.overflowWrap='anywhere';pick.style.width='100%';pick.dataset.from=from;pick.setAttribute('aria-label','Where '+from+' goes');
   const create=document.createElement('option');create.value='';create.textContent='Create a new save slot (not confirmed to work in every game)';pick.append(create);
   for(const t of targets){const o=document.createElement('option');o.value=t;o.textContent='Put it into my save: '+slotName(t);pick.append(o);}
-  pick.addEventListener('change',shareOptionsChanged);row.append(el('span','grow',slotName(from)),pick);box.append(row);}
+  pick.addEventListener('change',shareOptionsChanged);row.append(name,pick);box.append(row);}
  if(!targets.length)box.append(el('p','subtitle','To put it into a save of your own instead, start the game on this profile and save once, then check again.'));
  box.classList.remove('hidden');}
 function shareOptionsChanged(){if(sharedCandidate&&sharedCandidate.checked){sharedCandidate.checked=false;$('shareStatus').textContent='Options changed. Choose Check again before replacing your save.';}shareButtons();}
