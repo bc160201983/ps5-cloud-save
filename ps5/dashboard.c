@@ -12,6 +12,17 @@
 #include "common/transfer.h"
 #include "common/sharing.h"
 #include "common/livemem.h"
+#include "common/update.h"
+/* The trusted certificate bundle, built in from the PS5 SDK when the build provides ca.h. */
+#if defined(__has_include)
+#if __has_include("ca.h")
+#include "ca.h"
+#define PSCLOUD_HAS_CA_BUNDLE 1
+#endif
+#endif
+#ifndef PSCLOUD_HAS_CA_BUNDLE
+static const unsigned char pscloud_ca_bundle[1]={0};static const size_t pscloud_ca_bundle_size=0;
+#endif
 #include <pthread.h>
 #include <stdatomic.h>
 #include "ui.h"
@@ -290,6 +301,34 @@ static void message(int sock,int status,const char *text) {
 static void reject(int sock,int status,const char *text) {
     char json[1024];snprintf(json,sizeof json,"{\"ok\":false,\"message\":\"%s\"}",text);
     respond(sock,status,"application/json",json,strlen(json));
+}
+/* ca.pem in PSCloud's folder holds the trusted certificates for HTTPS. Earlier versions asked for
+ * it to be copied by hand; a missing one is now written from the copy built into this program. */
+static void ca_bundle_install(void) {
+    char path[1200],temporary[1300];struct stat st;snprintf(path,sizeof path,"%s/ca.pem",root);
+    if(!pscloud_ca_bundle_size||!lstat(path,&st))return;
+    snprintf(temporary,sizeof temporary,"%s.part",path);
+    int fd=open(temporary,O_WRONLY|O_CREAT|O_TRUNC|O_NOFOLLOW,0600);size_t at=0;int bad=fd<0;
+    while(!bad&&at<pscloud_ca_bundle_size) {ssize_t n=write(fd,pscloud_ca_bundle+at,pscloud_ca_bundle_size-at);if(n<0&&errno==EINTR)continue;if(n<=0)bad=1;else at+=(size_t)n;}
+    if(fd>=0) {if(fsync(fd))bad=1;if(close(fd))bad=1;}
+    if(bad||rename(temporary,path)) {unlink(temporary);pscloud_log("WARN","The trusted certificate bundle could not be written to %s",path);return;}
+    pscloud_log("EVENT","Installed the trusted certificate bundle (%s) from this version of PSCloud",path);
+}
+static void escaped(char *out,size_t max,const char *input);
+/* Update replies carry text from the update module, so it is escaped. */
+static void update_reply(int sock,int status,const char *text) {
+    char shown[1500],json[1700];escaped(shown,sizeof shown,text);
+    snprintf(json,sizeof json,"{\"ok\":%s,\"message\":\"%s\"}",status==200?"true":"false",shown);
+    pscloud_log(status>=400?"WARN":"EVENT","Dashboard result (HTTP %d): %s",status,text);
+    respond(sock,status,"application/json",json,strlen(json));
+}
+static void update_file(int sock) {
+    char path[1300];struct stat st;int fd=pscloud_update_file(path,sizeof path)?-1:open(path,O_RDONLY|O_NOFOLLOW);
+    if(fd<0||fstat(fd,&st)||!S_ISREG(st.st_mode)) {if(fd>=0)close(fd);reject(sock,404,"Download the update first");return;}
+    char header[400];int n=snprintf(header,sizeof header,"HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Disposition: attachment; filename=\"pscloud-dashboard.elf\"\r\nContent-Length: %lld\r\nConnection: close\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\n\r\n",(long long)st.st_size);
+    send_all(sock,header,(size_t)n);char *buffer=malloc(1U<<20);long long left=st.st_size;
+    while(buffer&&left>0) {ssize_t got=read(fd,buffer,left>(1<<20)?(1<<20):(size_t)left);if(got<=0)break;send_all(sock,buffer,(size_t)got);left-=got;}
+    free(buffer);close(fd);
 }
 static void preferences(int sock,const char *form) {
     if(form) {
@@ -2610,6 +2649,21 @@ static void serve(int sock,int *locked) {
         snprintf(directory,sizeof directory,"%s/share",root);int dir=pscloud_open_directory(directory);int bad=dir<0||pscloud_read_archive(dir,file,&data,&bytes);if(dir>=0)close(dir);
         if(bad)message(sock,404,"Shared package unavailable");else respond(sock,200,"application/zip",(const char *)data,bytes);free(data);return;
     }
+    /* Updates (Cloud settings): the newest published release on GitHub. */
+    if(!strcmp(method,"GET")&&!strcmp(url,"/api/update")) {char *json=malloc(16384);if(!json) {message(sock,500,"Out of memory");return;}pscloud_update_json(json,16384);respond(sock,200,"application/json",json,strlen(json));free(json);return;}
+    if(!strcmp(method,"GET")&&!strcmp(url,"/api/update/file")) {update_file(sock);return;}
+    if(!strcmp(method,"POST")&&!strncmp(url,"/api/update/",12)) {
+        char msg[800]="";int bad=-1;
+        if(!strcmp(url,"/api/update/check")) {pscloud_log("EVENT","Dashboard action: Check for updates");bad=pscloud_update_check(0,msg,sizeof msg);}
+        else if(!strcmp(url,"/api/update/download")) {pscloud_log("EVENT","Dashboard action: Download update");bad=pscloud_update_download(msg,sizeof msg);}
+        else if(!strcmp(url,"/api/update/install")) {pscloud_log("EVENT","Dashboard action: Install update");bad=pscloud_update_install(msg,sizeof msg);}
+        else if(!strcmp(url,"/api/update/auto")) {
+            char on[4]="";if(parameter(body,"on",on,sizeof on)||(strcmp(on,"0")&&strcmp(on,"1"))) {message(sock,400,"Choose on or off");return;}
+            bad=pscloud_update_set_auto(on[0]=='1');snprintf(msg,sizeof msg,"%s",on[0]=='1'?"PSCloud checks for updates once a day":"Automatic update checks are off");
+        }
+        else {message(sock,404,"Unknown update action");return;}
+        update_reply(sock,bad?400:200,msg);return;
+    }
     /* Live mode: find and change a number in the running game (Edit tab). */
     if(!strcmp(method,"GET")&&!strcmp(url,"/api/live/locator")) {
         pscloud_log("EVENT","Dashboard action: Retain profile");
@@ -2877,6 +2931,8 @@ static void move_into_folder(void) {
         if(strncmp(e->d_name,"pscloud",7)||!strcmp(e->d_name,"pscloud")||strchr(e->d_name,'/'))continue;
         char from[600],to[700];struct stat st;snprintf(from,sizeof from,"/data/%s",e->d_name);
         if(lstat(from,&st)||!S_ISREG(st.st_mode))continue;
+        size_t length=strlen(e->d_name);
+        if(length>4&&!strcmp(e->d_name+length-4,".elf"))continue;  /* a PSCloud program an autoloader may start from here */
         const char *name=!strncmp(e->d_name,"pscloud-",8)?e->d_name+8:e->d_name;
         snprintf(to,sizeof to,"/data/pscloud/%s",name);
         if(!lstat(to,&st))continue;
@@ -2913,6 +2969,7 @@ static void *game_close_watch(void *unused) {
         if(seconds==20||!(seconds%3600))registry_publish(); /* let other consoles find these profiles */
         if(seconds==30||!(seconds%300))peer_synced_refresh();
         if(!(seconds%300))sync_tick();
+        if(!(seconds%60))pscloud_update_tick();
         if(seconds%interval)continue;
         if(!game_close_backup&&!any_synced()) {watch_ready=0;watched_count=0;continue;}
         watch_scan();
@@ -2999,6 +3056,12 @@ int main(int argc,char **argv) {
     game_settings_load();schedule_load();console_id_load();cloud_keep_load();full_check_load();encryption_load();
     pscloud_log_open(logpath);load_preferences();
     {char trace[1400];snprintf(trace,sizeof trace,"%s/live-trace.txt",root);pscloud_live_set_trace(trace);}
+    /* Updates use ca.pem in PSCloud's folder (written from the built-in copy when missing), else
+     * the bundle chosen for the cloud. */
+    ca_bundle_install();
+    {char ca[1200];struct stat st;struct settings s={0};snprintf(ca,sizeof ca,"%s/ca.pem",root);
+        if(stat(ca,&st)&&!pscloud_configure(cloudpath,&s)&&*s.ca)snprintf(ca,sizeof ca,"%s",s.ca);
+        memset(s.password,0,sizeof s.password);pscloud_update_init(root,ca,PSCLOUD_VERSION);}
 #ifdef PSCLOUD_HOST_TEST
     if(getenv("PSCLOUD_TEST_ALLOW_FREEZE"))pscloud_live_allow_freeze(1);
 #endif

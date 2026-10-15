@@ -50,6 +50,7 @@ class Handler(BaseHTTPRequestHandler):
         elif path.startswith('/docs/') and '..' not in path and (ROOT/path.lstrip('/')).is_file():
             f=ROOT/path.lstrip('/');self.send(f.read_bytes(),'image/svg+xml' if f.suffix=='.svg' else 'image/png' if f.suffix=='.png' else 'text/plain')
         elif path=='/api/health':self.send({'busy':False})
+        elif path=='/api/update':self.send({'current':(ROOT/'VERSION').read_text().strip(),'latest':'0.35.0','state':'available','newer':True,'files':True,'ready':False,'auto':True,'checked':1791700000,'done':0,'total':0,'page':'https://github.com/bc160201983/ps5-cloud-save/releases/tag/v0.35.0','notes':'Example release notes for the design preview.\n- First change\n- Second change','error':''})
         elif path=='/api/sync-status':self.send({'state':'cloud_newer','local_time':1791700000,'base':0,'cloud':{'file':'x','user':'1eb70484','name':'bilal','created':1791720000,'sha256':''},'links':1})
         elif path=='/api/cloud-profiles':self.send({'console':'a','profiles':[{'user':'1eb70484','name':'bilal','console':'b','firmware':'7.00','this_console':False},{'user':'00000001','name':'Player One','console':'a','firmware':'11.40','this_console':True}],'links':{'00000001':'1eb70484'}})
         elif path=='/api/backup-all':self.send({'running':False,'total':24,'done':24,'backed':3,'unchanged':20,'skipped':1,'failed':0,'current':'','started':1791700000,'finished':int(__import__('time').time())-60,'schedule_hour':3,'schedule_last':'2026-10-11'})

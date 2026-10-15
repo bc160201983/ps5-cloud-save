@@ -108,11 +108,16 @@ PSCloud brings together everything you need to keep your progress safe:
 3. **Send it** to the console's ELF loader, for example with
    `python tools/send_payload.py <PS5-IP> pscloud-dashboard.elf`, or your usual payload sender.
 4. **Open** `http://<PS5-IP>:8082` in a browser on the same network.
-5. Optional: in **Cloud settings**, connect your cloud. For cloud uploads, copy
-   `pscloud-ca.pem` from the release to `/data/pscloud/ca.pem`.
+5. Optional: in **Cloud settings**, connect your cloud. Since 0.34.28 the trusted certificate
+   bundle (`/data/pscloud/ca.pem`) is written automatically when it is missing.
 
-**Updating:** press **Stop PSCloud** on the dashboard, then send the new ELF. Your settings
-are kept.
+**Updating:** since 0.34.28, **Cloud settings → Updates** checks GitHub for the newest
+published release (once a day, or with **Check for updates**). **Download** gets the
+dashboard and accepts it only when its SHA-256 matches the release's `SHA256SUMS.txt`;
+**Install now** sends it to the ELF loader on the PS5 (port 9021), and the new version takes
+over. Without a running ELF loader, use **Save to PC** and send it yourself; every download is
+also kept as `/data/pscloud/pscloud-dashboard.elf` for an autoloader. You can also still send
+a new ELF from a PC at any time; your settings are kept.
 
 **Start with the console:** add the ELF to your autoloader, for example ProsperoMgr →
 Payloads, then Settings → Autoloader.

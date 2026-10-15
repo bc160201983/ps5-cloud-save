@@ -35,7 +35,7 @@ class DashboardTests(unittest.TestCase):
         subprocess.run(['cc','-O2','-std=c11','-Wall','-Wextra','-Werror',
                         '-DPSCLOUD_HOST_TEST','-DPSCLOUD_BACKUP_EMBEDDED','-DPSCLOUD_DOWNLOAD_EMBEDDED','-DPSCLOUD_EMBEDDED',
                         *[str(ROOT/p) for p in ['ps5/dashboard.c','ps5/backup.c','ps5/download.c','src/worker.c']],
-                        *[str(ROOT/'ps5/common'/n) for n in ['managed.c','mount.c','restore.c','zip.c','log.c','cloud.c','snapshot.c','appmeta.c','bundle.c','savemeta.c','google.c','sharing.c','slotcreate.c','livemem.c']],
+                        *[str(ROOT/'ps5/common'/n) for n in ['managed.c','mount.c','restore.c','zip.c','log.c','cloud.c','snapshot.c','appmeta.c','bundle.c','savemeta.c','google.c','sharing.c','slotcreate.c','livemem.c','update.c']],
                         '-o',str(ROOT/'dashboard-host'),'-lcurl','-lcrypto','-lsqlite3','-pthread'],check=True)
 
     def setUp(self):
@@ -1173,6 +1173,106 @@ const found=SaveImport.slots(files);const pkg=SaveImport.pack(found,'7.00');fs.w
         db.execute('delete from savedata')
         for slot,when in rows:db.execute('insert into savedata (title_id,dir_name,main_title,sub_title,detail,tmp_dir_name,is_broken,user_param,blocks,free_blocks,size_kib,mtime,fake_broken,account_id,user_id,faked_owner,cloud_icon_url,cloud_revision,game_title_id,system_blocks,convert_performance,account_id_in_usb_path) values (?,?,?,?,?,?,0,0,48,4,3072,?,0,9138745278763343734,515310723,0,?,0,?,0,0,?)',('PPSA02433',slot,'Label '+slot,'',"x"*3000,'',when,'','PPSA02433','0000000000000000'))
         db.commit();db.close()
+
+    def test_online_update_check_download_and_install(self):
+        """A fake GitHub release and a fake ELF loader: check, a refused download with a wrong checksum,
+        a verified download (also kept for autoloaders), saving it to a PC, installing it through
+        the loader, a missing loader, an up-to-date version and the daily check switch."""
+        import http.server,socket
+        elf=b'\x7fELF'+bytes(range(256))*800
+        release={'tag':'v9.9.9','sha':hashlib.sha256(elf).hexdigest()}
+        class GitHub(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                if self.path=='/releases/latest':
+                    body=json.dumps({'tag_name':release['tag'],'body':'Line one\nUmlaut ü "quoted" \U0001F600',
+                                     'assets':[{'name':'pscloud-dashboard.elf'},{'name':'SHA256SUMS.txt'}]}).encode()
+                elif self.path=='/download/%s/SHA256SUMS.txt'%release['tag']:body=('%s  pscloud-dashboard.elf\n'%release['sha']).encode()
+                elif self.path=='/download/%s/pscloud-dashboard.elf'%release['tag']:body=elf
+                else:self.send_response(404);self.end_headers();return
+                self.send_response(200);self.send_header('Content-Length',str(len(body)));self.end_headers();self.wfile.write(body)
+            def log_message(self,*args):pass
+        github=http.server.ThreadingHTTPServer(('127.0.0.1',0),GitHub);threading.Thread(target=github.serve_forever,daemon=True).start()
+        loader=socket.socket();loader.bind(('127.0.0.1',0));loader.listen(1);received=[]
+        def serve_loader():
+            connection,_=loader.accept();data=b''
+            while True:
+                part=connection.recv(65536)
+                if not part:break
+                data+=part
+            connection.sendall(b'loaded\n');connection.close();received.append(data)
+        threading.Thread(target=serve_loader,daemon=True).start()
+        self.process.terminate();self.process.communicate(timeout=5)
+        self.start_server(PSCLOUD_TEST_UPDATE_URL='http://127.0.0.1:%d'%github.server_address[1],PSCLOUD_TEST_LOADER_PORT=str(loader.getsockname()[1]))
+        def state(want=None):
+            for _ in range(200):
+                r=self.request('/api/update')[1]
+                if want is None or r['state']==want:return r
+                time.sleep(0.05)
+            self.fail('update state stayed %s'%r['state'])
+        try:
+            r=state();self.assertEqual((r['state'],r['newer'],r['ready']),('idle',False,False));self.assertEqual(r['current'],(ROOT/'VERSION').read_text().strip())
+            status,checked=self.request('/api/update/check',{});self.assertEqual(status,200,checked);self.assertIn('9.9.9 is available',checked['message'])
+            r=state('available');self.assertEqual((r['latest'],r['newer'],r['files']),('9.9.9',True,True))
+            self.assertEqual(r['notes'],'Line one\nUmlaut ü "quoted" \U0001F600')
+            self.assertEqual(r['page'],'https://github.com/bc160201983/ps5-cloud-save/releases/tag/v9.9.9')
+            # A file that does not match the release checksum is refused and nothing is kept.
+            release['sha']='0'*64
+            self.assertEqual(self.request('/api/update/download',{})[0],200)
+            r=state('failed');self.assertIn('does not match',r['error']);self.assertFalse((self.root/'pscloud-dashboard.elf').exists())
+            release['sha']=hashlib.sha256(elf).hexdigest()
+            self.assertEqual(self.request('/api/update/download',{})[0],200)
+            r=state('ready');self.assertTrue(r['ready']);self.assertEqual(r['done'],len(elf))
+            self.assertEqual((self.root/'update/pscloud-dashboard-9.9.9.elf').read_bytes(),elf)
+            self.assertEqual((self.root/'pscloud-dashboard.elf').read_bytes(),elf)  # for autoloaders
+            connection=http.client.HTTPConnection('127.0.0.1',self.port,timeout=15);connection.request('GET','/api/update/file',headers={'Cookie':self.cookie})
+            reply=connection.getresponse();self.assertEqual(reply.status,200);self.assertEqual(reply.read(),elf);connection.close()
+            status,installing=self.request('/api/update/install',{});self.assertEqual(status,200,installing)
+            for _ in range(100):
+                if received:break
+                time.sleep(0.05)
+            self.assertEqual(received,[elf])  # the verified file, sent to the loader
+            self.assertEqual(state()['state'],'installing')
+            log=(self.root/'pscloud.log').read_text()
+            self.assertIn('Downloaded PSCloud 9.9.9',log);self.assertIn('Installing PSCloud 9.9.9',log)
+        finally:
+            github.shutdown();github.server_close();loader.close()
+
+    def test_update_without_a_loader_and_when_up_to_date(self):
+        import http.server,socket
+        elf=b'\x7fELF'+b'x'*5000;version=(ROOT/'VERSION').read_text().strip();release={'tag':'v99.0'}
+        class GitHub(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                if self.path=='/releases/latest':body=json.dumps({'tag_name':release['tag'],'body':None,'assets':[{'name':'pscloud-dashboard.elf'},{'name':'SHA256SUMS.txt'}]}).encode()
+                elif self.path.endswith('/SHA256SUMS.txt'):body=('%s *pscloud-dashboard.elf\n'%hashlib.sha256(elf).hexdigest()).encode()
+                elif self.path.endswith('/pscloud-dashboard.elf'):body=elf
+                else:self.send_response(404);self.end_headers();return
+                self.send_response(200);self.send_header('Content-Length',str(len(body)));self.end_headers();self.wfile.write(body)
+            def log_message(self,*args):pass
+        github=http.server.ThreadingHTTPServer(('127.0.0.1',0),GitHub);threading.Thread(target=github.serve_forever,daemon=True).start()
+        closed=socket.socket();closed.bind(('127.0.0.1',0));unused=closed.getsockname()[1];closed.close()  # nothing listens here
+        self.process.terminate();self.process.communicate(timeout=5)
+        self.start_server(PSCLOUD_TEST_UPDATE_URL='http://127.0.0.1:%d'%github.server_address[1],PSCLOUD_TEST_LOADER_PORT=str(unused))
+        def state(want):
+            for _ in range(200):
+                r=self.request('/api/update')[1]
+                if r['state']==want:return r
+                time.sleep(0.05)
+            self.fail('update state stayed %s'%r['state'])
+        try:
+            self.assertEqual(self.request('/api/update/install',{})[0],400)  # nothing downloaded yet
+            self.assertEqual(self.request('/api/update/check',{})[0],200);self.assertEqual(self.request('/api/update/download',{})[0],200)
+            r=state('ready');self.assertEqual(r['notes'],'')
+            self.assertEqual(self.request('/api/update/install',{})[0],200)
+            r=state('failed');self.assertIn('No ELF loader answered on port 9021',r['error']);self.assertIn('pscloud-dashboard.elf',r['error'])
+            self.assertTrue(r['ready'])  # the file stays for the next try or a PC
+            release['tag']='v'+version
+            self.assertEqual(self.request('/api/update/check',{})[0],200)
+            r=state('current');self.assertFalse(r['newer'])
+            self.assertEqual(self.request('/api/update/auto',{'on':'0'})[0],200);self.assertFalse(self.request('/api/update')[1]['auto'])
+            self.assertIn('AUTO=0',(self.root/'update.conf').read_text())
+            self.assertEqual(self.request('/api/update/auto',{'on':'maybe'})[0],400)
+        finally:
+            github.shutdown();github.server_close()
 
     def test_peer_list_stays_valid_json_with_hostile_or_large_replies(self):
         """Replies from other consoles are copied into /api/peers only when each is one complete

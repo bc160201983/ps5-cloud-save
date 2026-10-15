@@ -3,6 +3,29 @@
 Every release, newest first, with what was verified on a console and what was not.
 The current overview is in [README.md](README.md).
 
+## Version 0.34.28 — updates over the internet
+
+- **Cloud settings → Updates.** PSCloud asks GitHub for its newest *published* release. Drafts
+  and pre-releases are never offered, so a version reaches consoles only once it is published.
+  It checks when it starts and once a day (switch it off there), and with **Check for
+  updates**. A newer version shows a PS5 notification once and a banner on every page, with
+  the release notes.
+- **Download** gets `pscloud-dashboard.elf` over HTTPS with certificate checks and keeps it only
+  when its SHA-256 matches the release's `SHA256SUMS.txt`; a mismatch is discarded.
+- **Install now** sends the verified file to the ELF loader on this PS5 (port 9021); the new
+  dashboard takes over, as when it is sent from a PC, and the page reloads when it runs.
+- **No ELF loader running:** nothing can start a payload then, so PSCloud says so. The update is
+  kept, **Save to PC** gives you the file, and every download is also written to
+  `/data/pscloud/pscloud-dashboard.elf`, so an autoloader that starts PSCloud from that file
+  starts the new version the next time the PS5 starts.
+- **Trusted certificates built in:** `/data/pscloud/ca.pem` (needed for HTTPS) is written from
+  the PS5 SDK's bundle inside the dashboard when it is missing, instead of being copied by hand.
+- Fixed: moving old `/data/pscloud*` files into `/data/pscloud` could also move a
+  `/data/pscloud-dashboard.elf` an autoloader starts PSCloud from. Programs (`.elf`) stay put.
+- Host tests with a fake GitHub release and a fake ELF loader: check (release notes with accents,
+  quotes and emoji), a wrong checksum refused, a verified download and the autoloader copy, Save
+  to PC, the file sent to the loader byte for byte, no loader, up to date and the daily switch.
+
 ## Version 0.34.27 — put a shared save into one of your own saves
 
 From issue #3: a Demon's Souls character saved in slot 3 (SAVEDATA0PlayerProfile3) on one

@@ -41,3 +41,4 @@ ps5/third_party/
 ps5/*.o
 build/
 dashboard-host.exe
+ps5/ca.h
