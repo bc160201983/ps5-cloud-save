@@ -67,12 +67,14 @@ function renderShareInto(){const box=$('shareInto');box.replaceChildren();box.cl
  if(!selected||!sharedCandidate||!sharedCandidate.fileSlots||!sameSharedContext())return;
  const {missing,targets}=shareIntoChoices(sharedCandidate.fileSlots,selected.slots.map(s=>s.slot));if(!missing.length)return;
  box.append(el('p','subtitle','These saves in the file are not on this profile. Choose where each one goes:'));
- for(const from of missing){const row=el('div'),name=el('div','',slotName(from)+' goes into:'),pick=document.createElement('select');row.style.margin='8px 0';name.style.fontWeight='600';name.style.overflowWrap='anywhere';pick.style.width='100%';pick.dataset.from=from;pick.setAttribute('aria-label','Where '+from+' goes');
+ for(const from of missing){const row=el('div'),name=el('div','',shareIntoName(from)+' goes into:'),pick=document.createElement('select');row.style.margin='8px 0';name.style.fontWeight='600';name.style.overflowWrap='anywhere';pick.style.width='100%';pick.dataset.from=from;pick.setAttribute('aria-label','Where '+from+' goes');
   const create=document.createElement('option');create.value='';create.textContent='Create a new save slot (not confirmed to work in every game)';pick.append(create);
-  for(const t of targets){const o=document.createElement('option');o.value=t;o.textContent='Put it into my save: '+slotName(t);pick.append(o);}
+  for(const t of targets){const o=document.createElement('option');o.value=t;o.textContent='Put it into my save: '+shareIntoName(t);pick.append(o);}
   pick.addEventListener('change',shareOptionsChanged);row.append(name,pick);box.append(row);}
  if(!targets.length)box.append(el('p','subtitle','To put it into a save of your own instead, start the game on this profile and save once, then check again.'));
  box.classList.remove('hidden');}
+/* A save's label from the PS5 together with its folder name, so a choice is never ambiguous. */
+function shareIntoName(slot){const shown=slotName(slot);return shown===slot?slot:shown+' ('+slot+')';}
 function shareOptionsChanged(){if(sharedCandidate&&sharedCandidate.checked){sharedCandidate.checked=false;$('shareStatus').textContent='Options changed. Choose Check again before replacing your save.';}shareButtons();}
 function shareOptions(){const o={};if($('shareSkip').checked||$('shareCreate').checked)o.skip_missing='yes';if($('shareAllowVersion').checked)o.allow_version='yes';if($('shareCreate').checked)o.create_missing='yes';if($('shareNotInstalled').checked)o.not_installed='yes';
  const into=shareIntoText([...$('shareInto').querySelectorAll('select')].map(p=>[p.dataset.from,p.value]));if(into)o.into=into;return o;}
