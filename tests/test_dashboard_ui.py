@@ -137,6 +137,27 @@ console.log('Live profiles keep valid pointer paths');
 """
         subprocess.run([node,'-e',script],cwd=ROOT,check=True,timeout=15)
 
+    def test_shared_save_slot_choices(self):
+        """Issue #3: which saves of a file this profile lacks, and which of its own saves can take them."""
+        node=shutil.which('node')
+        if not node:self.skipTest('Node.js is required for the UI fixture')
+        script=r"""
+const fs=require('fs'),vm=require('vm'),assert=require('assert');
+const html=fs.readFileSync('ps5/ui.html','utf8');
+const pick=n=>{const s=html.indexOf('function '+n+'(');return html.slice(s,html.indexOf('\n',s));};
+const ctx={};vm.runInNewContext(pick('shareIntoChoices')+'\n'+pick('shareIntoText')+';this.C=shareIntoChoices;this.T=shareIntoText;',ctx);
+// The file holds the options save and a character in slot 3; this profile has options and a new game in slot 0.
+const r=ctx.C(['SAVEDATA0OptionsProfile0','SAVEDATA0PlayerProfile3'],['SAVEDATA0OptionsProfile0','SAVEDATA0PlayerProfile0']);
+assert.deepEqual([...r.missing],['SAVEDATA0PlayerProfile3']);
+assert.deepEqual([...r.targets],['SAVEDATA0PlayerProfile0']);  // never the options save the file writes itself
+assert.equal(ctx.T([['SAVEDATA0PlayerProfile3','SAVEDATA0PlayerProfile0']]),'SAVEDATA0PlayerProfile3=SAVEDATA0PlayerProfile0');
+assert.equal(ctx.T([['a','x'],['b','']]),'a=x');  // empty: create a new slot as before
+assert.equal(ctx.T([]),'');
+assert.throws(()=>ctx.T([['a','x'],['b','x']]),/Two saves cannot go into x/);
+console.log('Shared save slot choices');
+"""
+        subprocess.run([node,'-e',script],cwd=ROOT,check=True,timeout=15)
+
     def test_retained_live_profile_is_offered_for_the_running_game(self):
         node=shutil.which('node')
         if not node:self.skipTest('Node.js is required for the UI fixture')

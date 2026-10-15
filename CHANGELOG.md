@@ -3,6 +3,24 @@
 Every release, newest first, with what was verified on a console and what was not.
 The current overview is in [README.md](README.md).
 
+## Version 0.34.27 — put a shared save into one of your own saves
+
+From issue #3: a Demon's Souls character saved in slot 3 (SAVEDATA0PlayerProfile3) on one
+profile could not be moved to another profile, where a new game is saved in slot 0
+(SAVEDATA0PlayerProfile0). PSCloud matched saves only by name, so it could only create a
+new slot 3, and created slots are not confirmed to work in games.
+- When a shared save holds a save this profile does not have, the Share tab now asks where it
+  goes: create a new save slot as before, or put it into one of this profile's own saves.
+  Only saves the file does not write itself are offered, so the options save is never used
+  for a character.
+- The chosen save keeps its own keystone and details (sce_sys); only the game's files are
+  replaced, after the usual check on a temporary copy and with a rollback copy.
+- Refused: a save this profile does not have, a slot the file does not hold, two saves into
+  one, a save the file also writes, and names with other characters.
+- Host tests: a save goes into a differently named save and keeps that save's keystone and
+  details, without creating a slot; each refusal; and the choices offered for issue #3's
+  slots. Not yet run on a console.
+
 ## Version 0.34.26 — a wrong-size save container is never added
 
 From issue #3 (Demon's Souls, firmware 13.60): moving a save to a second profile that did not

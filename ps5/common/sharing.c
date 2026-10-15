@@ -379,6 +379,35 @@ static int version_compare(const char *a,const char *b) {
         a=ea+1;b=eb+1;
     }
 }
+/* "Put into": the receiver chooses an existing slot of this profile for a package slot with
+ * another name, for example a character saved in slot 3 on one profile and a new game that the
+ * game saved in slot 0 on another. Text is "SOURCE=TARGET" pairs separated by commas. The target
+ * keeps its own sce_sys (keystone and details); only the game's files are replaced. Each target
+ * must exist here, be used once, and not be a slot the package also writes itself. */
+static int apply_into(int source,struct package *p,const char *into) {
+    char text[1024],names[SLOTS][64];
+    if(strlen(into)>=sizeof text) {refuse("Too many save choices");return -1;}
+    strcpy(text,into);
+    for(unsigned i=0;i<p->count;i++)strcpy(names[i],p->slots[i]);
+    char *save=NULL;
+    for(char *pair=strtok_r(text,",",&save);pair;pair=strtok_r(NULL,",",&save)) {
+        char *equals=strchr(pair,'=');if(!equals) {refuse("Invalid save choice %s",pair);return -1;}
+        *equals=0;const char *from=pair,*to=equals+1;
+        if(!word(from,63)||!word(to,63)||!strncmp(to,"sce_",4)) {refuse("Invalid save choice %s",from);return -1;}
+        unsigned i=0;while(i<p->count&&strcmp(p->slots[i],from))i++;
+        if(i==p->count) {refuse("This shared save has no save slot %s",from);return -1;}
+        for(unsigned j=0;j<p->count;j++)if(!strcmp(p->slots[j],to)&&j!=i) {refuse("Save %s is already written by this shared save; choose another save for %s",to,from);return -1;}
+        char name[80];struct stat st;snprintf(name,sizeof name,"sdimg_%s",to);
+        if(fstatat(source,name,&st,AT_SYMLINK_NOFOLLOW)||!S_ISREG(st.st_mode)) {refuse("This profile has no save %s to put %s into",to,from);return -1;}
+        strcpy(names[i],to);
+    }
+    for(unsigned i=0;i<p->count;i++)for(unsigned j=0;j<i;j++)if(!strcmp(names[i],names[j])) {refuse("Two saves cannot go into %s; choose a different save for each",names[i]);return -1;}
+    for(unsigned i=0;i<p->count;i++)if(strcmp(names[i],p->slots[i])) {
+        pscloud_log("EVENT","Save slot %s of the shared save goes into save %s on this profile, by request",p->slots[i],names[i]);
+        strcpy(p->slots[i],names[i]);
+    }
+    return 0;
+}
 int pscloud_share_game(const char *home,const char *root,const char *appmeta,const char *user,const char *title,int mode,const unsigned char *archive,size_t size,const struct pscloud_share_options *options,char published[128],char checksum[65]) {
     published[0]=0;checksum[0]=0;share_error[0]=0;
     const char *only=options?options->only:NULL;int allow_version=options&&options->allow_version,skip_missing=options&&options->skip_missing;
@@ -433,6 +462,7 @@ int pscloud_share_game(const char *home,const char *root,const char *appmeta,con
         source=pscloud_open_directory(path);
     }
     if(source<0) {refuse("This profile has no saves for this game; play it once to create a save");goto done;}
+    if(mode&&options&&options->into&&*options->into&&apply_into(source,p,options->into))goto done;
     if(!mode&&inventory(source,p)) {refuse("No exportable save slots found for this game");goto done;}
     if(!mode&&select_slots(p,only)) {refuse("Selected slots are invalid or no longer exist");goto done;}
     if(mode) {

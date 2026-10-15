@@ -10,6 +10,7 @@ struct pscloud_share_options {
     int skip_missing;   /* check/restore: skip package slots the receiver profile does not have */
     int create_missing; /* restore: create package slots the profile lacks (check: they are skipped) */
     int not_installed;  /* check/restore: the game is not installed here; write without a version check */
+    const char *into;   /* check/restore: "SOURCE=TARGET,..." puts a package slot into an existing slot with another name */
     int live;           /* export only: the game may be running; a copy of each save file is read */
     const char *system_root; /* "" on the PS5; tests point it at a folder (save list database) */
 };

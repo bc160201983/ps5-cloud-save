@@ -976,6 +976,42 @@ const found=SaveImport.slots(files);const pkg=SaveImport.pack(found,'7.00');fs.w
         self.assertIsNone(db.execute("select 1 from savedata where dir_name='save2'").fetchone());db.close()
         self.assertIn('This console made a smaller save container than requested (983040 of 1048576 bytes)',(self.root/'pscloud.log').read_text())
 
+    def test_a_shared_save_can_go_into_another_save_of_this_profile(self):
+        """Issue #3: a character saved in slot 3 on one profile goes into the save the game made in
+        slot 0 on another profile. The receiving save keeps its own sce_sys; nothing is created."""
+        import test_sharing,test_portable
+        self.process.terminate();self.process.communicate(timeout=5)
+        fixture=self.fixture.root/'generic'
+        test_portable.PortableTests.sfo(self,fixture/SLOT,SLOT,b'\x44'*8)
+        (fixture/SLOT/'sce_sys/keystone').write_bytes(b'K'*96)
+        self.save_db(self.root,'1eb70483',[(SLOT,'2026-10-01T10:00:00.00Z')])
+        self.start_server(PSCLOUD_TEST_GENERIC_PAYLOADS=str(fixture))
+        package=test_sharing.portable(slots=('character3',),title='PPSA02433');sha=hashlib.sha256(package).hexdigest()
+        name='portable-PPSA02433-'+'d'*32+'.zip';(self.root/'share').mkdir(exist_ok=True);(self.root/'share'/name).write_bytes(package)
+        base=self.selected(slot='WholeGame',closed='yes',file=name,sha256=sha,not_installed='yes')
+        for into,why in (('character3=missing','has no save missing'),('nope='+SLOT,'has no save slot nope'),('character3=../x','Invalid save choice')):
+            status,refused=self.request('/api/share-check',dict(base,into=into));self.assertEqual(status,400,refused);self.assertIn(why,refused['message'])
+        options=dict(base,into='character3='+SLOT)
+        status,checked=self.request('/api/share-check',options);self.assertEqual(status,200,checked)
+        status,done=self.request('/api/share-restore',dict(options,confirm='yes'));self.assertEqual(status,200,done)
+        self.assertEqual((fixture/SLOT/'folder/progress.bin').read_bytes(),b'shared')
+        self.assertEqual((fixture/SLOT/'sce_sys/keystone').read_bytes(),b'K'*96)
+        sfo=(fixture/SLOT/'sce_sys/param.sfo').read_bytes();self.assertIn(SLOT.encode()+b'\0',sfo);self.assertNotIn(b'character3',sfo)
+        self.assertFalse((self.image.parent/'sdimg_character3').exists())
+        self.assertIn('Save slot character3 of the shared save goes into save %s on this profile'%SLOT,(self.root/'pscloud.log').read_text())
+
+    def test_a_save_cannot_go_into_a_slot_the_file_also_writes(self):
+        import test_sharing,test_portable
+        self.process.terminate();self.process.communicate(timeout=5)
+        fixture=self.fixture.root/'generic';test_portable.PortableTests.sfo(self,fixture/SLOT,SLOT,b'\x44'*8)
+        self.save_db(self.root,'1eb70483',[(SLOT,'2026-10-01T10:00:00.00Z')])
+        self.start_server(PSCLOUD_TEST_GENERIC_PAYLOADS=str(fixture))
+        package=test_sharing.portable(slots=(SLOT,'character3'),title='PPSA02433');sha=hashlib.sha256(package).hexdigest()
+        name='portable-PPSA02433-'+'e'*32+'.zip';(self.root/'share').mkdir(exist_ok=True);(self.root/'share'/name).write_bytes(package)
+        options=self.selected(slot='WholeGame',closed='yes',file=name,sha256=sha,not_installed='yes',into='character3='+SLOT)
+        status,refused=self.request('/api/share-check',options);self.assertEqual(status,400,refused)
+        self.assertIn('already written by this shared save',refused['message'])
+
     def test_creating_a_slot_needs_another_slot_of_the_game(self):
         import test_sharing,test_portable
         self.process.terminate();self.process.communicate(timeout=5)

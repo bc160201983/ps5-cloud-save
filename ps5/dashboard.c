@@ -2164,7 +2164,9 @@ static void action(int sock,const char *path,const char *form) {
         }
         char published[128],only[1024]={0},flag[8];int has_slots=exporting&&strstr(form,"slots=");
         if(has_slots&&parameter(form,"slots",only,sizeof only)) {free(data);if(dir>=0)close(dir);message(sock,400,"Invalid slot selection");return;}
-        struct pscloud_share_options options={.only=only,.system_root=system_root,.live=live};
+        struct pscloud_share_options options={.only=only,.system_root=system_root,.live=live};char into[1024]="";
+        if(!exporting&&strstr(form,"into=")&&(parameter(form,"into",into,sizeof into)||strspn(into,"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-=,")!=strlen(into))) {free(data);if(dir>=0)close(dir);message(sock,400,"Invalid save choice");return;}
+        options.into=into;
         if(!exporting) {
             options.allow_version=!parameter(form,"allow_version",flag,sizeof flag)&&!strcmp(flag,"yes");
             options.skip_missing=!parameter(form,"skip_missing",flag,sizeof flag)&&!strcmp(flag,"yes");
